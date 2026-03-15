@@ -412,6 +412,22 @@ func (p *Plugin) handleSelectConnection(w http.ResponseWriter, r *http.Request) 
 	}
 
 	action, _ := req.Context["action"].(string)
+	if action == "cancel" {
+		resp := &model.PostActionIntegrationResponse{
+			Update: &model.Post{
+				Props: model.StringInterface{
+					"attachments": []*model.SlackAttachment{
+						{Text: "Cancelled."},
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+
 	connName, _ := req.Context["connection_name"].(string)
 
 	if action == "" || connName == "" {

@@ -357,22 +357,13 @@ func (p *Plugin) executeTeardownChannel(args *model.CommandArgs) *model.CommandR
 		inputName = parts[2]
 	}
 
-	teamConns, err := p.kvstore.GetTeamConnections(args.TeamId)
-	if err != nil {
-		return respondEphemeral("Failed to check team connections.")
-	}
-
-	connName, _, resolveErr := p.resolveConnectionName(inputName, teamConns)
+	connName, _, resolveErr := p.resolveConnectionName(inputName, linked)
 	if resolveErr != "" {
-		if inputName == "" && len(teamConns) > 1 {
-			p.sendConnectionPicker(args.UserId, args.ChannelId, args.ChannelId, teamConns, actionTeardownChannel)
+		if inputName == "" && len(linked) > 1 {
+			p.sendConnectionPicker(args.UserId, args.ChannelId, args.ChannelId, linked, actionTeardownChannel)
 			return &model.CommandResponse{}
 		}
-		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(teamConns, ", "))
-	}
-
-	if !slices.Contains(linked, connName) {
-		return respondEphemeral("Connection `%s` is not linked to this channel.", connName)
+		return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(linked, ", "))
 	}
 
 	if _, svcErr := p.teardownChannelForCrossGuard(user, args.ChannelId, connName); svcErr != nil {
@@ -406,21 +397,13 @@ func (p *Plugin) executeTeardownTeam(args *model.CommandArgs) *model.CommandResp
 		inputName = parts[2]
 	}
 
-	allConns := p.getAllConnectionNames()
-	connName, _, resolveErr := p.resolveConnectionName(inputName, allConns)
+	connName, _, resolveErr := p.resolveConnectionName(inputName, linked)
 	if resolveErr != "" {
-		if len(allConns) == 0 {
-			return respondEphemeral("No NATS connections configured. Check the System Console settings.")
-		}
-		if inputName == "" && len(allConns) > 1 {
-			p.sendConnectionPicker(args.UserId, args.ChannelId, args.TeamId, allConns, actionTeardownTeam)
+		if inputName == "" && len(linked) > 1 {
+			p.sendConnectionPicker(args.UserId, args.ChannelId, args.TeamId, linked, actionTeardownTeam)
 			return &model.CommandResponse{}
 		}
-		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(allConns, ", "))
-	}
-
-	if !slices.Contains(linked, connName) {
-		return respondEphemeral("Connection `%s` is not linked to this team.", connName)
+		return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(linked, ", "))
 	}
 
 	if _, svcErr := p.teardownTeamForCrossGuard(user, args.TeamId, connName); svcErr != nil {
@@ -444,12 +427,7 @@ func (p *Plugin) isChannelAdminOrHigher(userID, channelID, teamID string) bool {
 }
 
 func (p *Plugin) sendConnectionPicker(userID, channelID, targetID string, connections []string, action string) {
-	siteURL := p.API.GetConfig().ServiceSettings.SiteURL
-	if siteURL == nil || *siteURL == "" {
-		p.API.LogError("SiteURL is not configured, cannot send interactive message")
-		return
-	}
-	baseURL := fmt.Sprintf("%s/plugins/%s/api/v1/actions/select-connection", *siteURL, manifest.Id)
+	baseURL := fmt.Sprintf("/plugins/%s/api/v1/actions/select-connection", manifest.Id)
 
 	var title string
 	switch action {
@@ -489,6 +467,17 @@ func (p *Plugin) sendConnectionPicker(userID, channelID, targetID string, connec
 			},
 		})
 	}
+
+	actions = append(actions, &model.PostAction{
+		Id:    "cancel",
+		Name:  "Cancel",
+		Type:  model.PostActionTypeButton,
+		Style: "default",
+		Integration: &model.PostActionIntegration{
+			URL:     baseURL,
+			Context: map[string]any{"action": "cancel"},
+		},
+	})
 
 	post := &model.Post{
 		UserId:    p.botUserID,

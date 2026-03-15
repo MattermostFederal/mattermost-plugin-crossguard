@@ -386,7 +386,7 @@ docker-setup: docker-start
 		--username usera \
 		--password 'password' 2>/dev/null || echo "User usera already exists on Server A"
 	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team create \
-		--name test-a \
+		--name test \
 		--display-name "Test A" 2>/dev/null || echo "Team 'Test A' already exists on Server A"
 	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team users add test-a admin 2>/dev/null || echo "Admin already in Test A team"
 	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team users add test-a usera 2>/dev/null || echo "usera already in Test A team"
@@ -402,7 +402,7 @@ docker-setup: docker-start
 		--username userb \
 		--password 'password' 2>/dev/null || echo "User userb already exists on Server B"
 	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team create \
-		--name test-b \
+		--name test \
 		--display-name "Test B" 2>/dev/null || echo "Team 'Test B' already exists on Server B"
 	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team users add test-b admin 2>/dev/null || echo "Admin already in Test B team"
 	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team users add test-b userb 2>/dev/null || echo "userb already in Test B team"
@@ -460,7 +460,7 @@ docker-deploy: docker-check dist
 	curl -sf -X PUT http://localhost:$(MM_PORT_A)/api/v4/config/patch \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"relay-out\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","inboundconnections":"[]"}}}}' >/dev/null && \
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"relay-test\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","inboundconnections":"[]"}}}}' >/dev/null && \
 	echo "Server A configured with outbound NATS connection"
 	@TOKEN_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/users/login \
 		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
@@ -468,7 +468,7 @@ docker-deploy: docker-check dist
 	curl -sf -X PUT http://localhost:$(MM_PORT_B)/api/v4/config/patch \
 		-H "Authorization: Bearer $$TOKEN_B" \
 		-H "Content-Type: application/json" \
-		-d '{"PluginSettings":{"Plugins":{"crossguard":{"inboundconnections":"[{\"name\":\"relay-in\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","outboundconnections":"[]"}}}}' >/dev/null && \
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"inboundconnections":"[{\"name\":\"relay-test\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","outboundconnections":"[]"}}}}' >/dev/null && \
 	echo "Server B configured with inbound NATS connection"
 
 ## Disable and re-enable plugin on both servers

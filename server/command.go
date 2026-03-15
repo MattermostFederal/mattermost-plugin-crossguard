@@ -23,19 +23,19 @@ func (p *Plugin) registerCommand() error {
 func getAutocompleteData() *model.AutocompleteData {
 	cmd := model.NewAutocompleteData(commandTrigger, "[command]", "Cross Guard commands")
 
-	initTeam := model.NewAutocompleteData("init-team", "", "Initialize Cross Guard for this team (requires team admin or system admin)")
+	initTeam := model.NewAutocompleteData("init-team", "[connection-name]", "Link a NATS connection to this team (requires team admin or system admin)")
 	cmd.AddCommand(initTeam)
 
 	initChannel := model.NewAutocompleteData("init-channel", "", "Enable Cross Guard relay for this channel (requires channel admin or higher)")
 	cmd.AddCommand(initChannel)
 
-	teardownTeam := model.NewAutocompleteData("teardown-team", "", "Disable Cross Guard for this team (requires team admin or system admin)")
+	teardownTeam := model.NewAutocompleteData("teardown-team", "[connection-name]", "Unlink a NATS connection from this team (requires team admin or system admin)")
 	cmd.AddCommand(teardownTeam)
 
 	teardownChannel := model.NewAutocompleteData("teardown-channel", "", "Disable Cross Guard relay for this channel (requires channel admin or higher)")
 	cmd.AddCommand(teardownChannel)
 
-	status := model.NewAutocompleteData("status", "", "Check if Cross Guard has been initialized for this team")
+	status := model.NewAutocompleteData("status", "", "Check Cross Guard status for this team")
 	cmd.AddCommand(status)
 
 	return cmd
@@ -74,13 +74,27 @@ func (p *Plugin) executeInitTeam(args *model.CommandArgs) *model.CommandResponse
 		return respondEphemeral("Failed to look up user.")
 	}
 
-	team, alreadyInit, svcErr := p.initTeamForCrossGuard(user, args.TeamId)
+	parts := strings.Fields(args.Command)
+	inputName := ""
+	if len(parts) >= 3 {
+		inputName = parts[2]
+	}
+
+	connName, allConns, resolveErr := p.resolveConnectionName(inputName, p.getAllConnectionNames())
+	if resolveErr != "" {
+		if len(allConns) == 0 {
+			return respondEphemeral("No NATS connections configured. Add connections in the System Console first.")
+		}
+		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(allConns, ", "))
+	}
+
+	team, alreadyLinked, svcErr := p.initTeamForCrossGuard(user, args.TeamId, connName)
 	if svcErr != nil {
 		return respondEphemeral("%s", svcErr.Message)
 	}
 
-	if alreadyInit {
-		return respondEphemeral("Cross Guard is already initialized for this team. (team ID: %s, team name: %s)", team.Id, team.Name)
+	if alreadyLinked {
+		return respondEphemeral("Connection `%s` is already linked to this team. (team ID: %s, team name: %s)", connName, team.Id, team.Name)
 	}
 
 	return &model.CommandResponse{}
@@ -147,6 +161,13 @@ func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandRespo
 	sb.WriteString("|:-----|:-----|:---|:------------|\n")
 	fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", teamDisplayName, teamName, teamID, teamStatus)
 
+	if len(resp.LinkedConnections) > 0 {
+		sb.WriteString("\n**Linked Connections:**\n\n")
+		for _, conn := range resp.LinkedConnections {
+			fmt.Fprintf(&sb, "- `%s`\n", conn)
+		}
+	}
+
 	return &model.CommandResponse{
 		ResponseType: model.CommandResponseTypeEphemeral,
 		Text:         sb.String(),
@@ -185,11 +206,15 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 	fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", channelDisplayName, channelName, channelID, channelStatus)
 
 	sb.WriteString("\n**Initialized Teams:**\n\n")
-	sb.WriteString("| Team | Team ID | Team Name |\n")
-	sb.WriteString("|:-----|:--------|:---------|\n")
+	sb.WriteString("| Team | Team ID | Team Name | Linked Connections |\n")
+	sb.WriteString("|:-----|:--------|:----------|:-------------------|\n")
 
 	for _, team := range resp.Teams {
-		fmt.Fprintf(&sb, "| %s | %s | %s |\n", team.DisplayName, team.TeamID, team.TeamName)
+		conns := "(none)"
+		if len(team.LinkedConnections) > 0 {
+			conns = strings.Join(team.LinkedConnections, ", ")
+		}
+		fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", team.DisplayName, team.TeamID, team.TeamName, conns)
 	}
 
 	if len(resp.Warnings) > 0 {
@@ -278,7 +303,26 @@ func (p *Plugin) executeTeardownTeam(args *model.CommandArgs) *model.CommandResp
 		return respondEphemeral("Failed to look up user.")
 	}
 
-	if _, svcErr := p.teardownTeamForCrossGuard(user, args.TeamId); svcErr != nil {
+	parts := strings.Fields(args.Command)
+	inputName := ""
+	if len(parts) >= 3 {
+		inputName = parts[2]
+	}
+
+	linked, err := p.kvstore.GetTeamConnections(args.TeamId)
+	if err != nil {
+		return respondEphemeral("Failed to check team connections.")
+	}
+
+	connName, resolveErr := resolveLinkedConnectionName(inputName, linked)
+	if resolveErr != "" {
+		if len(linked) > 0 {
+			return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(linked, ", "))
+		}
+		return respondEphemeral("%s", resolveErr)
+	}
+
+	if _, svcErr := p.teardownTeamForCrossGuard(user, args.TeamId, connName); svcErr != nil {
 		return respondEphemeral("%s", svcErr.Message)
 	}
 

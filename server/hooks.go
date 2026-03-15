@@ -7,41 +7,43 @@ import (
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 )
 
-func (p *Plugin) isChannelRelayEnabled(channelID string) (*mmModel.Channel, *mmModel.Team, bool) {
+// isChannelRelayEnabled checks if a channel's relay is active and returns
+// the channel, team, and the team's linked connection names.
+func (p *Plugin) isChannelRelayEnabled(channelID string) (*mmModel.Channel, *mmModel.Team, []string) {
 	initialized, err := p.kvstore.GetChannelInitialized(channelID)
 	if err != nil {
 		p.API.LogError("Failed to check channel init status", "channel_id", channelID, "error", err.Error())
-		return nil, nil, false
+		return nil, nil, nil
 	}
 	if !initialized {
-		return nil, nil, false
+		return nil, nil, nil
 	}
 
 	channel, appErr := p.API.GetChannel(channelID)
 	if appErr != nil {
 		p.API.LogError("Failed to get channel for relay", "channel_id", channelID, "error", appErr.Error())
-		return nil, nil, false
+		return nil, nil, nil
 	}
 
-	teamInit, err := p.kvstore.GetTeamInitialized(channel.TeamId)
+	conns, err := p.kvstore.GetTeamConnections(channel.TeamId)
 	if err != nil {
-		p.API.LogError("Failed to check team init status", "team_id", channel.TeamId, "error", err.Error())
-		return nil, nil, false
+		p.API.LogError("Failed to check team connections", "team_id", channel.TeamId, "error", err.Error())
+		return nil, nil, nil
 	}
-	if !teamInit {
-		return nil, nil, false
+	if len(conns) == 0 {
+		return nil, nil, nil
 	}
 
 	team, appErr := p.API.GetTeam(channel.TeamId)
 	if appErr != nil {
 		p.API.LogError("Failed to get team for relay", "team_id", channel.TeamId, "error", appErr.Error())
-		return nil, nil, false
+		return nil, nil, nil
 	}
 
-	return channel, team, true
+	return channel, team, conns
 }
 
-func (p *Plugin) relayToOutbound(data []byte, logContext string) {
+func (p *Plugin) relayToOutbound(data []byte, connNames []string, logContext string) {
 	select {
 	case p.relaySem <- struct{}{}:
 	default:
@@ -53,7 +55,7 @@ func (p *Plugin) relayToOutbound(data []byte, logContext string) {
 	go func() {
 		defer p.wg.Done()
 		defer func() { <-p.relaySem }()
-		p.publishToOutbound(p.ctx, data)
+		p.publishToOutbound(p.ctx, data, connNames)
 	}()
 }
 
@@ -62,8 +64,8 @@ func (p *Plugin) MessageHasBeenPosted(_ *plugin.Context, post *mmModel.Post) {
 		return
 	}
 
-	channel, team, ok := p.isChannelRelayEnabled(post.ChannelId)
-	if !ok {
+	channel, team, connNames := p.isChannelRelayEnabled(post.ChannelId)
+	if connNames == nil {
 		return
 	}
 
@@ -79,7 +81,7 @@ func (p *Plugin) MessageHasBeenPosted(_ *plugin.Context, post *mmModel.Post) {
 		return
 	}
 
-	p.relayToOutbound(data, "post:"+post.Id)
+	p.relayToOutbound(data, connNames, "post:"+post.Id)
 }
 
 func (p *Plugin) MessageHasBeenUpdated(_ *plugin.Context, newPost *mmModel.Post, _ *mmModel.Post) {
@@ -87,8 +89,8 @@ func (p *Plugin) MessageHasBeenUpdated(_ *plugin.Context, newPost *mmModel.Post,
 		return
 	}
 
-	channel, team, ok := p.isChannelRelayEnabled(newPost.ChannelId)
-	if !ok {
+	channel, team, connNames := p.isChannelRelayEnabled(newPost.ChannelId)
+	if connNames == nil {
 		return
 	}
 
@@ -104,7 +106,7 @@ func (p *Plugin) MessageHasBeenUpdated(_ *plugin.Context, newPost *mmModel.Post,
 		return
 	}
 
-	p.relayToOutbound(data, "update:"+newPost.Id)
+	p.relayToOutbound(data, connNames, "update:"+newPost.Id)
 }
 
 func (p *Plugin) MessageHasBeenDeleted(_ *plugin.Context, post *mmModel.Post) {
@@ -122,8 +124,8 @@ func (p *Plugin) MessageHasBeenDeleted(_ *plugin.Context, post *mmModel.Post) {
 		return
 	}
 
-	channel, team, ok := p.isChannelRelayEnabled(post.ChannelId)
-	if !ok {
+	channel, team, connNames := p.isChannelRelayEnabled(post.ChannelId)
+	if connNames == nil {
 		return
 	}
 
@@ -133,7 +135,7 @@ func (p *Plugin) MessageHasBeenDeleted(_ *plugin.Context, post *mmModel.Post) {
 		return
 	}
 
-	p.relayToOutbound(data, "delete:"+post.Id)
+	p.relayToOutbound(data, connNames, "delete:"+post.Id)
 }
 
 func (p *Plugin) ReactionHasBeenAdded(_ *plugin.Context, reaction *mmModel.Reaction) {
@@ -157,8 +159,8 @@ func (p *Plugin) ReactionHasBeenAdded(_ *plugin.Context, reaction *mmModel.React
 		return
 	}
 
-	channel, team, ok := p.isChannelRelayEnabled(post.ChannelId)
-	if !ok {
+	channel, team, connNames := p.isChannelRelayEnabled(post.ChannelId)
+	if connNames == nil {
 		return
 	}
 
@@ -168,7 +170,7 @@ func (p *Plugin) ReactionHasBeenAdded(_ *plugin.Context, reaction *mmModel.React
 		return
 	}
 
-	p.relayToOutbound(data, "reaction_add:"+reaction.PostId)
+	p.relayToOutbound(data, connNames, "reaction_add:"+reaction.PostId)
 }
 
 func (p *Plugin) ReactionHasBeenRemoved(_ *plugin.Context, reaction *mmModel.Reaction) {
@@ -192,8 +194,8 @@ func (p *Plugin) ReactionHasBeenRemoved(_ *plugin.Context, reaction *mmModel.Rea
 		return
 	}
 
-	channel, team, ok := p.isChannelRelayEnabled(post.ChannelId)
-	if !ok {
+	channel, team, connNames := p.isChannelRelayEnabled(post.ChannelId)
+	if connNames == nil {
 		return
 	}
 
@@ -203,5 +205,5 @@ func (p *Plugin) ReactionHasBeenRemoved(_ *plugin.Context, reaction *mmModel.Rea
 		return
 	}
 
-	p.relayToOutbound(data, "reaction_remove:"+reaction.PostId)
+	p.relayToOutbound(data, connNames, "reaction_remove:"+reaction.PostId)
 }

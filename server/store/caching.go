@@ -26,7 +26,7 @@ type CachingKVStore struct {
 	KVStore
 	api plugin.API
 
-	teamInitCache    *expirable.LRU[string, bool]
+	teamInitCache    *expirable.LRU[string, []string]
 	channelInitCache *expirable.LRU[string, bool]
 	initTeamsCache   *expirable.LRU[string, []string]
 }
@@ -36,37 +36,68 @@ func NewCachingKVStore(inner KVStore, api plugin.API) *CachingKVStore {
 	return &CachingKVStore{
 		KVStore:          inner,
 		api:              api,
-		teamInitCache:    expirable.NewLRU[string, bool](cacheTeamInitSize, nil, cacheTTL),
+		teamInitCache:    expirable.NewLRU[string, []string](cacheTeamInitSize, nil, cacheTTL),
 		channelInitCache: expirable.NewLRU[string, bool](cacheChannelInitSize, nil, cacheTTL),
 		initTeamsCache:   expirable.NewLRU[string, []string](1, nil, cacheTTL),
 	}
 }
 
-// GetTeamInitialized checks the cache first, then falls back to the inner store.
-func (c *CachingKVStore) GetTeamInitialized(teamID string) (bool, error) {
+// GetTeamConnections checks the cache first, then falls back to the inner store.
+func (c *CachingKVStore) GetTeamConnections(teamID string) ([]string, error) {
 	if val, ok := c.teamInitCache.Get(teamID); ok {
-		return val, nil
+		result := make([]string, len(val))
+		copy(result, val)
+		return result, nil
 	}
-	initialized, err := c.KVStore.GetTeamInitialized(teamID)
+	conns, err := c.KVStore.GetTeamConnections(teamID)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	c.teamInitCache.Add(teamID, initialized)
-	return initialized, nil
+	cached := make([]string, len(conns))
+	copy(cached, conns)
+	c.teamInitCache.Add(teamID, cached)
+	return conns, nil
 }
 
-// SetTeamInitialized writes to the inner store and invalidates the cache.
-func (c *CachingKVStore) SetTeamInitialized(teamID string) error {
-	if err := c.KVStore.SetTeamInitialized(teamID); err != nil {
+// SetTeamConnections writes to the inner store and invalidates the cache.
+func (c *CachingKVStore) SetTeamConnections(teamID string, connNames []string) error {
+	if err := c.KVStore.SetTeamConnections(teamID, connNames); err != nil {
 		return err
 	}
 	c.invalidate(ClusterEventInvalidateTeamInit, teamID)
 	return nil
 }
 
-// DeleteTeamInitialized removes the team init flag and invalidates the cache.
-func (c *CachingKVStore) DeleteTeamInitialized(teamID string) error {
-	if err := c.KVStore.DeleteTeamInitialized(teamID); err != nil {
+// DeleteTeamConnections removes team connections and invalidates the cache.
+func (c *CachingKVStore) DeleteTeamConnections(teamID string) error {
+	if err := c.KVStore.DeleteTeamConnections(teamID); err != nil {
+		return err
+	}
+	c.invalidate(ClusterEventInvalidateTeamInit, teamID)
+	return nil
+}
+
+// IsTeamInitialized checks cache for connections, returns true if any exist.
+func (c *CachingKVStore) IsTeamInitialized(teamID string) (bool, error) {
+	conns, err := c.GetTeamConnections(teamID)
+	if err != nil {
+		return false, err
+	}
+	return len(conns) > 0, nil
+}
+
+// AddTeamConnection adds a connection and invalidates the cache.
+func (c *CachingKVStore) AddTeamConnection(teamID, connName string) error {
+	if err := c.KVStore.AddTeamConnection(teamID, connName); err != nil {
+		return err
+	}
+	c.invalidate(ClusterEventInvalidateTeamInit, teamID)
+	return nil
+}
+
+// RemoveTeamConnection removes a connection and invalidates the cache.
+func (c *CachingKVStore) RemoveTeamConnection(teamID, connName string) error {
+	if err := c.KVStore.RemoveTeamConnection(teamID, connName); err != nil {
 		return err
 	}
 	c.invalidate(ClusterEventInvalidateTeamInit, teamID)

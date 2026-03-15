@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 
 	mmModel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/nats-io/nats.go"
@@ -118,18 +119,23 @@ func (p *Plugin) handleInboundMessage(connName string) nats.MsgHandler {
 	}
 }
 
-func (p *Plugin) resolveTeamAndChannel(teamName, channelName string) (*mmModel.Team, *mmModel.Channel, error) {
+func (p *Plugin) resolveTeamAndChannel(connName, teamName, channelName string) (*mmModel.Team, *mmModel.Channel, error) {
 	team, appErr := p.API.GetTeamByName(teamName)
 	if appErr != nil {
 		return nil, nil, fmt.Errorf("team %q not found: %w", teamName, appErr)
 	}
 
-	initialized, err := p.kvstore.GetTeamInitialized(team.Id)
+	conns, err := p.kvstore.GetTeamConnections(team.Id)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to check team init: %w", err)
+		return nil, nil, fmt.Errorf("failed to check team connections: %w", err)
 	}
-	if !initialized {
+	if len(conns) == 0 {
 		return nil, nil, fmt.Errorf("team %q is not initialized for relay", teamName)
+	}
+
+	inboundPrefixed := "inbound-" + connName
+	if !slices.Contains(conns, inboundPrefixed) {
+		return nil, nil, fmt.Errorf("inbound connection %q is not linked to team %q", connName, teamName)
 	}
 
 	channel, appErr := p.API.GetChannelByName(team.Id, channelName, false)
@@ -155,7 +161,7 @@ func (p *Plugin) handleInboundPost(connName string, envelope *model.Message) {
 		return
 	}
 
-	team, channel, err := p.resolveTeamAndChannel(postMsg.TeamName, postMsg.ChannelName)
+	team, channel, err := p.resolveTeamAndChannel(connName, postMsg.TeamName, postMsg.ChannelName)
 	if err != nil {
 		p.API.LogWarn("Inbound post: resolve failed", "conn", connName, "error", err.Error())
 		return
@@ -278,7 +284,7 @@ func (p *Plugin) handleInboundReaction(connName string, envelope *model.Message,
 		return
 	}
 
-	team, channel, err := p.resolveTeamAndChannel(reactionMsg.TeamName, reactionMsg.ChannelName)
+	team, channel, err := p.resolveTeamAndChannel(connName, reactionMsg.TeamName, reactionMsg.ChannelName)
 	if err != nil {
 		p.API.LogWarn("Inbound reaction: resolve failed", "conn", connName, "error", err.Error())
 		return

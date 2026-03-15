@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	mmModel "github.com/mattermost/mattermost/server/public/model"
@@ -263,7 +264,7 @@ func buildReactionEnvelope(msgType string, reaction *mmModel.Reaction, channel *
 	return model.Marshal(envelope)
 }
 
-func (p *Plugin) publishToOutbound(ctx context.Context, data []byte) {
+func (p *Plugin) publishToOutbound(ctx context.Context, data []byte, connNames []string) {
 	p.outboundMu.RLock()
 	conns := make([]outboundConn, len(p.outboundConns))
 	copy(conns, p.outboundConns)
@@ -274,6 +275,10 @@ func (p *Plugin) publishToOutbound(ctx context.Context, data []byte) {
 	}
 
 	for _, oc := range conns {
+		if !isOutboundLinked(oc.name, connNames) {
+			continue
+		}
+
 		if !oc.nc.IsConnected() && !oc.nc.IsReconnecting() {
 			p.API.LogWarn("Outbound NATS not connected, skipping", "name", oc.name)
 			continue
@@ -304,4 +309,9 @@ func (p *Plugin) publishToOutbound(ctx context.Context, data []byte) {
 				"name", oc.name, "error", lastErr.Error())
 		}
 	}
+}
+
+// isOutboundLinked checks if an outbound connection name is in the team's linked list.
+func isOutboundLinked(outboundName string, connNames []string) bool {
+	return slices.Contains(connNames, "outbound-"+outboundName)
 }

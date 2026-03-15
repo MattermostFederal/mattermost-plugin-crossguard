@@ -12,9 +12,12 @@ import (
 )
 
 type mockKVStore struct {
-	getTeamInitializedFn       func(string) (bool, error)
-	setTeamInitializedFn       func(string) error
-	deleteTeamInitializedFn    func(string) error
+	getTeamConnectionsFn       func(string) ([]string, error)
+	setTeamConnectionsFn       func(string, []string) error
+	deleteTeamConnectionsFn    func(string) error
+	isTeamInitializedFn        func(string) (bool, error)
+	addTeamConnectionFn        func(string, string) error
+	removeTeamConnectionFn     func(string, string) error
 	getInitializedTeamIDsFn    func() ([]string, error)
 	addInitializedTeamIDFn     func(string) error
 	removeInitializedTeamIDFn  func(string) error
@@ -29,16 +32,44 @@ type mockKVStore struct {
 	clearDeletingFlagFn        func(string) error
 }
 
-func (m *mockKVStore) GetTeamInitialized(teamID string) (bool, error) {
-	if m.getTeamInitializedFn != nil {
-		return m.getTeamInitializedFn(teamID)
+func (m *mockKVStore) GetTeamConnections(teamID string) ([]string, error) {
+	if m.getTeamConnectionsFn != nil {
+		return m.getTeamConnectionsFn(teamID)
+	}
+	return []string{}, nil
+}
+
+func (m *mockKVStore) SetTeamConnections(teamID string, connNames []string) error {
+	if m.setTeamConnectionsFn != nil {
+		return m.setTeamConnectionsFn(teamID, connNames)
+	}
+	return nil
+}
+
+func (m *mockKVStore) DeleteTeamConnections(teamID string) error {
+	if m.deleteTeamConnectionsFn != nil {
+		return m.deleteTeamConnectionsFn(teamID)
+	}
+	return nil
+}
+
+func (m *mockKVStore) IsTeamInitialized(teamID string) (bool, error) {
+	if m.isTeamInitializedFn != nil {
+		return m.isTeamInitializedFn(teamID)
 	}
 	return false, nil
 }
 
-func (m *mockKVStore) SetTeamInitialized(teamID string) error {
-	if m.setTeamInitializedFn != nil {
-		return m.setTeamInitializedFn(teamID)
+func (m *mockKVStore) AddTeamConnection(teamID, connName string) error {
+	if m.addTeamConnectionFn != nil {
+		return m.addTeamConnectionFn(teamID, connName)
+	}
+	return nil
+}
+
+func (m *mockKVStore) RemoveTeamConnection(teamID, connName string) error {
+	if m.removeTeamConnectionFn != nil {
+		return m.removeTeamConnectionFn(teamID, connName)
 	}
 	return nil
 }
@@ -48,13 +79,6 @@ func (m *mockKVStore) GetInitializedTeamIDs() ([]string, error) {
 		return m.getInitializedTeamIDsFn()
 	}
 	return []string{}, nil
-}
-
-func (m *mockKVStore) DeleteTeamInitialized(teamID string) error {
-	if m.deleteTeamInitializedFn != nil {
-		return m.deleteTeamInitializedFn(teamID)
-	}
-	return nil
 }
 
 func (m *mockKVStore) AddInitializedTeamID(teamID string) error {
@@ -142,118 +166,118 @@ func newTestCaching(inner *mockKVStore) (*CachingKVStore, *plugintest.API) {
 	return c, api
 }
 
-func TestGetTeamInitialized_CacheHitMiss(t *testing.T) {
+func TestGetTeamConnections_CacheHitMiss(t *testing.T) {
 	calls := 0
 	inner := &mockKVStore{
-		getTeamInitializedFn: func(teamID string) (bool, error) {
+		getTeamConnectionsFn: func(teamID string) ([]string, error) {
 			calls++
-			return true, nil
+			return []string{"outbound-a"}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
-	val, err := c.GetTeamInitialized("team1")
+	val, err := c.GetTeamConnections("team1")
 	require.NoError(t, err)
-	assert.True(t, val)
+	assert.Equal(t, []string{"outbound-a"}, val)
 	assert.Equal(t, 1, calls)
 
-	val2, err := c.GetTeamInitialized("team1")
+	val2, err := c.GetTeamConnections("team1")
 	require.NoError(t, err)
-	assert.True(t, val2)
-	assert.Equal(t, 1, calls)
-}
-
-func TestGetTeamInitialized_CachesFalse(t *testing.T) {
-	calls := 0
-	inner := &mockKVStore{
-		getTeamInitializedFn: func(teamID string) (bool, error) {
-			calls++
-			return false, nil
-		},
-	}
-	c, _ := newTestCaching(inner)
-
-	val, err := c.GetTeamInitialized("team1")
-	require.NoError(t, err)
-	assert.False(t, val)
-
-	val, err = c.GetTeamInitialized("team1")
-	require.NoError(t, err)
-	assert.False(t, val)
+	assert.Equal(t, []string{"outbound-a"}, val2)
 	assert.Equal(t, 1, calls)
 }
 
-func TestGetTeamInitialized_ErrorNotCached(t *testing.T) {
+func TestGetTeamConnections_CachesEmpty(t *testing.T) {
 	calls := 0
 	inner := &mockKVStore{
-		getTeamInitializedFn: func(teamID string) (bool, error) {
+		getTeamConnectionsFn: func(teamID string) ([]string, error) {
 			calls++
-			return false, fmt.Errorf("kv store unavailable")
+			return []string{}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
-	_, err := c.GetTeamInitialized("team1")
+	val, err := c.GetTeamConnections("team1")
+	require.NoError(t, err)
+	assert.Empty(t, val)
+
+	val, err = c.GetTeamConnections("team1")
+	require.NoError(t, err)
+	assert.Empty(t, val)
+	assert.Equal(t, 1, calls)
+}
+
+func TestGetTeamConnections_ErrorNotCached(t *testing.T) {
+	calls := 0
+	inner := &mockKVStore{
+		getTeamConnectionsFn: func(teamID string) ([]string, error) {
+			calls++
+			return nil, fmt.Errorf("kv store unavailable")
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	_, err := c.GetTeamConnections("team1")
 	require.Error(t, err)
 
-	_, err = c.GetTeamInitialized("team1")
+	_, err = c.GetTeamConnections("team1")
 	require.Error(t, err)
 	assert.Equal(t, 2, calls)
 }
 
-func TestSetTeamInitialized_InvalidatesCache(t *testing.T) {
+func TestAddTeamConnection_InvalidatesCache(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getTeamInitializedFn: func(teamID string) (bool, error) {
+		getTeamConnectionsFn: func(teamID string) ([]string, error) {
 			getCalls++
-			return true, nil
+			return []string{"outbound-a"}, nil
 		},
-		setTeamInitializedFn: func(teamID string) error {
+		addTeamConnectionFn: func(teamID, connName string) error {
 			return nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
-	_, err := c.GetTeamInitialized("team1")
+	_, err := c.GetTeamConnections("team1")
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.SetTeamInitialized("team1")
+	err = c.AddTeamConnection("team1", "inbound-a")
 	require.NoError(t, err)
 
-	_, err = c.GetTeamInitialized("team1")
+	_, err = c.GetTeamConnections("team1")
 	require.NoError(t, err)
 	assert.Equal(t, 2, getCalls)
 }
 
-func TestSetTeamInitialized_ErrorDoesNotInvalidate(t *testing.T) {
+func TestAddTeamConnection_ErrorDoesNotInvalidate(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getTeamInitializedFn: func(teamID string) (bool, error) {
+		getTeamConnectionsFn: func(teamID string) ([]string, error) {
 			getCalls++
-			return false, nil
+			return []string{}, nil
 		},
-		setTeamInitializedFn: func(teamID string) error {
+		addTeamConnectionFn: func(teamID, connName string) error {
 			return fmt.Errorf("write failed")
 		},
 	}
 	c, _ := newTestCaching(inner)
 
-	_, err := c.GetTeamInitialized("team1")
+	_, err := c.GetTeamConnections("team1")
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.SetTeamInitialized("team1")
+	err = c.AddTeamConnection("team1", "outbound-a")
 	require.Error(t, err)
 
-	_, err = c.GetTeamInitialized("team1")
+	_, err = c.GetTeamConnections("team1")
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 }
 
-func TestSetTeamInitialized_PublishesClusterEvent(t *testing.T) {
+func TestAddTeamConnection_PublishesClusterEvent(t *testing.T) {
 	inner := &mockKVStore{
-		setTeamInitializedFn: func(teamID string) error { return nil },
+		addTeamConnectionFn: func(teamID, connName string) error { return nil },
 	}
 	api := &plugintest.API{}
 	api.On("PublishPluginClusterEvent", model.PluginClusterEvent{
@@ -265,7 +289,7 @@ func TestSetTeamInitialized_PublishesClusterEvent(t *testing.T) {
 
 	c := NewCachingKVStore(inner, api)
 
-	err := c.SetTeamInitialized("team1")
+	err := c.AddTeamConnection("team1", "outbound-a")
 	require.NoError(t, err)
 
 	api.AssertExpectations(t)
@@ -273,13 +297,13 @@ func TestSetTeamInitialized_PublishesClusterEvent(t *testing.T) {
 
 func TestHandleClusterEvent_InvalidatesTeamInit(t *testing.T) {
 	inner := &mockKVStore{
-		getTeamInitializedFn: func(teamID string) (bool, error) {
-			return true, nil
+		getTeamConnectionsFn: func(teamID string) ([]string, error) {
+			return []string{"outbound-a"}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
-	_, _ = c.GetTeamInitialized("team1")
+	_, _ = c.GetTeamConnections("team1")
 	assert.Equal(t, 1, c.teamInitCache.Len())
 
 	c.HandleClusterEvent(model.PluginClusterEvent{
@@ -413,27 +437,52 @@ func TestHandleClusterEvent_InvalidatesInitTeams(t *testing.T) {
 	assert.Equal(t, 0, c.initTeamsCache.Len())
 }
 
-func TestDeleteTeamInitialized_InvalidatesCache(t *testing.T) {
+func TestDeleteTeamConnections_InvalidatesCache(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getTeamInitializedFn: func(teamID string) (bool, error) {
+		getTeamConnectionsFn: func(teamID string) ([]string, error) {
 			getCalls++
-			return true, nil
+			return []string{"outbound-a"}, nil
 		},
-		deleteTeamInitializedFn: func(teamID string) error {
+		deleteTeamConnectionsFn: func(teamID string) error {
 			return nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
-	_, err := c.GetTeamInitialized("team1")
+	_, err := c.GetTeamConnections("team1")
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.DeleteTeamInitialized("team1")
+	err = c.DeleteTeamConnections("team1")
 	require.NoError(t, err)
 
-	_, err = c.GetTeamInitialized("team1")
+	_, err = c.GetTeamConnections("team1")
+	require.NoError(t, err)
+	assert.Equal(t, 2, getCalls)
+}
+
+func TestRemoveTeamConnection_InvalidatesCache(t *testing.T) {
+	getCalls := 0
+	inner := &mockKVStore{
+		getTeamConnectionsFn: func(teamID string) ([]string, error) {
+			getCalls++
+			return []string{"outbound-a"}, nil
+		},
+		removeTeamConnectionFn: func(teamID, connName string) error {
+			return nil
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	_, err := c.GetTeamConnections("team1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, getCalls)
+
+	err = c.RemoveTeamConnection("team1", "outbound-a")
+	require.NoError(t, err)
+
+	_, err = c.GetTeamConnections("team1")
 	require.NoError(t, err)
 	assert.Equal(t, 2, getCalls)
 }

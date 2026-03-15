@@ -210,16 +210,26 @@ func (p *Plugin) handleInitTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	team, _, svcErr := p.initTeamForCrossGuard(user, teamID)
+	connName, allConns, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), p.getAllConnectionNames())
+	if resolveErr != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":       resolveErr,
+			"connections": allConns,
+		})
+		return
+	}
+
+	team, _, svcErr := p.initTeamForCrossGuard(user, teamID, connName)
 	if svcErr != nil {
 		writeJSONError(w, svcErr.Message, svcErr.Status)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
-		"status":    "ok",
-		"team_id":   team.Id,
-		"team_name": team.Name,
+		"status":          "ok",
+		"team_id":         team.Id,
+		"team_name":       team.Name,
+		"connection_name": connName,
 	})
 }
 
@@ -312,16 +322,32 @@ func (p *Plugin) handleTeardownTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	team, svcErr := p.teardownTeamForCrossGuard(user, teamID)
+	linked, err := p.kvstore.GetTeamConnections(teamID)
+	if err != nil {
+		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
+		return
+	}
+
+	connName, resolveErr := resolveLinkedConnectionName(r.URL.Query().Get("connection_name"), linked)
+	if resolveErr != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":       resolveErr,
+			"connections": linked,
+		})
+		return
+	}
+
+	team, svcErr := p.teardownTeamForCrossGuard(user, teamID, connName)
 	if svcErr != nil {
 		writeJSONError(w, svcErr.Message, svcErr.Status)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
-		"status":    "ok",
-		"team_id":   team.Id,
-		"team_name": team.Name,
+		"status":          "ok",
+		"team_id":         team.Id,
+		"team_name":       team.Name,
+		"connection_name": connName,
 	})
 }
 

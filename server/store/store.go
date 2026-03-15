@@ -2,9 +2,12 @@ package store
 
 // KVStore defines the key-value operations used by the plugin.
 type KVStore interface {
-	GetTeamInitialized(teamID string) (bool, error)
-	SetTeamInitialized(teamID string) error
-	DeleteTeamInitialized(teamID string) error
+	GetTeamConnections(teamID string) ([]string, error)
+	SetTeamConnections(teamID string, connNames []string) error
+	DeleteTeamConnections(teamID string) error
+	IsTeamInitialized(teamID string) (bool, error)
+	AddTeamConnection(teamID, connName string) error
+	RemoveTeamConnection(teamID, connName string) error
 	GetInitializedTeamIDs() ([]string, error)
 	AddInitializedTeamID(teamID string) error
 	RemoveInitializedTeamID(teamID string) error

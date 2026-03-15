@@ -27,9 +27,14 @@ func newTestKVStore() *testKVStore {
 	}
 }
 
-func (s *testKVStore) GetTeamInitialized(teamID string) (bool, error)       { return true, nil }
-func (s *testKVStore) SetTeamInitialized(string) error                      { return nil }
-func (s *testKVStore) DeleteTeamInitialized(string) error                   { return nil }
+func (s *testKVStore) GetTeamConnections(string) ([]string, error) {
+	return []string{"inbound-cgb", "outbound-cgb"}, nil
+}
+func (s *testKVStore) SetTeamConnections(string, []string) error            { return nil }
+func (s *testKVStore) DeleteTeamConnections(string) error                   { return nil }
+func (s *testKVStore) IsTeamInitialized(string) (bool, error)               { return true, nil }
+func (s *testKVStore) AddTeamConnection(string, string) error               { return nil }
+func (s *testKVStore) RemoveTeamConnection(string, string) error            { return nil }
 func (s *testKVStore) GetInitializedTeamIDs() ([]string, error)             { return nil, nil }
 func (s *testKVStore) AddInitializedTeamID(string) error                    { return nil }
 func (s *testKVStore) RemoveInitializedTeamID(string) error                 { return nil }
@@ -89,7 +94,7 @@ func TestResolveTeamAndChannel(t *testing.T) {
 		api.On("GetTeamByName", "test-a").Return(team, nil)
 		api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 
-		gotTeam, gotChannel, err := p.resolveTeamAndChannel("test-a", "town-square")
+		gotTeam, gotChannel, err := p.resolveTeamAndChannel("cgb", "test-a", "town-square")
 		require.NoError(t, err)
 		assert.Equal(t, "team-id", gotTeam.Id)
 		assert.Equal(t, "chan-id", gotChannel.Id)
@@ -101,7 +106,7 @@ func TestResolveTeamAndChannel(t *testing.T) {
 
 		api.On("GetTeamByName", "unknown").Return(nil, &mmModel.AppError{Message: "not found"})
 
-		_, _, err := p.resolveTeamAndChannel("unknown", "town-square")
+		_, _, err := p.resolveTeamAndChannel("cgb", "unknown", "town-square")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not found")
 	})
@@ -114,10 +119,40 @@ func TestResolveTeamAndChannel(t *testing.T) {
 		api.On("GetTeamByName", "test-a").Return(team, nil)
 		api.On("GetChannelByName", "team-id", "unknown-chan", false).Return(nil, &mmModel.AppError{Message: "not found"})
 
-		_, _, err := p.resolveTeamAndChannel("test-a", "unknown-chan")
+		_, _, err := p.resolveTeamAndChannel("cgb", "test-a", "unknown-chan")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not found")
 	})
+
+	t.Run("connection not linked to team", func(t *testing.T) {
+		api := &plugintest.API{}
+		p := &Plugin{}
+		p.SetAPI(api)
+		p.botUserID = "bot-user-id"
+		kvs := newTestKVStore()
+		kvs.KVStore = nil
+		p.kvstore = &unlinkTestKVStore{testKVStore: kvs, conns: []string{"inbound-other"}}
+		ctx, cancel := context.WithCancel(context.Background())
+		p.ctx = ctx
+		p.cancel = cancel
+		p.relaySem = make(chan struct{}, 50)
+
+		team := &mmModel.Team{Id: "team-id", Name: "test-a"}
+		api.On("GetTeamByName", "test-a").Return(team, nil)
+
+		_, _, err := p.resolveTeamAndChannel("cgb", "test-a", "town-square")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not linked")
+	})
+}
+
+type unlinkTestKVStore struct {
+	*testKVStore
+	conns []string
+}
+
+func (s *unlinkTestKVStore) GetTeamConnections(string) ([]string, error) {
+	return s.conns, nil
 }
 
 func TestHandleInboundPost(t *testing.T) {

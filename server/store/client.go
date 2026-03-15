@@ -25,31 +25,67 @@ func NewKVStore(client *pluginapi.Client, pluginID string) KVStore {
 	}
 }
 
-// GetTeamInitialized returns true if the team has been initialized.
-func (kv Client) GetTeamInitialized(teamID string) (bool, error) {
-	var initialized bool
-	err := kv.client.KV.Get(kv.teamInitPrefix+teamID, &initialized)
+// GetTeamConnections returns the list of connection names linked to a team.
+func (kv Client) GetTeamConnections(teamID string) ([]string, error) {
+	var connNames []string
+	err := kv.client.KV.Get(kv.teamInitPrefix+teamID, &connNames)
 	if err != nil {
-		return false, errors.Wrap(err, "failed to get team initialized flag")
+		return nil, errors.Wrap(err, "failed to get team connections")
 	}
-	return initialized, nil
+	if connNames == nil {
+		return []string{}, nil
+	}
+	return connNames, nil
 }
 
-// SetTeamInitialized marks a team as having been initialized.
-func (kv Client) SetTeamInitialized(teamID string) error {
-	_, err := kv.client.KV.Set(kv.teamInitPrefix+teamID, true)
+// SetTeamConnections stores the full list of connection names for a team.
+func (kv Client) SetTeamConnections(teamID string, connNames []string) error {
+	_, err := kv.client.KV.Set(kv.teamInitPrefix+teamID, connNames)
 	if err != nil {
-		return errors.Wrap(err, "failed to set team initialized flag")
+		return errors.Wrap(err, "failed to set team connections")
 	}
 	return nil
 }
 
-// DeleteTeamInitialized removes the team initialized flag.
-func (kv Client) DeleteTeamInitialized(teamID string) error {
+// DeleteTeamConnections removes all connection links for a team.
+func (kv Client) DeleteTeamConnections(teamID string) error {
 	if err := kv.client.KV.Delete(kv.teamInitPrefix + teamID); err != nil {
-		return errors.Wrap(err, "failed to delete team initialized flag")
+		return errors.Wrap(err, "failed to delete team connections")
 	}
 	return nil
+}
+
+// IsTeamInitialized returns true if the team has at least one connection linked.
+func (kv Client) IsTeamInitialized(teamID string) (bool, error) {
+	conns, err := kv.GetTeamConnections(teamID)
+	if err != nil {
+		return false, err
+	}
+	return len(conns) > 0, nil
+}
+
+// AddTeamConnection atomically adds a connection name to a team's connection list.
+func (kv Client) AddTeamConnection(teamID, connName string) error {
+	return kv.casModifyStringList(kv.teamInitPrefix+teamID, func(names []string) ([]string, bool) {
+		if slices.Contains(names, connName) {
+			return names, false
+		}
+		return append(names, connName), true
+	})
+}
+
+// RemoveTeamConnection atomically removes a connection name from a team's connection list.
+func (kv Client) RemoveTeamConnection(teamID, connName string) error {
+	return kv.casModifyStringList(kv.teamInitPrefix+teamID, func(names []string) ([]string, bool) {
+		idx := slices.Index(names, connName)
+		if idx < 0 {
+			return names, false
+		}
+		result := make([]string, 0, len(names)-1)
+		result = append(result, names[:idx]...)
+		result = append(result, names[idx+1:]...)
+		return result, true
+	})
 }
 
 // GetInitializedTeamIDs returns the list of team IDs that have been initialized.

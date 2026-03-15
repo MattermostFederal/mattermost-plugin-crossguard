@@ -257,16 +257,32 @@ func (p *Plugin) handleInitChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch, _, svcErr := p.initChannelForCrossGuard(user, channelID)
+	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
+	if err != nil {
+		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
+		return
+	}
+
+	connName, _, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), teamConns)
+	if resolveErr != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":       resolveErr,
+			"connections": teamConns,
+		})
+		return
+	}
+
+	ch, _, svcErr := p.initChannelForCrossGuard(user, channelID, connName)
 	if svcErr != nil {
 		writeJSONError(w, svcErr.Message, svcErr.Status)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
-		"status":       "ok",
-		"channel_id":   ch.Id,
-		"channel_name": ch.Name,
+		"status":          "ok",
+		"channel_id":      ch.Id,
+		"channel_name":    ch.Name,
+		"connection_name": connName,
 	})
 }
 
@@ -293,16 +309,32 @@ func (p *Plugin) handleTeardownChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch, svcErr := p.teardownChannelForCrossGuard(user, channelID)
+	linked, err := p.kvstore.GetChannelConnections(channelID)
+	if err != nil {
+		writeJSONError(w, "failed to check channel connections", http.StatusInternalServerError)
+		return
+	}
+
+	connName, resolveErr := resolveLinkedConnectionName(r.URL.Query().Get("connection_name"), linked)
+	if resolveErr != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":       resolveErr,
+			"connections": linked,
+		})
+		return
+	}
+
+	ch, svcErr := p.teardownChannelForCrossGuard(user, channelID, connName)
 	if svcErr != nil {
 		writeJSONError(w, svcErr.Message, svcErr.Status)
 		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{
-		"status":       "ok",
-		"channel_id":   ch.Id,
-		"channel_name": ch.Name,
+		"status":          "ok",
+		"channel_id":      ch.Id,
+		"channel_name":    ch.Name,
+		"connection_name": connName,
 	})
 }
 
@@ -393,38 +425,76 @@ func (p *Plugin) handleSelectConnection(w http.ResponseWriter, r *http.Request) 
 
 	action, _ := req.Context["action"].(string)
 	connName, _ := req.Context["connection_name"].(string)
-	teamID, _ := req.Context["team_id"].(string)
 
-	if action == "" || connName == "" || teamID == "" {
+	if action == "" || connName == "" {
 		writeJSONError(w, "missing required context", http.StatusBadRequest)
-		return
-	}
-
-	if !p.isTeamAdminOrSystemAdmin(userID, teamID) {
-		writeJSONError(w, "insufficient permissions", http.StatusForbidden)
 		return
 	}
 
 	var responseText string
 
 	switch action {
-	case actionInitTeam:
-		team, alreadyLinked, svcErr := p.initTeamForCrossGuard(user, teamID, connName)
-		switch {
-		case svcErr != nil:
-			responseText = svcErr.Message
-		case alreadyLinked:
-			responseText = fmt.Sprintf("Connection `%s` is already linked to this team. (team ID: %s, team name: %s)", connName, team.Id, team.Name)
-		default:
-			responseText = fmt.Sprintf("Connection `%s` linked to this team successfully.", connName)
+	case actionInitTeam, actionTeardownTeam:
+		teamID, _ := req.Context["team_id"].(string)
+		if teamID == "" {
+			writeJSONError(w, "missing team_id", http.StatusBadRequest)
+			return
+		}
+		if !p.isTeamAdminOrSystemAdmin(userID, teamID) {
+			writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+			return
+		}
+		if action == actionInitTeam {
+			team, alreadyLinked, svcErr := p.initTeamForCrossGuard(user, teamID, connName)
+			switch {
+			case svcErr != nil:
+				responseText = svcErr.Message
+			case alreadyLinked:
+				responseText = fmt.Sprintf("Connection `%s` is already linked to this team. (team ID: %s, team name: %s)", connName, team.Id, team.Name)
+			default:
+				responseText = fmt.Sprintf("Connection `%s` linked to this team successfully.", connName)
+			}
+		} else {
+			_, svcErr := p.teardownTeamForCrossGuard(user, teamID, connName)
+			if svcErr != nil {
+				responseText = svcErr.Message
+			} else {
+				responseText = fmt.Sprintf("Connection `%s` unlinked from this team successfully.", connName)
+			}
 		}
 
-	case actionTeardownTeam:
-		_, svcErr := p.teardownTeamForCrossGuard(user, teamID, connName)
-		if svcErr != nil {
-			responseText = svcErr.Message
+	case actionInitChannel, actionTeardownChannel:
+		channelID, _ := req.Context["channel_id"].(string)
+		if channelID == "" {
+			writeJSONError(w, "missing channel_id", http.StatusBadRequest)
+			return
+		}
+		channel, appErr := p.API.GetChannel(channelID)
+		if appErr != nil {
+			writeJSONError(w, "channel not found", http.StatusBadRequest)
+			return
+		}
+		if !p.isChannelAdminOrHigher(userID, channelID, channel.TeamId) {
+			writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+			return
+		}
+		if action == actionInitChannel {
+			ch, alreadyLinked, svcErr := p.initChannelForCrossGuard(user, channelID, connName)
+			switch {
+			case svcErr != nil:
+				responseText = svcErr.Message
+			case alreadyLinked:
+				responseText = fmt.Sprintf("Connection `%s` is already linked to this channel. (channel ID: %s, channel name: %s)", connName, ch.Id, ch.Name)
+			default:
+				responseText = fmt.Sprintf("Connection `%s` linked to this channel successfully.", connName)
+			}
 		} else {
-			responseText = fmt.Sprintf("Connection `%s` unlinked from this team successfully.", connName)
+			_, svcErr := p.teardownChannelForCrossGuard(user, channelID, connName)
+			if svcErr != nil {
+				responseText = svcErr.Message
+			} else {
+				responseText = fmt.Sprintf("Connection `%s` unlinked from this channel successfully.", connName)
+			}
 		}
 
 	default:

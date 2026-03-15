@@ -21,9 +21,12 @@ type mockKVStore struct {
 	getInitializedTeamIDsFn    func() ([]string, error)
 	addInitializedTeamIDFn     func(string) error
 	removeInitializedTeamIDFn  func(string) error
-	getChannelInitializedFn    func(string) (bool, error)
-	setChannelInitializedFn    func(string) error
-	deleteChannelInitializedFn func(string) error
+	getChannelConnectionsFn    func(string) ([]string, error)
+	setChannelConnectionsFn    func(string, []string) error
+	deleteChannelConnectionsFn func(string) error
+	isChannelInitializedFn     func(string) (bool, error)
+	addChannelConnectionFn     func(string, string) error
+	removeChannelConnectionFn  func(string, string) error
 	setPostMappingFn           func(string, string, string) error
 	getPostMappingFn           func(string, string) (string, error)
 	deletePostMappingFn        func(string, string) error
@@ -95,23 +98,44 @@ func (m *mockKVStore) RemoveInitializedTeamID(teamID string) error {
 	return nil
 }
 
-func (m *mockKVStore) GetChannelInitialized(channelID string) (bool, error) {
-	if m.getChannelInitializedFn != nil {
-		return m.getChannelInitializedFn(channelID)
+func (m *mockKVStore) GetChannelConnections(channelID string) ([]string, error) {
+	if m.getChannelConnectionsFn != nil {
+		return m.getChannelConnectionsFn(channelID)
 	}
-	return false, nil
+	return []string{}, nil
 }
 
-func (m *mockKVStore) SetChannelInitialized(channelID string) error {
-	if m.setChannelInitializedFn != nil {
-		return m.setChannelInitializedFn(channelID)
+func (m *mockKVStore) SetChannelConnections(channelID string, connNames []string) error {
+	if m.setChannelConnectionsFn != nil {
+		return m.setChannelConnectionsFn(channelID, connNames)
 	}
 	return nil
 }
 
-func (m *mockKVStore) DeleteChannelInitialized(channelID string) error {
-	if m.deleteChannelInitializedFn != nil {
-		return m.deleteChannelInitializedFn(channelID)
+func (m *mockKVStore) DeleteChannelConnections(channelID string) error {
+	if m.deleteChannelConnectionsFn != nil {
+		return m.deleteChannelConnectionsFn(channelID)
+	}
+	return nil
+}
+
+func (m *mockKVStore) IsChannelInitialized(channelID string) (bool, error) {
+	if m.isChannelInitializedFn != nil {
+		return m.isChannelInitializedFn(channelID)
+	}
+	return false, nil
+}
+
+func (m *mockKVStore) AddChannelConnection(channelID, connName string) error {
+	if m.addChannelConnectionFn != nil {
+		return m.addChannelConnectionFn(channelID, connName)
+	}
+	return nil
+}
+
+func (m *mockKVStore) RemoveChannelConnection(channelID, connName string) error {
+	if m.removeChannelConnectionFn != nil {
+		return m.removeChannelConnectionFn(channelID, connName)
 	}
 	return nil
 }
@@ -171,19 +195,19 @@ func TestGetTeamConnections_CacheHitMiss(t *testing.T) {
 	inner := &mockKVStore{
 		getTeamConnectionsFn: func(teamID string) ([]string, error) {
 			calls++
-			return []string{"outbound-a"}, nil
+			return []string{"outbound:a"}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
 	val, err := c.GetTeamConnections("team1")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"outbound-a"}, val)
+	assert.Equal(t, []string{"outbound:a"}, val)
 	assert.Equal(t, 1, calls)
 
 	val2, err := c.GetTeamConnections("team1")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"outbound-a"}, val2)
+	assert.Equal(t, []string{"outbound:a"}, val2)
 	assert.Equal(t, 1, calls)
 }
 
@@ -230,7 +254,7 @@ func TestAddTeamConnection_InvalidatesCache(t *testing.T) {
 	inner := &mockKVStore{
 		getTeamConnectionsFn: func(teamID string) ([]string, error) {
 			getCalls++
-			return []string{"outbound-a"}, nil
+			return []string{"outbound:a"}, nil
 		},
 		addTeamConnectionFn: func(teamID, connName string) error {
 			return nil
@@ -242,7 +266,7 @@ func TestAddTeamConnection_InvalidatesCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.AddTeamConnection("team1", "inbound-a")
+	err = c.AddTeamConnection("team1", "inbound:a")
 	require.NoError(t, err)
 
 	_, err = c.GetTeamConnections("team1")
@@ -267,7 +291,7 @@ func TestAddTeamConnection_ErrorDoesNotInvalidate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.AddTeamConnection("team1", "outbound-a")
+	err = c.AddTeamConnection("team1", "outbound:a")
 	require.Error(t, err)
 
 	_, err = c.GetTeamConnections("team1")
@@ -289,7 +313,7 @@ func TestAddTeamConnection_PublishesClusterEvent(t *testing.T) {
 
 	c := NewCachingKVStore(inner, api)
 
-	err := c.AddTeamConnection("team1", "outbound-a")
+	err := c.AddTeamConnection("team1", "outbound:a")
 	require.NoError(t, err)
 
 	api.AssertExpectations(t)
@@ -298,7 +322,7 @@ func TestAddTeamConnection_PublishesClusterEvent(t *testing.T) {
 func TestHandleClusterEvent_InvalidatesTeamInit(t *testing.T) {
 	inner := &mockKVStore{
 		getTeamConnectionsFn: func(teamID string) ([]string, error) {
-			return []string{"outbound-a"}, nil
+			return []string{"outbound:a"}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
@@ -442,7 +466,7 @@ func TestDeleteTeamConnections_InvalidatesCache(t *testing.T) {
 	inner := &mockKVStore{
 		getTeamConnectionsFn: func(teamID string) ([]string, error) {
 			getCalls++
-			return []string{"outbound-a"}, nil
+			return []string{"outbound:a"}, nil
 		},
 		deleteTeamConnectionsFn: func(teamID string) error {
 			return nil
@@ -467,7 +491,7 @@ func TestRemoveTeamConnection_InvalidatesCache(t *testing.T) {
 	inner := &mockKVStore{
 		getTeamConnectionsFn: func(teamID string) ([]string, error) {
 			getCalls++
-			return []string{"outbound-a"}, nil
+			return []string{"outbound:a"}, nil
 		},
 		removeTeamConnectionFn: func(teamID, connName string) error {
 			return nil
@@ -479,7 +503,7 @@ func TestRemoveTeamConnection_InvalidatesCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.RemoveTeamConnection("team1", "outbound-a")
+	err = c.RemoveTeamConnection("team1", "outbound:a")
 	require.NoError(t, err)
 
 	_, err = c.GetTeamConnections("team1")
@@ -512,93 +536,118 @@ func TestRemoveInitializedTeamID_InvalidatesCache(t *testing.T) {
 	assert.Equal(t, 2, getCalls)
 }
 
-func TestGetChannelInitialized_CacheHitMiss(t *testing.T) {
+func TestGetChannelConnections_CacheHitMiss(t *testing.T) {
 	calls := 0
 	inner := &mockKVStore{
-		getChannelInitializedFn: func(channelID string) (bool, error) {
+		getChannelConnectionsFn: func(channelID string) ([]string, error) {
 			calls++
-			return true, nil
+			return []string{"outbound:a"}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
-	val, err := c.GetChannelInitialized("chan1")
+	val, err := c.GetChannelConnections("chan1")
 	require.NoError(t, err)
-	assert.True(t, val)
+	assert.Equal(t, []string{"outbound:a"}, val)
 	assert.Equal(t, 1, calls)
 
-	val2, err := c.GetChannelInitialized("chan1")
+	val2, err := c.GetChannelConnections("chan1")
 	require.NoError(t, err)
-	assert.True(t, val2)
-	assert.Equal(t, 1, calls)
-}
-
-func TestGetChannelInitialized_CachesFalse(t *testing.T) {
-	calls := 0
-	inner := &mockKVStore{
-		getChannelInitializedFn: func(channelID string) (bool, error) {
-			calls++
-			return false, nil
-		},
-	}
-	c, _ := newTestCaching(inner)
-
-	val, err := c.GetChannelInitialized("chan1")
-	require.NoError(t, err)
-	assert.False(t, val)
-
-	val, err = c.GetChannelInitialized("chan1")
-	require.NoError(t, err)
-	assert.False(t, val)
+	assert.Equal(t, []string{"outbound:a"}, val2)
 	assert.Equal(t, 1, calls)
 }
 
-func TestGetChannelInitialized_ErrorNotCached(t *testing.T) {
+func TestGetChannelConnections_CachesEmpty(t *testing.T) {
 	calls := 0
 	inner := &mockKVStore{
-		getChannelInitializedFn: func(channelID string) (bool, error) {
+		getChannelConnectionsFn: func(channelID string) ([]string, error) {
 			calls++
-			return false, fmt.Errorf("kv store unavailable")
+			return []string{}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
-	_, err := c.GetChannelInitialized("chan1")
+	val, err := c.GetChannelConnections("chan1")
+	require.NoError(t, err)
+	assert.Empty(t, val)
+
+	val, err = c.GetChannelConnections("chan1")
+	require.NoError(t, err)
+	assert.Empty(t, val)
+	assert.Equal(t, 1, calls)
+}
+
+func TestGetChannelConnections_ErrorNotCached(t *testing.T) {
+	calls := 0
+	inner := &mockKVStore{
+		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+			calls++
+			return nil, fmt.Errorf("kv store unavailable")
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	_, err := c.GetChannelConnections("chan1")
 	require.Error(t, err)
 
-	_, err = c.GetChannelInitialized("chan1")
+	_, err = c.GetChannelConnections("chan1")
 	require.Error(t, err)
 	assert.Equal(t, 2, calls)
 }
 
-func TestSetChannelInitialized_InvalidatesCache(t *testing.T) {
+func TestAddChannelConnection_InvalidatesCache(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getChannelInitializedFn: func(channelID string) (bool, error) {
+		getChannelConnectionsFn: func(channelID string) ([]string, error) {
 			getCalls++
-			return true, nil
+			return []string{"outbound:a"}, nil
 		},
-		setChannelInitializedFn: func(channelID string) error {
+		addChannelConnectionFn: func(channelID, connName string) error {
 			return nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
-	_, err := c.GetChannelInitialized("chan1")
+	_, err := c.GetChannelConnections("chan1")
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.SetChannelInitialized("chan1")
+	err = c.AddChannelConnection("chan1", "inbound:a")
 	require.NoError(t, err)
 
-	_, err = c.GetChannelInitialized("chan1")
+	_, err = c.GetChannelConnections("chan1")
 	require.NoError(t, err)
 	assert.Equal(t, 2, getCalls)
 }
 
-func TestSetChannelInitialized_PublishesClusterEvent(t *testing.T) {
+func TestAddChannelConnection_ErrorDoesNotInvalidate(t *testing.T) {
+	getCalls := 0
 	inner := &mockKVStore{
-		setChannelInitializedFn: func(channelID string) error { return nil },
+		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+			getCalls++
+			return []string{}, nil
+		},
+		addChannelConnectionFn: func(channelID, connName string) error {
+			return fmt.Errorf("write failed")
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	_, err := c.GetChannelConnections("chan1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, getCalls)
+
+	err = c.AddChannelConnection("chan1", "outbound:a")
+	require.Error(t, err)
+
+	_, err = c.GetChannelConnections("chan1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, getCalls)
+}
+
+func TestAddChannelConnection_PublishesClusterEvent(t *testing.T) {
+	inner := &mockKVStore{
+		addChannelConnectionFn: func(channelID, connName string) error { return nil },
 	}
 	api := &plugintest.API{}
 	api.On("PublishPluginClusterEvent", model.PluginClusterEvent{
@@ -610,46 +659,96 @@ func TestSetChannelInitialized_PublishesClusterEvent(t *testing.T) {
 
 	c := NewCachingKVStore(inner, api)
 
-	err := c.SetChannelInitialized("chan1")
+	err := c.AddChannelConnection("chan1", "outbound:a")
 	require.NoError(t, err)
 
 	api.AssertExpectations(t)
 }
 
-func TestDeleteChannelInitialized_InvalidatesCache(t *testing.T) {
+func TestSetChannelConnections_InvalidatesCache(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getChannelInitializedFn: func(channelID string) (bool, error) {
+		getChannelConnectionsFn: func(channelID string) ([]string, error) {
 			getCalls++
-			return true, nil
+			return []string{"outbound:a"}, nil
 		},
-		deleteChannelInitializedFn: func(channelID string) error {
+		setChannelConnectionsFn: func(channelID string, connNames []string) error {
 			return nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
-	_, err := c.GetChannelInitialized("chan1")
+	_, err := c.GetChannelConnections("chan1")
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.DeleteChannelInitialized("chan1")
+	err = c.SetChannelConnections("chan1", []string{"outbound:a", "inbound:a"})
 	require.NoError(t, err)
 
-	_, err = c.GetChannelInitialized("chan1")
+	_, err = c.GetChannelConnections("chan1")
+	require.NoError(t, err)
+	assert.Equal(t, 2, getCalls)
+}
+
+func TestDeleteChannelConnections_InvalidatesCache(t *testing.T) {
+	getCalls := 0
+	inner := &mockKVStore{
+		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+			getCalls++
+			return []string{"outbound:a"}, nil
+		},
+		deleteChannelConnectionsFn: func(channelID string) error {
+			return nil
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	_, err := c.GetChannelConnections("chan1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, getCalls)
+
+	err = c.DeleteChannelConnections("chan1")
+	require.NoError(t, err)
+
+	_, err = c.GetChannelConnections("chan1")
+	require.NoError(t, err)
+	assert.Equal(t, 2, getCalls)
+}
+
+func TestRemoveChannelConnection_InvalidatesCache(t *testing.T) {
+	getCalls := 0
+	inner := &mockKVStore{
+		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+			getCalls++
+			return []string{"outbound:a"}, nil
+		},
+		removeChannelConnectionFn: func(channelID, connName string) error {
+			return nil
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	_, err := c.GetChannelConnections("chan1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, getCalls)
+
+	err = c.RemoveChannelConnection("chan1", "outbound:a")
+	require.NoError(t, err)
+
+	_, err = c.GetChannelConnections("chan1")
 	require.NoError(t, err)
 	assert.Equal(t, 2, getCalls)
 }
 
 func TestHandleClusterEvent_InvalidatesChannelInit(t *testing.T) {
 	inner := &mockKVStore{
-		getChannelInitializedFn: func(channelID string) (bool, error) {
-			return true, nil
+		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+			return []string{"outbound:a"}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
-	_, _ = c.GetChannelInitialized("chan1")
+	_, _ = c.GetChannelConnections("chan1")
 	assert.Equal(t, 1, c.channelInitCache.Len())
 
 	c.HandleClusterEvent(model.PluginClusterEvent{

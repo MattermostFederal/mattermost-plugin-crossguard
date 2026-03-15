@@ -27,7 +27,7 @@ type CachingKVStore struct {
 	api plugin.API
 
 	teamInitCache    *expirable.LRU[string, []string]
-	channelInitCache *expirable.LRU[string, bool]
+	channelInitCache *expirable.LRU[string, []string]
 	initTeamsCache   *expirable.LRU[string, []string]
 }
 
@@ -37,7 +37,7 @@ func NewCachingKVStore(inner KVStore, api plugin.API) *CachingKVStore {
 		KVStore:          inner,
 		api:              api,
 		teamInitCache:    expirable.NewLRU[string, []string](cacheTeamInitSize, nil, cacheTTL),
-		channelInitCache: expirable.NewLRU[string, bool](cacheChannelInitSize, nil, cacheTTL),
+		channelInitCache: expirable.NewLRU[string, []string](cacheChannelInitSize, nil, cacheTTL),
 		initTeamsCache:   expirable.NewLRU[string, []string](1, nil, cacheTTL),
 	}
 }
@@ -141,31 +141,62 @@ func (c *CachingKVStore) RemoveInitializedTeamID(teamID string) error {
 	return nil
 }
 
-// GetChannelInitialized checks the cache first, then falls back to the inner store.
-func (c *CachingKVStore) GetChannelInitialized(channelID string) (bool, error) {
+// GetChannelConnections checks the cache first, then falls back to the inner store.
+func (c *CachingKVStore) GetChannelConnections(channelID string) ([]string, error) {
 	if val, ok := c.channelInitCache.Get(channelID); ok {
-		return val, nil
+		result := make([]string, len(val))
+		copy(result, val)
+		return result, nil
 	}
-	initialized, err := c.KVStore.GetChannelInitialized(channelID)
+	conns, err := c.KVStore.GetChannelConnections(channelID)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	c.channelInitCache.Add(channelID, initialized)
-	return initialized, nil
+	cached := make([]string, len(conns))
+	copy(cached, conns)
+	c.channelInitCache.Add(channelID, cached)
+	return conns, nil
 }
 
-// SetChannelInitialized writes to the inner store and invalidates the cache.
-func (c *CachingKVStore) SetChannelInitialized(channelID string) error {
-	if err := c.KVStore.SetChannelInitialized(channelID); err != nil {
+// SetChannelConnections writes to the inner store and invalidates the cache.
+func (c *CachingKVStore) SetChannelConnections(channelID string, connNames []string) error {
+	if err := c.KVStore.SetChannelConnections(channelID, connNames); err != nil {
 		return err
 	}
 	c.invalidate(ClusterEventInvalidateChannelInit, channelID)
 	return nil
 }
 
-// DeleteChannelInitialized removes the channel init flag and invalidates the cache.
-func (c *CachingKVStore) DeleteChannelInitialized(channelID string) error {
-	if err := c.KVStore.DeleteChannelInitialized(channelID); err != nil {
+// DeleteChannelConnections removes channel connections and invalidates the cache.
+func (c *CachingKVStore) DeleteChannelConnections(channelID string) error {
+	if err := c.KVStore.DeleteChannelConnections(channelID); err != nil {
+		return err
+	}
+	c.invalidate(ClusterEventInvalidateChannelInit, channelID)
+	return nil
+}
+
+// IsChannelInitialized checks cache for connections, returns true if any exist.
+func (c *CachingKVStore) IsChannelInitialized(channelID string) (bool, error) {
+	conns, err := c.GetChannelConnections(channelID)
+	if err != nil {
+		return false, err
+	}
+	return len(conns) > 0, nil
+}
+
+// AddChannelConnection adds a connection and invalidates the cache.
+func (c *CachingKVStore) AddChannelConnection(channelID, connName string) error {
+	if err := c.KVStore.AddChannelConnection(channelID, connName); err != nil {
+		return err
+	}
+	c.invalidate(ClusterEventInvalidateChannelInit, channelID)
+	return nil
+}
+
+// RemoveChannelConnection removes a connection and invalidates the cache.
+func (c *CachingKVStore) RemoveChannelConnection(channelID, connName string) error {
+	if err := c.KVStore.RemoveChannelConnection(channelID, connName); err != nil {
 		return err
 	}
 	c.invalidate(ClusterEventInvalidateChannelInit, channelID)

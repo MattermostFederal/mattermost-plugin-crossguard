@@ -133,7 +133,7 @@ func (p *Plugin) resolveTeamAndChannel(connName, teamName, channelName string) (
 		return nil, nil, fmt.Errorf("team %q is not initialized for relay", teamName)
 	}
 
-	inboundPrefixed := "inbound-" + connName
+	inboundPrefixed := "inbound:" + connName
 	if !slices.Contains(conns, inboundPrefixed) {
 		return nil, nil, fmt.Errorf("inbound connection %q is not linked to team %q", connName, teamName)
 	}
@@ -143,12 +143,16 @@ func (p *Plugin) resolveTeamAndChannel(connName, teamName, channelName string) (
 		return nil, nil, fmt.Errorf("channel %q not found in team %q: %w", channelName, teamName, appErr)
 	}
 
-	chanInit, err := p.kvstore.GetChannelInitialized(channel.Id)
+	chanConns, err := p.kvstore.GetChannelConnections(channel.Id)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to check channel init: %w", err)
+		return nil, nil, fmt.Errorf("failed to check channel connections: %w", err)
 	}
-	if !chanInit {
+	if len(chanConns) == 0 {
 		return nil, nil, fmt.Errorf("channel %q in team %q is not initialized for relay", channelName, teamName)
+	}
+
+	if !slices.Contains(chanConns, inboundPrefixed) {
+		return nil, nil, fmt.Errorf("inbound connection %q is not linked to channel %q in team %q", connName, channelName, teamName)
 	}
 
 	return team, channel, nil

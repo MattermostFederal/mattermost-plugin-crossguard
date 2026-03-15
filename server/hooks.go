@@ -10,12 +10,12 @@ import (
 // isChannelRelayEnabled checks if a channel's relay is active and returns
 // the channel, team, and the team's linked connection names.
 func (p *Plugin) isChannelRelayEnabled(channelID string) (*mmModel.Channel, *mmModel.Team, []string) {
-	initialized, err := p.kvstore.GetChannelInitialized(channelID)
+	channelConns, err := p.kvstore.GetChannelConnections(channelID)
 	if err != nil {
-		p.API.LogError("Failed to check channel init status", "channel_id", channelID, "error", err.Error())
+		p.API.LogError("Failed to check channel connections", "channel_id", channelID, "error", err.Error())
 		return nil, nil, nil
 	}
-	if !initialized {
+	if len(channelConns) == 0 {
 		return nil, nil, nil
 	}
 
@@ -25,12 +25,12 @@ func (p *Plugin) isChannelRelayEnabled(channelID string) (*mmModel.Channel, *mmM
 		return nil, nil, nil
 	}
 
-	conns, err := p.kvstore.GetTeamConnections(channel.TeamId)
+	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
 	if err != nil {
 		p.API.LogError("Failed to check team connections", "team_id", channel.TeamId, "error", err.Error())
 		return nil, nil, nil
 	}
-	if len(conns) == 0 {
+	if len(teamConns) == 0 {
 		return nil, nil, nil
 	}
 
@@ -40,7 +40,7 @@ func (p *Plugin) isChannelRelayEnabled(channelID string) (*mmModel.Channel, *mmM
 		return nil, nil, nil
 	}
 
-	return channel, team, conns
+	return channel, team, channelConns
 }
 
 func (p *Plugin) relayToOutbound(data []byte, connNames []string, logContext string) {

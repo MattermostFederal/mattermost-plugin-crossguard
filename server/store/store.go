@@ -11,9 +11,12 @@ type KVStore interface {
 	GetInitializedTeamIDs() ([]string, error)
 	AddInitializedTeamID(teamID string) error
 	RemoveInitializedTeamID(teamID string) error
-	GetChannelInitialized(channelID string) (bool, error)
-	SetChannelInitialized(channelID string) error
-	DeleteChannelInitialized(channelID string) error
+	GetChannelConnections(channelID string) ([]string, error)
+	SetChannelConnections(channelID string, connNames []string) error
+	DeleteChannelConnections(channelID string) error
+	IsChannelInitialized(channelID string) (bool, error)
+	AddChannelConnection(channelID, connName string) error
+	RemoveChannelConnection(channelID, connName string) error
 	SetPostMapping(connName, remotePostID, localPostID string) error
 	GetPostMapping(connName, remotePostID string) (string, error)
 	DeletePostMapping(connName, remotePostID string) error

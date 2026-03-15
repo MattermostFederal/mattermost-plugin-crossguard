@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -9,9 +10,11 @@ import (
 )
 
 const (
-	commandTrigger     = "crossguard"
-	actionInitTeam     = "init-team"
-	actionTeardownTeam = "teardown-team"
+	commandTrigger        = "crossguard"
+	actionInitTeam        = "init-team"
+	actionTeardownTeam    = "teardown-team"
+	actionInitChannel     = "init-channel"
+	actionTeardownChannel = "teardown-channel"
 )
 
 func (p *Plugin) registerCommand() error {
@@ -30,13 +33,13 @@ func getAutocompleteData() *model.AutocompleteData {
 	initTeam := model.NewAutocompleteData("init-team", "[connection-name]", "Link a NATS connection to this team (requires team admin or system admin)")
 	cmd.AddCommand(initTeam)
 
-	initChannel := model.NewAutocompleteData("init-channel", "", "Enable Cross Guard relay for this channel (requires channel admin or higher)")
+	initChannel := model.NewAutocompleteData("init-channel", "[connection-name]", "Link a NATS connection to this channel (requires channel admin or higher)")
 	cmd.AddCommand(initChannel)
 
 	teardownTeam := model.NewAutocompleteData("teardown-team", "[connection-name]", "Unlink a NATS connection from this team (requires team admin or system admin)")
 	cmd.AddCommand(teardownTeam)
 
-	teardownChannel := model.NewAutocompleteData("teardown-channel", "", "Disable Cross Guard relay for this channel (requires channel admin or higher)")
+	teardownChannel := model.NewAutocompleteData("teardown-channel", "[connection-name]", "Unlink a NATS connection from this channel (requires channel admin or higher)")
 	cmd.AddCommand(teardownChannel)
 
 	status := model.NewAutocompleteData("status", "", "Check Cross Guard status for this team")
@@ -127,7 +130,7 @@ func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandRespo
 		return respondEphemeral("%s", svcErr.Message)
 	}
 
-	channelInit, _ := p.kvstore.GetChannelInitialized(channelID)
+	channelConns, _ := p.kvstore.GetChannelConnections(channelID)
 
 	teamStatus := "No"
 	if resp.Initialized {
@@ -135,7 +138,7 @@ func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandRespo
 	}
 
 	channelStatus := "No"
-	if channelInit {
+	if len(channelConns) > 0 {
 		channelStatus = "Yes"
 	}
 
@@ -170,8 +173,15 @@ func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandRespo
 	fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", teamDisplayName, teamName, teamID, teamStatus)
 
 	if len(resp.LinkedConnections) > 0 {
-		sb.WriteString("\n**Linked Connections:**\n\n")
+		sb.WriteString("\n**Team Connections:**\n\n")
 		for _, conn := range resp.LinkedConnections {
+			fmt.Fprintf(&sb, "- `%s`\n", conn)
+		}
+	}
+
+	if len(channelConns) > 0 {
+		sb.WriteString("\n**Channel Connections:**\n\n")
+		for _, conn := range channelConns {
 			fmt.Fprintf(&sb, "- `%s`\n", conn)
 		}
 	}
@@ -195,9 +205,9 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 	var sb strings.Builder
 	sb.WriteString("#### Cross Guard Status\n\n")
 
-	channelInit, _ := p.kvstore.GetChannelInitialized(channelID)
+	channelConns, _ := p.kvstore.GetChannelConnections(channelID)
 	channelStatus := "No"
-	if channelInit {
+	if len(channelConns) > 0 {
 		channelStatus = "Yes"
 	}
 	channel, _ := p.API.GetChannel(channelID)
@@ -212,6 +222,13 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 	sb.WriteString("| Channel | Name | ID | Relay Enabled |\n")
 	sb.WriteString("|:--------|:-----|:---|:--------------|\n")
 	fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", channelDisplayName, channelName, channelID, channelStatus)
+
+	if len(channelConns) > 0 {
+		sb.WriteString("\n**Channel Connections:**\n\n")
+		for _, conn := range channelConns {
+			fmt.Fprintf(&sb, "- `%s`\n", conn)
+		}
+	}
 
 	sb.WriteString("\n**Initialized Teams:**\n\n")
 	sb.WriteString("| Team | Team ID | Team Name | Linked Connections |\n")
@@ -272,13 +289,36 @@ func (p *Plugin) executeInitChannel(args *model.CommandArgs) *model.CommandRespo
 		return respondEphemeral("Failed to look up user.")
 	}
 
-	ch, alreadyInit, svcErr := p.initChannelForCrossGuard(user, args.ChannelId)
+	teamConns, err := p.kvstore.GetTeamConnections(args.TeamId)
+	if err != nil {
+		return respondEphemeral("Failed to check team connections.")
+	}
+	if len(teamConns) == 0 {
+		return respondEphemeral("Team must be initialized first. Run `/%s init-team` first.", commandTrigger)
+	}
+
+	parts := strings.Fields(args.Command)
+	inputName := ""
+	if len(parts) >= 3 {
+		inputName = parts[2]
+	}
+
+	connName, _, resolveErr := p.resolveConnectionName(inputName, teamConns)
+	if resolveErr != "" {
+		if inputName == "" && len(teamConns) > 1 {
+			p.sendConnectionPicker(args.UserId, args.ChannelId, args.ChannelId, teamConns, actionInitChannel)
+			return &model.CommandResponse{}
+		}
+		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(teamConns, ", "))
+	}
+
+	ch, alreadyLinked, svcErr := p.initChannelForCrossGuard(user, args.ChannelId, connName)
 	if svcErr != nil {
 		return respondEphemeral("%s", svcErr.Message)
 	}
 
-	if alreadyInit {
-		return respondEphemeral("Cross Guard relay is already enabled for this channel. (channel ID: %s, channel name: %s)", ch.Id, ch.Name)
+	if alreadyLinked {
+		return respondEphemeral("Connection `%s` is already linked to this channel. (channel ID: %s, channel name: %s)", connName, ch.Id, ch.Name)
 	}
 
 	return &model.CommandResponse{}
@@ -294,7 +334,30 @@ func (p *Plugin) executeTeardownChannel(args *model.CommandArgs) *model.CommandR
 		return respondEphemeral("Failed to look up user.")
 	}
 
-	if _, svcErr := p.teardownChannelForCrossGuard(user, args.ChannelId); svcErr != nil {
+	linked, err := p.kvstore.GetChannelConnections(args.ChannelId)
+	if err != nil {
+		return respondEphemeral("Failed to check channel connections.")
+	}
+
+	parts := strings.Fields(args.Command)
+	inputName := ""
+	if len(parts) >= 3 {
+		inputName = parts[2]
+	}
+
+	connName, resolveErr := resolveLinkedConnectionName(inputName, linked)
+	if resolveErr != "" {
+		if inputName == "" && len(linked) > 1 {
+			p.sendConnectionPicker(args.UserId, args.ChannelId, args.ChannelId, linked, actionTeardownChannel)
+			return &model.CommandResponse{}
+		}
+		if len(linked) > 0 {
+			return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(linked, ", "))
+		}
+		return respondEphemeral("%s", resolveErr)
+	}
+
+	if _, svcErr := p.teardownChannelForCrossGuard(user, args.ChannelId, connName); svcErr != nil {
 		return respondEphemeral("%s", svcErr.Message)
 	}
 
@@ -354,7 +417,7 @@ func (p *Plugin) isChannelAdminOrHigher(userID, channelID, teamID string) bool {
 	return p.isTeamAdminOrSystemAdmin(userID, teamID)
 }
 
-func (p *Plugin) sendConnectionPicker(userID, channelID, teamID string, connections []string, action string) {
+func (p *Plugin) sendConnectionPicker(userID, channelID, targetID string, connections []string, action string) {
 	siteURL := p.API.GetConfig().ServiceSettings.SiteURL
 	if siteURL == nil || *siteURL == "" {
 		p.API.LogError("SiteURL is not configured, cannot send interactive message")
@@ -362,24 +425,41 @@ func (p *Plugin) sendConnectionPicker(userID, channelID, teamID string, connecti
 	}
 	baseURL := fmt.Sprintf("%s/plugins/%s/api/v1/actions/select-connection", *siteURL, manifest.Id)
 
-	title := "Select a connection to link to this team:"
-	if action == actionTeardownTeam {
+	var title string
+	switch action {
+	case actionInitTeam:
+		title = "Select a connection to link to this team:"
+	case actionTeardownTeam:
 		title = "Select a connection to unlink from this team:"
+	case actionInitChannel:
+		title = "Select a connection to link to this channel:"
+	case actionTeardownChannel:
+		title = "Select a connection to unlink from this channel:"
+	}
+
+	ctx := map[string]any{
+		"action":          action,
+		"connection_name": "",
+	}
+	switch action {
+	case actionInitTeam, actionTeardownTeam:
+		ctx["team_id"] = targetID
+	case actionInitChannel, actionTeardownChannel:
+		ctx["channel_id"] = targetID
 	}
 
 	actions := make([]*model.PostAction, 0, len(connections))
 	for _, conn := range connections {
+		connCtx := make(map[string]any, len(ctx))
+		maps.Copy(connCtx, ctx)
+		connCtx["connection_name"] = conn
 		actions = append(actions, &model.PostAction{
 			Id:   conn,
 			Name: conn,
 			Type: model.PostActionTypeButton,
 			Integration: &model.PostActionIntegration{
-				URL: baseURL,
-				Context: map[string]any{
-					"action":          action,
-					"connection_name": conn,
-					"team_id":         teamID,
-				},
+				URL:     baseURL,
+				Context: connCtx,
 			},
 		})
 	}

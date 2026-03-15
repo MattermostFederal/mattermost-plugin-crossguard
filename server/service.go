@@ -175,41 +175,60 @@ func (p *Plugin) getGlobalStatus() (*GlobalStatusResponse, *apiError) {
 	return resp, nil
 }
 
-// initChannelForCrossGuard marks a channel for cross-domain relay.
-func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID string) (*model.Channel, bool, *apiError) {
+// initChannelForCrossGuard links a connection to a channel. If the channel did
+// not previously have any connections, it also marks the channel as shared and
+// posts an announcement. Returns (channel, alreadyLinked, error).
+func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID, connName string) (*model.Channel, bool, *apiError) {
 	channel, appErr := p.API.GetChannel(channelID)
 	if appErr != nil {
 		return nil, false, &apiError{Message: "channel not found", Status: 404}
 	}
 
-	teamInit, err := p.kvstore.IsTeamInitialized(channel.TeamId)
+	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
 	if err != nil {
-		p.API.LogError("Failed to check team init status", "team_id", channel.TeamId, "error", err.Error())
-		return nil, false, &apiError{Message: "failed to check team initialization status", Status: 500}
+		p.API.LogError("Failed to get team connections", "team_id", channel.TeamId, "error", err.Error())
+		return nil, false, &apiError{Message: "failed to check team initialization state", Status: 500}
 	}
-	if !teamInit {
+	if len(teamConns) == 0 {
 		return nil, false, &apiError{Message: "team must be initialized first (run /crossguard init-team)", Status: 400}
 	}
 
-	already, err := p.kvstore.GetChannelInitialized(channelID)
-	if err == nil && already {
+	if !slices.Contains(teamConns, connName) {
+		return nil, false, &apiError{Message: fmt.Sprintf("connection %q is not linked to this team", connName), Status: 400}
+	}
+
+	existing, err := p.kvstore.GetChannelConnections(channelID)
+	if err != nil {
+		p.API.LogError("Failed to get channel connections", "channel_id", channelID, "error", err.Error())
+		return nil, false, &apiError{Message: "failed to check channel connection state", Status: 500}
+	}
+
+	if slices.Contains(existing, connName) {
 		return channel, true, nil
 	}
 
-	if err := p.kvstore.SetChannelInitialized(channelID); err != nil {
-		p.API.LogError("Failed to store channel init state", "channel_id", channelID, "error", err.Error())
-		return nil, false, &apiError{Message: "failed to save channel initialization state", Status: 500}
+	if addErr := p.kvstore.AddChannelConnection(channelID, connName); addErr != nil {
+		p.API.LogError("Failed to add channel connection", "channel_id", channelID, "conn", connName, "error", addErr.Error())
+		return nil, false, &apiError{Message: "failed to save channel connection state", Status: 500}
 	}
 
-	channel.Shared = model.NewPointer(true)
-	if _, appErr := p.API.UpdateChannel(channel); appErr != nil {
-		p.API.LogWarn("Failed to mark channel as shared", "error", appErr.Error())
+	updated, err := p.kvstore.GetChannelConnections(channelID)
+	if err != nil {
+		p.API.LogError("Failed to re-read channel connections", "channel_id", channelID, "error", err.Error())
+		return nil, false, &apiError{Message: "failed to save channel connection state", Status: 500}
+	}
+
+	if len(updated) == 1 {
+		channel.Shared = model.NewPointer(true)
+		if _, appErr := p.API.UpdateChannel(channel); appErr != nil {
+			p.API.LogWarn("Failed to mark channel as shared", "error", appErr.Error())
+		}
 	}
 
 	post := &model.Post{
 		UserId:    p.botUserID,
 		ChannelId: channel.Id,
-		Message:   fmt.Sprintf("Cross Guard relay enabled for this channel by @%s. (channel ID: %s, channel name: %s)", user.Username, channel.Id, channel.Name),
+		Message:   fmt.Sprintf("Cross Guard connection `%s` linked to this channel by @%s. (channel ID: %s, channel name: %s)", connName, user.Username, channel.Id, channel.Name),
 	}
 	if _, appErr := p.API.CreatePost(post); appErr != nil {
 		p.API.LogWarn("Failed to post channel init message", "error", appErr.Error())
@@ -218,32 +237,60 @@ func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID string) (*
 	return channel, false, nil
 }
 
-// teardownChannelForCrossGuard removes a channel from relay.
-func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID string) (*model.Channel, *apiError) {
+// teardownChannelForCrossGuard unlinks a connection from a channel. If it was
+// the last connection, the channel connections are deleted and the channel is
+// unmarked as shared.
+func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID, connName string) (*model.Channel, *apiError) {
 	channel, appErr := p.API.GetChannel(channelID)
 	if appErr != nil {
 		return nil, &apiError{Message: "channel not found", Status: 404}
 	}
 
-	initialized, err := p.kvstore.GetChannelInitialized(channelID)
-	if err == nil && !initialized {
+	existing, err := p.kvstore.GetChannelConnections(channelID)
+	if err != nil {
+		p.API.LogError("Failed to get channel connections", "channel_id", channelID, "error", err.Error())
+		return nil, &apiError{Message: "failed to check channel connection state", Status: 500}
+	}
+
+	if len(existing) == 0 {
 		return channel, nil
 	}
 
-	if err := p.kvstore.DeleteChannelInitialized(channelID); err != nil {
-		p.API.LogError("Failed to delete channel init state", "channel_id", channelID, "error", err.Error())
-		return nil, &apiError{Message: "failed to remove channel initialization state", Status: 500}
+	if !slices.Contains(existing, connName) {
+		return nil, &apiError{Message: fmt.Sprintf("connection %q is not linked to this channel", connName), Status: 400}
 	}
 
-	channel.Shared = model.NewPointer(false)
-	if _, appErr := p.API.UpdateChannel(channel); appErr != nil {
-		p.API.LogWarn("Failed to unmark channel as shared", "error", appErr.Error())
+	if removeErr := p.kvstore.RemoveChannelConnection(channelID, connName); removeErr != nil {
+		p.API.LogError("Failed to remove channel connection", "channel_id", channelID, "conn", connName, "error", removeErr.Error())
+		return nil, &apiError{Message: "failed to remove channel connection", Status: 500}
 	}
 
+	updated, err := p.kvstore.GetChannelConnections(channelID)
+	if err != nil {
+		p.API.LogError("Failed to re-read channel connections", "channel_id", channelID, "error", err.Error())
+		return nil, &apiError{Message: "failed to check channel connection state", Status: 500}
+	}
+
+	if len(updated) == 0 {
+		if delErr := p.kvstore.DeleteChannelConnections(channelID); delErr != nil {
+			p.API.LogError("Failed to delete channel connections", "channel_id", channelID, "error", delErr.Error())
+			return nil, &apiError{Message: "failed to remove channel connections", Status: 500}
+		}
+
+		channel.Shared = model.NewPointer(false)
+		if _, appErr := p.API.UpdateChannel(channel); appErr != nil {
+			p.API.LogWarn("Failed to unmark channel as shared", "error", appErr.Error())
+		}
+	}
+
+	msg := fmt.Sprintf("Cross Guard connection `%s` unlinked from this channel by @%s.", connName, user.Username)
+	if len(updated) == 0 {
+		msg += " All relays for this channel are now inactive."
+	}
 	post := &model.Post{
 		UserId:    p.botUserID,
 		ChannelId: channel.Id,
-		Message:   fmt.Sprintf("Cross Guard relay disabled for this channel by @%s. (channel ID: %s, channel name: %s)", user.Username, channel.Id, channel.Name),
+		Message:   msg,
 	}
 	if _, appErr := p.API.CreatePost(post); appErr != nil {
 		p.API.LogWarn("Failed to post channel teardown message", "error", appErr.Error())
@@ -322,14 +369,14 @@ func (p *Plugin) getAllConnectionNames() []string {
 		p.API.LogWarn("Failed to parse outbound connections", "error", outErr.Error())
 	} else {
 		for _, conn := range outbound {
-			names = append(names, "outbound-"+conn.Name)
+			names = append(names, "outbound:"+conn.Name)
 		}
 	}
 	if inErr != nil {
 		p.API.LogWarn("Failed to parse inbound connections", "error", inErr.Error())
 	} else {
 		for _, conn := range inbound {
-			names = append(names, "inbound-"+conn.Name)
+			names = append(names, "inbound:"+conn.Name)
 		}
 	}
 	return names
@@ -362,7 +409,7 @@ func (p *Plugin) resolveConnectionName(connName string, available []string) (str
 // If connName is empty and there is exactly one linked connection, it auto-selects it.
 func resolveLinkedConnectionName(connName string, linked []string) (string, string) {
 	if len(linked) == 0 {
-		return "", "no connections linked to this team"
+		return "", "no connections linked"
 	}
 
 	if connName == "" {
@@ -373,7 +420,7 @@ func resolveLinkedConnectionName(connName string, linked []string) (string, stri
 	}
 
 	if !slices.Contains(linked, connName) {
-		return "", fmt.Sprintf("connection %q is not linked to this team", connName)
+		return "", fmt.Sprintf("connection %q is not linked", connName)
 	}
 
 	return connName, ""

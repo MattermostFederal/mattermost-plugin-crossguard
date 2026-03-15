@@ -313,5 +313,5 @@ func (p *Plugin) publishToOutbound(ctx context.Context, data []byte, connNames [
 
 // isOutboundLinked checks if an outbound connection name is in the team's linked list.
 func isOutboundLinked(outboundName string, connNames []string) bool {
-	return slices.Contains(connNames, "outbound-"+outboundName)
+	return slices.Contains(connNames, "outbound:"+outboundName)
 }

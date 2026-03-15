@@ -28,19 +28,24 @@ func newTestKVStore() *testKVStore {
 }
 
 func (s *testKVStore) GetTeamConnections(string) ([]string, error) {
-	return []string{"inbound-cgb", "outbound-cgb"}, nil
+	return []string{"inbound:cgb", "outbound:cgb"}, nil
 }
-func (s *testKVStore) SetTeamConnections(string, []string) error            { return nil }
-func (s *testKVStore) DeleteTeamConnections(string) error                   { return nil }
-func (s *testKVStore) IsTeamInitialized(string) (bool, error)               { return true, nil }
-func (s *testKVStore) AddTeamConnection(string, string) error               { return nil }
-func (s *testKVStore) RemoveTeamConnection(string, string) error            { return nil }
-func (s *testKVStore) GetInitializedTeamIDs() ([]string, error)             { return nil, nil }
-func (s *testKVStore) AddInitializedTeamID(string) error                    { return nil }
-func (s *testKVStore) RemoveInitializedTeamID(string) error                 { return nil }
-func (s *testKVStore) GetChannelInitialized(channelID string) (bool, error) { return true, nil }
-func (s *testKVStore) SetChannelInitialized(string) error                   { return nil }
-func (s *testKVStore) DeleteChannelInitialized(string) error                { return nil }
+func (s *testKVStore) SetTeamConnections(string, []string) error { return nil }
+func (s *testKVStore) DeleteTeamConnections(string) error        { return nil }
+func (s *testKVStore) IsTeamInitialized(string) (bool, error)    { return true, nil }
+func (s *testKVStore) AddTeamConnection(string, string) error    { return nil }
+func (s *testKVStore) RemoveTeamConnection(string, string) error { return nil }
+func (s *testKVStore) GetInitializedTeamIDs() ([]string, error)  { return nil, nil }
+func (s *testKVStore) AddInitializedTeamID(string) error         { return nil }
+func (s *testKVStore) RemoveInitializedTeamID(string) error      { return nil }
+func (s *testKVStore) GetChannelConnections(string) ([]string, error) {
+	return []string{"inbound:cgb", "outbound:cgb"}, nil
+}
+func (s *testKVStore) SetChannelConnections(string, []string) error { return nil }
+func (s *testKVStore) DeleteChannelConnections(string) error        { return nil }
+func (s *testKVStore) IsChannelInitialized(string) (bool, error)    { return true, nil }
+func (s *testKVStore) AddChannelConnection(string, string) error    { return nil }
+func (s *testKVStore) RemoveChannelConnection(string, string) error { return nil }
 
 func (s *testKVStore) SetPostMapping(connName, remotePostID, localPostID string) error {
 	s.postMappings[connName+"-"+remotePostID] = localPostID
@@ -131,7 +136,7 @@ func TestResolveTeamAndChannel(t *testing.T) {
 		p.botUserID = "bot-user-id"
 		kvs := newTestKVStore()
 		kvs.KVStore = nil
-		p.kvstore = &unlinkTestKVStore{testKVStore: kvs, conns: []string{"inbound-other"}}
+		p.kvstore = &unlinkTestKVStore{testKVStore: kvs, conns: []string{"inbound:other"}}
 		ctx, cancel := context.WithCancel(context.Background())
 		p.ctx = ctx
 		p.cancel = cancel

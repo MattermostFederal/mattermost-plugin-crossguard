@@ -125,31 +125,67 @@ func (kv Client) RemoveInitializedTeamID(teamID string) error {
 	})
 }
 
-// GetChannelInitialized returns true if the channel has been initialized for relay.
-func (kv Client) GetChannelInitialized(channelID string) (bool, error) {
-	var initialized bool
-	err := kv.client.KV.Get(kv.channelInitPrefix+channelID, &initialized)
+// GetChannelConnections returns the list of connection names linked to a channel.
+func (kv Client) GetChannelConnections(channelID string) ([]string, error) {
+	var connNames []string
+	err := kv.client.KV.Get(kv.channelInitPrefix+channelID, &connNames)
 	if err != nil {
-		return false, errors.Wrap(err, "failed to get channel initialized flag")
+		return nil, errors.Wrap(err, "failed to get channel connections")
 	}
-	return initialized, nil
+	if connNames == nil {
+		return []string{}, nil
+	}
+	return connNames, nil
 }
 
-// SetChannelInitialized marks a channel as initialized for relay.
-func (kv Client) SetChannelInitialized(channelID string) error {
-	_, err := kv.client.KV.Set(kv.channelInitPrefix+channelID, true)
+// SetChannelConnections stores the full list of connection names for a channel.
+func (kv Client) SetChannelConnections(channelID string, connNames []string) error {
+	_, err := kv.client.KV.Set(kv.channelInitPrefix+channelID, connNames)
 	if err != nil {
-		return errors.Wrap(err, "failed to set channel initialized flag")
+		return errors.Wrap(err, "failed to set channel connections")
 	}
 	return nil
 }
 
-// DeleteChannelInitialized removes the channel initialized flag.
-func (kv Client) DeleteChannelInitialized(channelID string) error {
+// DeleteChannelConnections removes all connection links for a channel.
+func (kv Client) DeleteChannelConnections(channelID string) error {
 	if err := kv.client.KV.Delete(kv.channelInitPrefix + channelID); err != nil {
-		return errors.Wrap(err, "failed to delete channel initialized flag")
+		return errors.Wrap(err, "failed to delete channel connections")
 	}
 	return nil
+}
+
+// IsChannelInitialized returns true if the channel has at least one connection linked.
+func (kv Client) IsChannelInitialized(channelID string) (bool, error) {
+	conns, err := kv.GetChannelConnections(channelID)
+	if err != nil {
+		return false, err
+	}
+	return len(conns) > 0, nil
+}
+
+// AddChannelConnection atomically adds a connection name to a channel's connection list.
+func (kv Client) AddChannelConnection(channelID, connName string) error {
+	return kv.casModifyStringList(kv.channelInitPrefix+channelID, func(names []string) ([]string, bool) {
+		if slices.Contains(names, connName) {
+			return names, false
+		}
+		return append(names, connName), true
+	})
+}
+
+// RemoveChannelConnection atomically removes a connection name from a channel's connection list.
+func (kv Client) RemoveChannelConnection(channelID, connName string) error {
+	return kv.casModifyStringList(kv.channelInitPrefix+channelID, func(names []string) ([]string, bool) {
+		idx := slices.Index(names, connName)
+		if idx < 0 {
+			return names, false
+		}
+		result := make([]string, 0, len(names)-1)
+		result = append(result, names[:idx]...)
+		result = append(result, names[idx+1:]...)
+		return result, true
+	})
 }
 
 // postMappingKey returns the KV key for a remote-to-local post ID mapping.

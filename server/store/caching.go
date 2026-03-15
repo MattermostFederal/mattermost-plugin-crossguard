@@ -9,13 +9,15 @@ import (
 )
 
 const (
-	cacheTeamInitSize = 64
-	cacheTTL          = 10 * time.Minute
+	cacheTeamInitSize    = 64
+	cacheChannelInitSize = 64
+	cacheTTL             = 10 * time.Minute
 )
 
 const (
-	ClusterEventInvalidateTeamInit  = "cache_inv_teaminit"
-	ClusterEventInvalidateInitTeams = "cache_inv_initteams"
+	ClusterEventInvalidateTeamInit    = "cache_inv_teaminit"
+	ClusterEventInvalidateInitTeams   = "cache_inv_initteams"
+	ClusterEventInvalidateChannelInit = "cache_inv_chaninit"
 )
 
 // CachingKVStore wraps a KVStore with per-entity LRU caches and publishes
@@ -24,17 +26,19 @@ type CachingKVStore struct {
 	KVStore
 	api plugin.API
 
-	teamInitCache  *expirable.LRU[string, bool]
-	initTeamsCache *expirable.LRU[string, []string]
+	teamInitCache    *expirable.LRU[string, bool]
+	channelInitCache *expirable.LRU[string, bool]
+	initTeamsCache   *expirable.LRU[string, []string]
 }
 
 // NewCachingKVStore creates a caching wrapper around the given KVStore.
 func NewCachingKVStore(inner KVStore, api plugin.API) *CachingKVStore {
 	return &CachingKVStore{
-		KVStore:        inner,
-		api:            api,
-		teamInitCache:  expirable.NewLRU[string, bool](cacheTeamInitSize, nil, cacheTTL),
-		initTeamsCache: expirable.NewLRU[string, []string](1, nil, cacheTTL),
+		KVStore:          inner,
+		api:              api,
+		teamInitCache:    expirable.NewLRU[string, bool](cacheTeamInitSize, nil, cacheTTL),
+		channelInitCache: expirable.NewLRU[string, bool](cacheChannelInitSize, nil, cacheTTL),
+		initTeamsCache:   expirable.NewLRU[string, []string](1, nil, cacheTTL),
 	}
 }
 
@@ -54,6 +58,15 @@ func (c *CachingKVStore) GetTeamInitialized(teamID string) (bool, error) {
 // SetTeamInitialized writes to the inner store and invalidates the cache.
 func (c *CachingKVStore) SetTeamInitialized(teamID string) error {
 	if err := c.KVStore.SetTeamInitialized(teamID); err != nil {
+		return err
+	}
+	c.invalidate(ClusterEventInvalidateTeamInit, teamID)
+	return nil
+}
+
+// DeleteTeamInitialized removes the team init flag and invalidates the cache.
+func (c *CachingKVStore) DeleteTeamInitialized(teamID string) error {
+	if err := c.KVStore.DeleteTeamInitialized(teamID); err != nil {
 		return err
 	}
 	c.invalidate(ClusterEventInvalidateTeamInit, teamID)
@@ -88,6 +101,46 @@ func (c *CachingKVStore) AddInitializedTeamID(teamID string) error {
 	return nil
 }
 
+// RemoveInitializedTeamID removes a team from the list and invalidates the cache.
+func (c *CachingKVStore) RemoveInitializedTeamID(teamID string) error {
+	if err := c.KVStore.RemoveInitializedTeamID(teamID); err != nil {
+		return err
+	}
+	c.invalidate(ClusterEventInvalidateInitTeams, initTeamsCacheKey)
+	return nil
+}
+
+// GetChannelInitialized checks the cache first, then falls back to the inner store.
+func (c *CachingKVStore) GetChannelInitialized(channelID string) (bool, error) {
+	if val, ok := c.channelInitCache.Get(channelID); ok {
+		return val, nil
+	}
+	initialized, err := c.KVStore.GetChannelInitialized(channelID)
+	if err != nil {
+		return false, err
+	}
+	c.channelInitCache.Add(channelID, initialized)
+	return initialized, nil
+}
+
+// SetChannelInitialized writes to the inner store and invalidates the cache.
+func (c *CachingKVStore) SetChannelInitialized(channelID string) error {
+	if err := c.KVStore.SetChannelInitialized(channelID); err != nil {
+		return err
+	}
+	c.invalidate(ClusterEventInvalidateChannelInit, channelID)
+	return nil
+}
+
+// DeleteChannelInitialized removes the channel init flag and invalidates the cache.
+func (c *CachingKVStore) DeleteChannelInitialized(channelID string) error {
+	if err := c.KVStore.DeleteChannelInitialized(channelID); err != nil {
+		return err
+	}
+	c.invalidate(ClusterEventInvalidateChannelInit, channelID)
+	return nil
+}
+
 // HandleClusterEvent processes cache invalidation events from other nodes.
 func (c *CachingKVStore) HandleClusterEvent(ev model.PluginClusterEvent) {
 	c.removeFromCache(ev.Id, string(ev.Data))
@@ -99,6 +152,8 @@ func (c *CachingKVStore) removeFromCache(eventID, key string) {
 		c.teamInitCache.Remove(key)
 	case ClusterEventInvalidateInitTeams:
 		c.initTeamsCache.Remove(key)
+	case ClusterEventInvalidateChannelInit:
+		c.channelInitCache.Remove(key)
 	}
 }
 

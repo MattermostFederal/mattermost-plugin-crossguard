@@ -151,6 +151,110 @@ func (p *Plugin) getGlobalStatus() (*GlobalStatusResponse, *apiError) {
 	return resp, nil
 }
 
+// initChannelForCrossGuard marks a channel for cross-domain relay.
+func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID string) (*model.Channel, *apiError) {
+	channel, appErr := p.API.GetChannel(channelID)
+	if appErr != nil {
+		return nil, &apiError{Message: "channel not found", Status: 404}
+	}
+
+	teamInit, err := p.kvstore.GetTeamInitialized(channel.TeamId)
+	if err != nil {
+		p.API.LogError("Failed to check team init status", "team_id", channel.TeamId, "error", err.Error())
+		return nil, &apiError{Message: "failed to check team initialization status", Status: 500}
+	}
+	if !teamInit {
+		return nil, &apiError{Message: "team must be initialized first (run /crossguard init-team)", Status: 400}
+	}
+
+	already, err := p.kvstore.GetChannelInitialized(channelID)
+	if err == nil && already {
+		return channel, nil
+	}
+
+	if err := p.kvstore.SetChannelInitialized(channelID); err != nil {
+		p.API.LogError("Failed to store channel init state", "channel_id", channelID, "error", err.Error())
+		return nil, &apiError{Message: "failed to save channel initialization state", Status: 500}
+	}
+
+	post := &model.Post{
+		UserId:    p.botUserID,
+		ChannelId: channel.Id,
+		Message:   fmt.Sprintf("Cross Guard relay enabled for this channel by @%s.", user.Username),
+	}
+	if _, appErr := p.API.CreatePost(post); appErr != nil {
+		p.API.LogWarn("Failed to post channel init message", "error", appErr.Error())
+	}
+
+	return channel, nil
+}
+
+// teardownChannelForCrossGuard removes a channel from relay.
+func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID string) (*model.Channel, *apiError) {
+	channel, appErr := p.API.GetChannel(channelID)
+	if appErr != nil {
+		return nil, &apiError{Message: "channel not found", Status: 404}
+	}
+
+	initialized, err := p.kvstore.GetChannelInitialized(channelID)
+	if err == nil && !initialized {
+		return channel, nil
+	}
+
+	if err := p.kvstore.DeleteChannelInitialized(channelID); err != nil {
+		p.API.LogError("Failed to delete channel init state", "channel_id", channelID, "error", err.Error())
+		return nil, &apiError{Message: "failed to remove channel initialization state", Status: 500}
+	}
+
+	post := &model.Post{
+		UserId:    p.botUserID,
+		ChannelId: channel.Id,
+		Message:   fmt.Sprintf("Cross Guard relay disabled for this channel by @%s.", user.Username),
+	}
+	if _, appErr := p.API.CreatePost(post); appErr != nil {
+		p.API.LogWarn("Failed to post channel teardown message", "error", appErr.Error())
+	}
+
+	return channel, nil
+}
+
+// teardownTeamForCrossGuard removes a team from Cross Guard initialization.
+func (p *Plugin) teardownTeamForCrossGuard(user *model.User, teamID string) (*model.Team, *apiError) {
+	team, appErr := p.API.GetTeam(teamID)
+	if appErr != nil {
+		return nil, &apiError{Message: "team not found", Status: 404}
+	}
+
+	initialized, err := p.kvstore.GetTeamInitialized(teamID)
+	if err == nil && !initialized {
+		return team, nil
+	}
+
+	if err := p.kvstore.DeleteTeamInitialized(teamID); err != nil {
+		p.API.LogError("Failed to delete team init state", "team_id", teamID, "error", err.Error())
+		return nil, &apiError{Message: "failed to remove team initialization state", Status: 500}
+	}
+
+	if err := p.kvstore.RemoveInitializedTeamID(teamID); err != nil {
+		p.API.LogError("Failed to remove team from initialized list", "team_id", teamID, "error", err.Error())
+		return nil, &apiError{Message: "failed to remove team from initialized list", Status: 500}
+	}
+
+	channel, appErr := p.API.GetChannelByName(teamID, model.DefaultChannelName, false)
+	if appErr == nil {
+		post := &model.Post{
+			UserId:    p.botUserID,
+			ChannelId: channel.Id,
+			Message:   fmt.Sprintf("Cross Guard disabled for this team by @%s. All channel relays in this team are now inactive.", user.Username),
+		}
+		if _, appErr := p.API.CreatePost(post); appErr != nil {
+			p.API.LogWarn("Failed to post team teardown message", "error", appErr.Error())
+		}
+	}
+
+	return team, nil
+}
+
 // redactConnections strips sensitive fields from NATS connections for the status response.
 func redactConnections(outbound, inbound []NATSConnection) []RedactedNATSConnection {
 	connections := make([]RedactedNATSConnection, 0, len(outbound)+len(inbound))

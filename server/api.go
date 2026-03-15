@@ -18,6 +18,9 @@ func (p *Plugin) initAPI() {
 	router := mux.NewRouter()
 	router.HandleFunc("/api/v1/test-connection", p.handleTestConnection).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/teams/{team_id}/init", p.handleInitTeam).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/teams/{team_id}/teardown", p.handleTeardownTeam).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/channels/{channel_id}/init", p.handleInitChannel).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/channels/{channel_id}/teardown", p.handleTeardownChannel).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/status", p.handleGlobalStatus).Methods(http.MethodGet)
 	router.HandleFunc("/api/v1/teams/{team_id}/status", p.handleTeamStatus).Methods(http.MethodGet)
 	p.router = router
@@ -208,6 +211,108 @@ func (p *Plugin) handleInitTeam(w http.ResponseWriter, r *http.Request) {
 	}
 
 	team, svcErr := p.initTeamForCrossGuard(user, teamID)
+	if svcErr != nil {
+		writeJSONError(w, svcErr.Message, svcErr.Status)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":    "ok",
+		"team_id":   team.Id,
+		"team_name": team.Name,
+	})
+}
+
+func (p *Plugin) handleInitChannel(w http.ResponseWriter, r *http.Request) {
+	user := p.getAuthenticatedUser(w, r)
+	if user == nil {
+		return
+	}
+
+	channelID := mux.Vars(r)["channel_id"]
+	if !model.IsValidId(channelID) {
+		writeJSONError(w, "invalid channel_id", http.StatusBadRequest)
+		return
+	}
+
+	channel, appErr := p.API.GetChannel(channelID)
+	if appErr != nil {
+		writeJSONError(w, "channel not found", http.StatusNotFound)
+		return
+	}
+
+	if !p.isChannelAdminOrHigher(user.Id, channelID, channel.TeamId) {
+		writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	ch, svcErr := p.initChannelForCrossGuard(user, channelID)
+	if svcErr != nil {
+		writeJSONError(w, svcErr.Message, svcErr.Status)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":       "ok",
+		"channel_id":   ch.Id,
+		"channel_name": ch.Name,
+	})
+}
+
+func (p *Plugin) handleTeardownChannel(w http.ResponseWriter, r *http.Request) {
+	user := p.getAuthenticatedUser(w, r)
+	if user == nil {
+		return
+	}
+
+	channelID := mux.Vars(r)["channel_id"]
+	if !model.IsValidId(channelID) {
+		writeJSONError(w, "invalid channel_id", http.StatusBadRequest)
+		return
+	}
+
+	channel, appErr := p.API.GetChannel(channelID)
+	if appErr != nil {
+		writeJSONError(w, "channel not found", http.StatusNotFound)
+		return
+	}
+
+	if !p.isChannelAdminOrHigher(user.Id, channelID, channel.TeamId) {
+		writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	ch, svcErr := p.teardownChannelForCrossGuard(user, channelID)
+	if svcErr != nil {
+		writeJSONError(w, svcErr.Message, svcErr.Status)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":       "ok",
+		"channel_id":   ch.Id,
+		"channel_name": ch.Name,
+	})
+}
+
+func (p *Plugin) handleTeardownTeam(w http.ResponseWriter, r *http.Request) {
+	user := p.getAuthenticatedUser(w, r)
+	if user == nil {
+		return
+	}
+
+	teamID := mux.Vars(r)["team_id"]
+	if !model.IsValidId(teamID) {
+		writeJSONError(w, "invalid team_id", http.StatusBadRequest)
+		return
+	}
+
+	if !p.isTeamAdminOrSystemAdmin(user.Id, teamID) {
+		writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	team, svcErr := p.teardownTeamForCrossGuard(user, teamID)
 	if svcErr != nil {
 		writeJSONError(w, svcErr.Message, svcErr.Status)
 		return

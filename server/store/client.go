@@ -11,6 +11,7 @@ import (
 type Client struct {
 	client              *pluginapi.Client
 	teamInitPrefix      string
+	channelInitPrefix   string
 	initializedTeamsKey string
 }
 
@@ -19,6 +20,7 @@ func NewKVStore(client *pluginapi.Client, pluginID string) KVStore {
 	return Client{
 		client:              client,
 		teamInitPrefix:      pluginID + "-teaminit-",
+		channelInitPrefix:   pluginID + "-channelinit-",
 		initializedTeamsKey: pluginID + "-initialized-teams",
 	}
 }
@@ -38,6 +40,14 @@ func (kv Client) SetTeamInitialized(teamID string) error {
 	_, err := kv.client.KV.Set(kv.teamInitPrefix+teamID, true)
 	if err != nil {
 		return errors.Wrap(err, "failed to set team initialized flag")
+	}
+	return nil
+}
+
+// DeleteTeamInitialized removes the team initialized flag.
+func (kv Client) DeleteTeamInitialized(teamID string) error {
+	if err := kv.client.KV.Delete(kv.teamInitPrefix + teamID); err != nil {
+		return errors.Wrap(err, "failed to delete team initialized flag")
 	}
 	return nil
 }
@@ -63,6 +73,44 @@ func (kv Client) AddInitializedTeamID(teamID string) error {
 		}
 		return append(ids, teamID), true
 	})
+}
+
+// RemoveInitializedTeamID atomically removes a team ID from the initialized teams list.
+func (kv Client) RemoveInitializedTeamID(teamID string) error {
+	return kv.casModifyStringList(kv.initializedTeamsKey, func(ids []string) ([]string, bool) {
+		idx := slices.Index(ids, teamID)
+		if idx < 0 {
+			return ids, false
+		}
+		return slices.Delete(ids, idx, idx+1), true
+	})
+}
+
+// GetChannelInitialized returns true if the channel has been initialized for relay.
+func (kv Client) GetChannelInitialized(channelID string) (bool, error) {
+	var initialized bool
+	err := kv.client.KV.Get(kv.channelInitPrefix+channelID, &initialized)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to get channel initialized flag")
+	}
+	return initialized, nil
+}
+
+// SetChannelInitialized marks a channel as initialized for relay.
+func (kv Client) SetChannelInitialized(channelID string) error {
+	_, err := kv.client.KV.Set(kv.channelInitPrefix+channelID, true)
+	if err != nil {
+		return errors.Wrap(err, "failed to set channel initialized flag")
+	}
+	return nil
+}
+
+// DeleteChannelInitialized removes the channel initialized flag.
+func (kv Client) DeleteChannelInitialized(channelID string) error {
+	if err := kv.client.KV.Delete(kv.channelInitPrefix + channelID); err != nil {
+		return errors.Wrap(err, "failed to delete channel initialized flag")
+	}
+	return nil
 }
 
 // casModifyStringList atomically modifies a string list stored in KV.

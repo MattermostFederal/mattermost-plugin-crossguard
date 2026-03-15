@@ -15,7 +15,7 @@ func (p *Plugin) registerCommand() error {
 		Trigger:          commandTrigger,
 		AutoComplete:     true,
 		AutoCompleteDesc: "Cross Guard commands",
-		AutoCompleteHint: "[init-team|status]",
+		AutoCompleteHint: "[init-team|init-channel|teardown-team|teardown-channel|status]",
 		AutocompleteData: getAutocompleteData(),
 	})
 }
@@ -26,6 +26,15 @@ func getAutocompleteData() *model.AutocompleteData {
 	initTeam := model.NewAutocompleteData("init-team", "", "Initialize Cross Guard for this team (requires team admin or system admin)")
 	cmd.AddCommand(initTeam)
 
+	initChannel := model.NewAutocompleteData("init-channel", "", "Enable Cross Guard relay for this channel (requires channel admin or higher)")
+	cmd.AddCommand(initChannel)
+
+	teardownTeam := model.NewAutocompleteData("teardown-team", "", "Disable Cross Guard for this team (requires team admin or system admin)")
+	cmd.AddCommand(teardownTeam)
+
+	teardownChannel := model.NewAutocompleteData("teardown-channel", "", "Disable Cross Guard relay for this channel (requires channel admin or higher)")
+	cmd.AddCommand(teardownChannel)
+
 	status := model.NewAutocompleteData("status", "", "Check if Cross Guard has been initialized for this team")
 	cmd.AddCommand(status)
 
@@ -35,17 +44,23 @@ func getAutocompleteData() *model.AutocompleteData {
 func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
 	parts := strings.Fields(args.Command)
 	if len(parts) < 2 {
-		return respondEphemeral("Usage: /%s [init-team|status]", commandTrigger), nil
+		return respondEphemeral("Usage: /%s [init-team|init-channel|teardown-team|teardown-channel|status]", commandTrigger), nil
 	}
 
 	subcommand := parts[1]
 	switch subcommand {
 	case "init-team":
 		return p.executeInitTeam(args), nil
+	case "init-channel":
+		return p.executeInitChannel(args), nil
+	case "teardown-team":
+		return p.executeTeardownTeam(args), nil
+	case "teardown-channel":
+		return p.executeTeardownChannel(args), nil
 	case "status":
 		return p.executeStatus(args), nil
 	default:
-		return respondEphemeral("Unknown subcommand: %s. Usage: /%s [init-team|status]", subcommand, commandTrigger), nil
+		return respondEphemeral("Unknown subcommand: %s. Usage: /%s [init-team|init-channel|teardown-team|teardown-channel|status]", subcommand, commandTrigger), nil
 	}
 }
 
@@ -147,6 +162,70 @@ func (p *Plugin) isTeamAdminOrSystemAdmin(userID, teamID string) bool {
 	}
 
 	return member.SchemeAdmin
+}
+
+func (p *Plugin) executeInitChannel(args *model.CommandArgs) *model.CommandResponse {
+	if !p.isChannelAdminOrHigher(args.UserId, args.ChannelId, args.TeamId) {
+		return respondEphemeral("You must be a member of this channel and a channel admin, team admin, or system admin.")
+	}
+
+	user, appErr := p.API.GetUser(args.UserId)
+	if appErr != nil {
+		return respondEphemeral("Failed to look up user.")
+	}
+
+	if _, svcErr := p.initChannelForCrossGuard(user, args.ChannelId); svcErr != nil {
+		return respondEphemeral("%s", svcErr.Message)
+	}
+
+	return &model.CommandResponse{}
+}
+
+func (p *Plugin) executeTeardownChannel(args *model.CommandArgs) *model.CommandResponse {
+	if !p.isChannelAdminOrHigher(args.UserId, args.ChannelId, args.TeamId) {
+		return respondEphemeral("You must be a member of this channel and a channel admin, team admin, or system admin.")
+	}
+
+	user, appErr := p.API.GetUser(args.UserId)
+	if appErr != nil {
+		return respondEphemeral("Failed to look up user.")
+	}
+
+	if _, svcErr := p.teardownChannelForCrossGuard(user, args.ChannelId); svcErr != nil {
+		return respondEphemeral("%s", svcErr.Message)
+	}
+
+	return &model.CommandResponse{}
+}
+
+func (p *Plugin) executeTeardownTeam(args *model.CommandArgs) *model.CommandResponse {
+	if !p.isTeamAdminOrSystemAdmin(args.UserId, args.TeamId) {
+		return respondEphemeral("You don't have permissions to run this command. You must be a team admin or system admin.")
+	}
+
+	user, appErr := p.API.GetUser(args.UserId)
+	if appErr != nil {
+		return respondEphemeral("Failed to look up user.")
+	}
+
+	if _, svcErr := p.teardownTeamForCrossGuard(user, args.TeamId); svcErr != nil {
+		return respondEphemeral("%s", svcErr.Message)
+	}
+
+	return &model.CommandResponse{}
+}
+
+func (p *Plugin) isChannelAdminOrHigher(userID, channelID, teamID string) bool {
+	member, appErr := p.API.GetChannelMember(channelID, userID)
+	if appErr != nil || member == nil {
+		return false
+	}
+
+	if member.SchemeAdmin {
+		return true
+	}
+
+	return p.isTeamAdminOrSystemAdmin(userID, teamID)
 }
 
 func respondEphemeral(format string, a ...any) *model.CommandResponse {

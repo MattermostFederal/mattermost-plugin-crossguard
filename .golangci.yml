@@ -42,6 +42,10 @@ linters:
       - path: server/configuration.go
         linters:
           - unused
+      - path: server/plugin.go
+        text: "G304"
+        linters:
+          - gosec
       - path: _test\.go
         linters:
           - bodyclose

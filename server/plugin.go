@@ -11,12 +11,20 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 	pluginapi "github.com/mattermost/mattermost/server/public/pluginapi"
+	"github.com/nats-io/nats.go"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
 // Plugin implements the interface expected by the Mattermost server to communicate
 // between the server and plugin processes.
+// outboundConn holds a persistent NATS connection used for relay publishing.
+type outboundConn struct {
+	nc      *nats.Conn
+	subject string
+	name    string
+}
+
 type Plugin struct {
 	plugin.MattermostPlugin
 
@@ -26,6 +34,13 @@ type Plugin struct {
 	kvstore           store.KVStore
 	configuration     *configuration
 	configurationLock sync.RWMutex
+
+	ctx           context.Context
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	relaySem      chan struct{}
+	outboundMu    sync.RWMutex
+	outboundConns []outboundConn
 }
 
 func (p *Plugin) OnActivate() error {
@@ -64,10 +79,19 @@ func (p *Plugin) OnActivate() error {
 
 	p.initAPI()
 
+	p.ctx, p.cancel = context.WithCancel(context.Background())
+	p.relaySem = make(chan struct{}, 50)
+	p.connectOutbound()
+
 	return nil
 }
 
 func (p *Plugin) OnDeactivate() error {
+	if p.cancel != nil {
+		p.cancel()
+	}
+	p.wg.Wait()
+	p.closeOutbound()
 	return nil
 }
 

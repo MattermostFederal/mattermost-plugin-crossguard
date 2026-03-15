@@ -1,0 +1,268 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/gorilla/mux"
+	"github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/plugin"
+	"github.com/nats-io/nats.go"
+)
+
+const maxRequestBodySize = 5 << 20 // 5 MB
+
+func (p *Plugin) initAPI() {
+	router := mux.NewRouter()
+	router.HandleFunc("/api/v1/test-connection", p.handleTestConnection).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/teams/{team_id}/init", p.handleInitTeam).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/status", p.handleGlobalStatus).Methods(http.MethodGet)
+	router.HandleFunc("/api/v1/teams/{team_id}/status", p.handleTeamStatus).Methods(http.MethodGet)
+	p.router = router
+}
+
+func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
+	p.router.ServeHTTP(w, r)
+}
+
+func (p *Plugin) handleTestConnection(w http.ResponseWriter, r *http.Request) {
+	user := p.getAuthenticatedUser(w, r)
+	if user == nil {
+		return
+	}
+
+	if !user.IsSystemAdmin() {
+		writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+
+	var conn NATSConnection
+	if err := json.NewDecoder(r.Body).Decode(&conn); err != nil {
+		writeJSONError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(conn.Address) == "" {
+		writeJSONError(w, "address is required", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(conn.Subject) == "" {
+		writeJSONError(w, "subject is required", http.StatusBadRequest)
+		return
+	}
+
+	if !strings.HasPrefix(conn.Subject, subjectPrefix) {
+		writeJSONError(w, fmt.Sprintf("subject must start with %q", subjectPrefix), http.StatusBadRequest)
+		return
+	}
+
+	switch conn.AuthType {
+	case AuthTypeNone, AuthTypeToken, AuthTypeCredentials, "":
+		// valid
+	default:
+		writeJSONError(w, "auth_type must be \"none\", \"token\", or \"credentials\"", http.StatusBadRequest)
+		return
+	}
+
+	if conn.AuthType == AuthTypeToken && strings.TrimSpace(conn.Token) == "" {
+		writeJSONError(w, "token is required when auth_type is \"token\"", http.StatusBadRequest)
+		return
+	}
+
+	if conn.AuthType == AuthTypeCredentials {
+		if strings.TrimSpace(conn.Username) == "" || strings.TrimSpace(conn.Password) == "" {
+			writeJSONError(w, "username and password are required when auth_type is \"credentials\"", http.StatusBadRequest)
+			return
+		}
+	}
+
+	nc, err := connectNATS(conn)
+	if err != nil {
+		p.API.LogError("NATS connection test failed", "address", conn.Address, "error", err.Error())
+		writeJSONError(w, "failed to connect to NATS server", http.StatusBadGateway)
+		return
+	}
+	defer nc.Close()
+
+	direction := r.URL.Query().Get("direction")
+
+	switch direction {
+	case "inbound":
+		p.handleTestInbound(w, nc, conn)
+	case "outbound", "":
+		p.handleTestOutbound(w, nc, conn)
+	default:
+		writeJSONError(w, "direction must be \"inbound\" or \"outbound\"", http.StatusBadRequest)
+	}
+}
+
+func (p *Plugin) handleTestOutbound(w http.ResponseWriter, nc *nats.Conn, conn NATSConnection) {
+	data, msgID, err := buildTestMessage()
+	if err != nil {
+		p.API.LogError("Failed to build test message", "error", err.Error())
+		writeJSONError(w, "failed to build test message", http.StatusInternalServerError)
+		return
+	}
+
+	if err := nc.Publish(conn.Subject, data); err != nil {
+		p.API.LogError("Failed to publish test message", "subject", conn.Subject, "error", err.Error())
+		writeJSONError(w, "failed to publish test message", http.StatusBadGateway)
+		return
+	}
+
+	if err := nc.Flush(); err != nil {
+		p.API.LogError("Failed to flush test message", "subject", conn.Subject, "error", err.Error())
+		writeJSONError(w, "failed to confirm test message delivery", http.StatusBadGateway)
+		return
+	}
+
+	p.API.LogInfo("Test message sent", "subject", conn.Subject, "msg_id", msgID)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"message": "Test message sent with ID: " + msgID,
+		"id":      msgID,
+	})
+}
+
+func (p *Plugin) handleTestInbound(w http.ResponseWriter, nc *nats.Conn, conn NATSConnection) {
+	sub, err := nc.SubscribeSync(conn.Subject)
+	if err != nil {
+		p.API.LogError("Failed to subscribe for inbound test", "subject", conn.Subject, "error", err.Error())
+		writeJSONError(w, "failed to subscribe to subject", http.StatusBadGateway)
+		return
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	if err := nc.Flush(); err != nil {
+		p.API.LogError("Failed to flush NATS connection", "error", err.Error())
+		writeJSONError(w, "failed to flush NATS connection", http.StatusBadGateway)
+		return
+	}
+
+	p.API.LogInfo("Inbound test subscription successful", "subject", conn.Subject)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"message": "Connected and subscribed to subject successfully",
+	})
+}
+
+func writeJSONError(w http.ResponseWriter, message string, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": message,
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// getAuthenticatedUser extracts the user ID from the request header, looks up
+// the user, and returns it. Returns nil and writes an error response if auth fails.
+func (p *Plugin) getAuthenticatedUser(w http.ResponseWriter, r *http.Request) *model.User {
+	userID := r.Header.Get("Mattermost-User-Id")
+	if userID == "" {
+		writeJSONError(w, "not authenticated", http.StatusUnauthorized)
+		return nil
+	}
+
+	user, appErr := p.API.GetUser(userID)
+	if appErr != nil {
+		p.API.LogError("Failed to get user", "user_id", userID, "error", appErr.Error())
+		writeJSONError(w, "failed to get user", http.StatusInternalServerError)
+		return nil
+	}
+
+	return user
+}
+
+func (p *Plugin) handleInitTeam(w http.ResponseWriter, r *http.Request) {
+	user := p.getAuthenticatedUser(w, r)
+	if user == nil {
+		return
+	}
+
+	teamID := mux.Vars(r)["team_id"]
+	if !model.IsValidId(teamID) {
+		writeJSONError(w, "invalid team_id", http.StatusBadRequest)
+		return
+	}
+
+	if !p.isTeamAdminOrSystemAdmin(user.Id, teamID) {
+		writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	team, svcErr := p.initTeamForCrossGuard(user, teamID)
+	if svcErr != nil {
+		writeJSONError(w, svcErr.Message, svcErr.Status)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":    "ok",
+		"team_id":   team.Id,
+		"team_name": team.Name,
+	})
+}
+
+func (p *Plugin) handleGlobalStatus(w http.ResponseWriter, r *http.Request) {
+	user := p.getAuthenticatedUser(w, r)
+	if user == nil {
+		return
+	}
+
+	if !user.IsSystemAdmin() {
+		writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	resp, svcErr := p.getGlobalStatus()
+	if svcErr != nil {
+		writeJSONError(w, svcErr.Message, svcErr.Status)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (p *Plugin) handleTeamStatus(w http.ResponseWriter, r *http.Request) {
+	user := p.getAuthenticatedUser(w, r)
+	if user == nil {
+		return
+	}
+
+	teamID := mux.Vars(r)["team_id"]
+	if !model.IsValidId(teamID) {
+		writeJSONError(w, "invalid team_id", http.StatusBadRequest)
+		return
+	}
+
+	member, appErr := p.API.GetTeamMember(teamID, user.Id)
+	if appErr != nil || member == nil || member.DeleteAt > 0 {
+		writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	resp, svcErr := p.getTeamStatus(teamID)
+	if svcErr != nil {
+		writeJSONError(w, svcErr.Message, svcErr.Status)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}

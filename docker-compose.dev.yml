@@ -1,6 +1,6 @@
-# Mattermost Enterprise Edition for plugin development
+# Mattermost Enterprise Edition for plugin development (dual-server)
 services:
-  postgres:
+  postgres-a:
     image: postgres:14-alpine
     restart: unless-stopped
     environment:
@@ -8,32 +8,93 @@ services:
       POSTGRES_PASSWORD: mmuser_password
       POSTGRES_DB: mattermost
     volumes:
-      - ./docker/postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres-a-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mmuser -d mattermost"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  mattermost:
+  postgres-b:
+    image: postgres:14-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mmuser
+      POSTGRES_PASSWORD: mmuser_password
+      POSTGRES_DB: mattermost
+    volumes:
+      - ./docker/postgres-b-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mmuser -d mattermost"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  nats:
+    image: nats:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${NATS_PORT:-4222}:4222"
+      - "${NATS_MONITOR_PORT:-8222}:8222"
+    command: ["--jetstream", "--http_port", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mattermost-a:
     depends_on:
-      postgres:
+      postgres-a:
+        condition: service_healthy
+      nats:
         condition: service_healthy
     image: mattermost/mattermost-enterprise-edition:${MATTERMOST_IMAGE_TAG:-latest}
     restart: unless-stopped
     ports:
-      - "${MM_PORT:-8065}:8065"
+      - "${MM_PORT_A:-8075}:8065"
     volumes:
-      - ./docker/mattermost/config:/mattermost/config:rw
-      - ./docker/mattermost/data:/mattermost/data:rw
-      - ./docker/mattermost/logs:/mattermost/logs:rw
-      - ./docker/mattermost/plugins:/mattermost/plugins:rw
-      - ./docker/mattermost/client-plugins:/mattermost/client/plugins:rw
+      - ./docker/mattermost-a/config:/mattermost/config:rw
+      - ./docker/mattermost-a/data:/mattermost/data:rw
+      - ./docker/mattermost-a/logs:/mattermost/logs:rw
+      - ./docker/mattermost-a/plugins:/mattermost/plugins:rw
+      - ./docker/mattermost-a/client-plugins:/mattermost/client/plugins:rw
     environment:
       TZ: UTC
       MM_SQLSETTINGS_DRIVERNAME: postgres
-      MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_password@postgres:5432/mattermost?sslmode=disable&connect_timeout=10
-      MM_SERVICESETTINGS_SITEURL: http://localhost:${MM_PORT:-8065}
+      MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_password@postgres-a:5432/mattermost?sslmode=disable&connect_timeout=10
+      MM_SERVICESETTINGS_SITEURL: http://cga.test:${MM_PORT_A:-8075}
+      MM_SERVICESETTINGS_LISTENADDRESS: :8065
+      MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
+      MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"
+      MM_LOGSETTINGS_CONSOLELEVEL: DEBUG
+      MM_LOGSETTINGS_ENABLEFILE: "true"
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
+      MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS: "false"
+      MM_ANNOUNCEMENTSETTINGS_ENABLEPREVIEWMODEBANNER: "false"
+
+  mattermost-b:
+    depends_on:
+      postgres-b:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    image: mattermost/mattermost-enterprise-edition:${MATTERMOST_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${MM_PORT_B:-8076}:8065"
+    volumes:
+      - ./docker/mattermost-b/config:/mattermost/config:rw
+      - ./docker/mattermost-b/data:/mattermost/data:rw
+      - ./docker/mattermost-b/logs:/mattermost/logs:rw
+      - ./docker/mattermost-b/plugins:/mattermost/plugins:rw
+      - ./docker/mattermost-b/client-plugins:/mattermost/client/plugins:rw
+    environment:
+      TZ: UTC
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_password@postgres-b:5432/mattermost?sslmode=disable&connect_timeout=10
+      MM_SERVICESETTINGS_SITEURL: http://cgb.test:${MM_PORT_B:-8076}
       MM_SERVICESETTINGS_LISTENADDRESS: :8065
       MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
       MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"

@@ -19,11 +19,23 @@
         "footer": "",
         "settings": [],
         "sections": [
-            {
-                "key": "crossguard_info",
-                "title": "Cross Guard",
-                "settings": [],
-                "custom": true
+{
+                "key": "NATSConfiguration",
+                "title": "NATS Configuration",
+                "settings": [
+                    {
+                        "key": "InboundConnections",
+                        "display_name": "Inbound Connections (NATS -> Mattermost)",
+                        "type": "custom",
+                        "default": "[]"
+                    },
+                    {
+                        "key": "OutboundConnections",
+                        "display_name": "Outbound Connections (Mattermost -> NATS)",
+                        "type": "custom",
+                        "default": "[]"
+                    }
+                ]
             }
         ]
     }

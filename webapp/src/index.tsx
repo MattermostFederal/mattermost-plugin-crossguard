@@ -2,13 +2,17 @@ import manifest from 'manifest';
 
 import type {PluginRegistry} from 'types/mattermost-webapp';
 
-import AdminPanel from './components/AdminPanel';
+import NATSConnectionSettings from './components/NATSConnectionSettings';
 
 export default class Plugin {
     public async initialize(registry: PluginRegistry) {
-        registry.registerAdminConsoleCustomSection(
-            'crossguard_info',
-            AdminPanel,
+        registry.registerAdminConsoleCustomSetting(
+            'InboundConnections',
+            NATSConnectionSettings,
+        );
+        registry.registerAdminConsoleCustomSetting(
+            'OutboundConnections',
+            NATSConnectionSettings,
         );
     }
 }

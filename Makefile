@@ -290,7 +290,7 @@ endif
 nuke: docker-kill-orphans
 	@echo "Nuking everything..."
 	@$(DOCKER_COMPOSE) down -v 2>/dev/null || true
-	@rm -rf docker/postgres-data docker/mattermost
+	@rm -rf docker/postgres-a-data docker/postgres-b-data docker/mattermost-a docker/mattermost-b
 	@rm -fr dist/
 	@rm -fr server/coverage.txt server/dist
 	@rm -fr webapp/junit.xml webapp/dist webapp/node_modules
@@ -298,17 +298,19 @@ nuke: docker-kill-orphans
 	@echo "Everything removed. Run 'make docker-setup' to start fresh."
 
 # ====================================================================================
-# Docker Development Environment
+# Docker Development Environment (Dual-Server)
 # ====================================================================================
 DOCKER_COMPOSE := docker compose -f docker-compose.dev.yml
-MM_PORT ?= 8065
+MM_PORT_A ?= 8075
+MM_PORT_B ?= 8076
 
-## Start Mattermost and PostgreSQL containers
+## Start both Mattermost servers and PostgreSQL containers
 .PHONY: docker-start
 docker-start:
-	@echo "Starting Mattermost Enterprise Edition..."
-	@mkdir -p docker/mattermost/{config,data,logs,plugins,client-plugins}
-	@mkdir -p docker/postgres-data
+	@echo "Starting dual Mattermost servers..."
+	@mkdir -p docker/mattermost-a/{config,data,logs,plugins,client-plugins}
+	@mkdir -p docker/mattermost-b/{config,data,logs,plugins,client-plugins}
+	@mkdir -p docker/postgres-a-data docker/postgres-b-data
 	@$(DOCKER_COMPOSE) up -d
 
 ## Stop containers (preserves data)
@@ -325,97 +327,194 @@ docker-down:
 .PHONY: docker-clean
 docker-clean:
 	@$(DOCKER_COMPOSE) down -v
-	@rm -rf docker/postgres-data docker/mattermost
+	@rm -rf docker/postgres-a-data docker/postgres-b-data docker/mattermost-a docker/mattermost-b
 	@echo "Containers and data removed"
 
-## Kill orphaned Docker containers on the MM port (useful after deleting a worktree)
+## Kill orphaned Docker containers on the MM ports (useful after deleting a worktree)
 .PHONY: docker-kill-orphans
 docker-kill-orphans:
-	@project=$$(docker ps --filter "publish=$(MM_PORT)" \
-		--format '{{.Label "com.docker.compose.project"}}' | head -1); \
-	if [ -z "$$project" ]; then \
-		echo "No containers found on port $(MM_PORT)"; \
-	else \
-		echo "Stopping compose project: $$project"; \
-		docker compose -p $$project down -v; \
-		echo "Project $$project removed"; \
-	fi
+	@for port in $(MM_PORT_A) $(MM_PORT_B); do \
+		project=$$(docker ps --filter "publish=$$port" \
+			--format '{{.Label "com.docker.compose.project"}}' | head -1); \
+		if [ -z "$$project" ]; then \
+			echo "No containers found on port $$port"; \
+		else \
+			echo "Stopping compose project: $$project"; \
+			docker compose -p $$project down -v; \
+			echo "Project $$project removed"; \
+		fi; \
+	done
 
-## View Mattermost container logs
+## View Server A (mattermost-a) container logs
 .PHONY: docker-logs
 docker-logs: docker-check
-	@$(DOCKER_COMPOSE) logs -f mattermost
+	@$(DOCKER_COMPOSE) logs -f mattermost-a
 
-## First-time setup: start containers and create admin user
+## View Server B (mattermost-b) container logs
+.PHONY: docker-logs-b
+docker-logs-b: docker-check
+	@$(DOCKER_COMPOSE) logs -f mattermost-b
+
+## First-time setup: start containers and create users on both servers
 .PHONY: docker-setup
 docker-setup: docker-start
-	@echo "Waiting for Mattermost to be ready..."
-	@until curl -sf http://localhost:$(MM_PORT)/api/v4/system/ping >/dev/null 2>&1; do \
+	@if ! grep -q 'cga.test' /etc/hosts || ! grep -q 'cgb.test' /etc/hosts; then \
+		echo ""; \
+		echo "WARNING: /etc/hosts is missing cga.test and/or cgb.test entries."; \
+		echo "Run 'make hosts-setup' to add them, or the admin console will not work correctly."; \
+		echo ""; \
+	fi
+	@echo "Waiting for Server A (mattermost-a) to be ready..."
+	@until curl -sf http://localhost:$(MM_PORT_A)/api/v4/system/ping >/dev/null 2>&1; do \
 		sleep 2; \
-		echo "Waiting..."; \
+		echo "Waiting for Server A..."; \
 	done
-	@echo "Creating admin user..."
-	@$(DOCKER_COMPOSE) exec -T mattermost mmctl --local user create \
+	@echo "Waiting for Server B (mattermost-b) to be ready..."
+	@until curl -sf http://localhost:$(MM_PORT_B)/api/v4/system/ping >/dev/null 2>&1; do \
+		sleep 2; \
+		echo "Waiting for Server B..."; \
+	done
+	@echo ""
+	@echo "--- Setting up Server A ---"
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local user create \
 		--email admin@example.com \
 		--username admin \
 		--password 'password' \
-		--system-admin 2>/dev/null || echo "Admin user already exists"
-	@echo "Creating default team..."
-	@$(DOCKER_COMPOSE) exec -T mattermost mmctl --local team create \
-		--name test \
-		--display-name "Test" 2>/dev/null || echo "Team 'Test' already exists"
-	@echo "Adding admin to Test team..."
-	@$(DOCKER_COMPOSE) exec -T mattermost mmctl --local team users add test admin 2>/dev/null || echo "Admin already in Test team"
+		--system-admin 2>/dev/null || echo "Admin user already exists on Server A"
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local user create \
+		--email usera@example.com \
+		--username usera \
+		--password 'password' 2>/dev/null || echo "User usera already exists on Server A"
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team create \
+		--name test-a \
+		--display-name "Test A" 2>/dev/null || echo "Team 'Test A' already exists on Server A"
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team users add test-a admin 2>/dev/null || echo "Admin already in Test A team"
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team users add test-a usera 2>/dev/null || echo "usera already in Test A team"
+	@echo ""
+	@echo "--- Setting up Server B ---"
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local user create \
+		--email admin@example.com \
+		--username admin \
+		--password 'password' \
+		--system-admin 2>/dev/null || echo "Admin user already exists on Server B"
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local user create \
+		--email userb@example.com \
+		--username userb \
+		--password 'password' 2>/dev/null || echo "User userb already exists on Server B"
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team create \
+		--name test-b \
+		--display-name "Test B" 2>/dev/null || echo "Team 'Test B' already exists on Server B"
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team users add test-b admin 2>/dev/null || echo "Admin already in Test B team"
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team users add test-b userb 2>/dev/null || echo "userb already in Test B team"
 	@echo ""
 	@echo "=========================================="
-	@echo "Mattermost ready at http://localhost:$(MM_PORT)"
-	@echo "Login: admin / password"
-	@echo "Team: Test"
+	@echo "Server A (CGA): http://cga.test:$(MM_PORT_A)"
+	@echo "  Admin login: admin / password"
+	@echo "  User login:  usera / password"
+	@echo "  Team:        Test A"
+	@echo ""
+	@echo "Server B (CGB): http://cgb.test:$(MM_PORT_B)"
+	@echo "  Admin login: admin / password"
+	@echo "  User login:  userb / password"
+	@echo "  Team:        Test B"
+	@echo ""
+	@echo "NATS: nats://localhost:$${NATS_PORT:-4222}"
+	@echo "NATS Monitor: http://localhost:$${NATS_MONITOR_PORT:-8222}"
+	@echo "NATS (from plugins): nats://nats:4222"
 	@echo "=========================================="
+	@echo ""
+	@echo "Next: run 'make deploy' to build, deploy, and configure NATS connections."
 
-## Check if Mattermost container is running
+## Check if both Mattermost containers are running
 .PHONY: docker-check
 docker-check:
-	@if ! $(DOCKER_COMPOSE) ps --status running 2>/dev/null | grep -q mattermost; then \
-		echo "Error: Mattermost container is not running."; \
+	@if ! $(DOCKER_COMPOSE) ps --status running 2>/dev/null | grep -q mattermost-a; then \
+		echo "Error: mattermost-a container is not running."; \
+		echo "Run 'make docker-setup' first to start the environment."; \
+		exit 1; \
+	fi
+	@if ! $(DOCKER_COMPOSE) ps --status running 2>/dev/null | grep -q mattermost-b; then \
+		echo "Error: mattermost-b container is not running."; \
 		echo "Run 'make docker-setup' first to start the environment."; \
 		exit 1; \
 	fi
 
-## Build and deploy plugin to Docker Mattermost
+## Build and deploy plugin to both Docker Mattermost servers
 .PHONY: docker-deploy
 docker-deploy: docker-check dist
-	@echo "Deploying plugin to Docker Mattermost..."
-	@$(DOCKER_COMPOSE) cp dist/$(BUNDLE_NAME) mattermost:/tmp/$(BUNDLE_NAME)
-	@$(DOCKER_COMPOSE) exec -T mattermost mmctl --local plugin add /tmp/$(BUNDLE_NAME) --force
-	@$(DOCKER_COMPOSE) exec -T mattermost mmctl --local plugin enable $(PLUGIN_ID)
-	@echo "Plugin $(PLUGIN_ID) deployed and enabled"
+	@echo "Deploying plugin to Server A (mattermost-a)..."
+	@$(DOCKER_COMPOSE) cp dist/$(BUNDLE_NAME) mattermost-a:/tmp/$(BUNDLE_NAME)
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local plugin add /tmp/$(BUNDLE_NAME) --force
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local plugin enable $(PLUGIN_ID)
+	@echo "Plugin $(PLUGIN_ID) deployed and enabled on Server A"
+	@echo "Deploying plugin to Server B (mattermost-b)..."
+	@$(DOCKER_COMPOSE) cp dist/$(BUNDLE_NAME) mattermost-b:/tmp/$(BUNDLE_NAME)
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local plugin add /tmp/$(BUNDLE_NAME) --force
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local plugin enable $(PLUGIN_ID)
+	@echo "Plugin $(PLUGIN_ID) deployed and enabled on Server B"
+	@echo ""
+	@echo "Configuring NATS connections..."
+	@TOKEN_A=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	curl -sf -X PUT http://localhost:$(MM_PORT_A)/api/v4/config/patch \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"relay-out\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","inboundconnections":"[]"}}}}' >/dev/null && \
+	echo "Server A configured with outbound NATS connection"
+	@TOKEN_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/users/login \
+		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	curl -sf -X PUT http://localhost:$(MM_PORT_B)/api/v4/config/patch \
+		-H "Authorization: Bearer $$TOKEN_B" \
+		-H "Content-Type: application/json" \
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"inboundconnections":"[{\"name\":\"relay-in\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","outboundconnections":"[]"}}}}' >/dev/null && \
+	echo "Server B configured with inbound NATS connection"
 
-## Disable and re-enable plugin in Docker
+## Disable and re-enable plugin on both servers
 .PHONY: docker-reset
 docker-reset: docker-check
-	@$(DOCKER_COMPOSE) exec -T mattermost mmctl --local plugin disable $(PLUGIN_ID)
-	@$(DOCKER_COMPOSE) exec -T mattermost mmctl --local plugin enable $(PLUGIN_ID)
-	@echo "Plugin $(PLUGIN_ID) reset"
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local plugin disable $(PLUGIN_ID)
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local plugin enable $(PLUGIN_ID)
+	@echo "Plugin $(PLUGIN_ID) reset on Server A"
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local plugin disable $(PLUGIN_ID)
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local plugin enable $(PLUGIN_ID)
+	@echo "Plugin $(PLUGIN_ID) reset on Server B"
 
-## Disable plugin in Docker
+## Disable plugin on both servers
 .PHONY: docker-disable
 docker-disable: docker-check
-	@$(DOCKER_COMPOSE) exec -T mattermost mmctl --local plugin disable $(PLUGIN_ID)
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local plugin disable $(PLUGIN_ID)
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local plugin disable $(PLUGIN_ID)
 
-## Enable plugin in Docker
+## Enable plugin on both servers
 .PHONY: docker-enable
 docker-enable: docker-check
-	@$(DOCKER_COMPOSE) exec -T mattermost mmctl --local plugin enable $(PLUGIN_ID)
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local plugin enable $(PLUGIN_ID)
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local plugin enable $(PLUGIN_ID)
 
-## List installed plugins in Docker
+## List installed plugins on both servers
 .PHONY: docker-plugin-list
 docker-plugin-list: docker-check
-	@$(DOCKER_COMPOSE) exec -T mattermost mmctl --local plugin list
+	@echo "--- Server A ---"
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local plugin list
+	@echo "--- Server B ---"
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local plugin list
 
 ## Convenience alias: deploy plugin to Docker
 .PHONY: deploy
 deploy: docker-deploy
+
+## Print /etc/hosts entries needed for dual-server setup
+.PHONY: hosts-setup
+hosts-setup:
+	@if grep -q 'cga.test' /etc/hosts && grep -q 'cgb.test' /etc/hosts; then \
+		echo "/etc/hosts already has cga.test and cgb.test entries."; \
+	else \
+		echo "Adding cga.test and cgb.test to /etc/hosts (requires sudo)..."; \
+		echo '127.0.0.1  cga.test cgb.test' | sudo tee -a /etc/hosts; \
+		echo "Done. /etc/hosts updated."; \
+	fi
 
 # ====================================================================================
 # SBOM & Vulnerability Scanning

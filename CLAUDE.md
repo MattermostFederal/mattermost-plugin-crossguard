@@ -99,28 +99,62 @@ Cross Guard is a Mattermost Federal plugin built on the mattermost-plugin-starte
 - `Makefile` - Build commands
 - `.golangci.yml` - Go linter configuration
 
-## Docker Development Environment
+## Docker Development Environment (Dual-Server)
+
+The dev environment runs two Mattermost servers with a shared NATS bus.
 
 ### Getting Started
 
 ```bash
-make docker-setup
-make deploy
+make hosts-setup    # Add cga.test and cgb.test to /etc/hosts (one-time, requires sudo)
+make docker-setup   # Start containers, create users and teams
+make deploy         # Build and deploy plugin to both servers
 ```
 
-After setup, access Mattermost at **http://localhost:8065** with credentials **admin / password**.
+After setup:
+
+- **Server A (CGA)**: http://cga.test:8075 (admin/password, usera/password, Team: Test A)
+- **Server B (CGB)**: http://cgb.test:8076 (admin/password, userb/password, Team: Test B)
+- **NATS**: nats://localhost:4222 (monitor: http://localhost:8222)
+- **NATS (from plugins)**: nats://nats:4222
 
 ### Common Commands
 
 | Command | Description |
 |---------|-------------|
-| `make docker-setup` | First-time setup: start containers, create admin user |
-| `make deploy` | Build and deploy plugin to Docker Mattermost |
+| `make hosts-setup` | Add cga.test/cgb.test to /etc/hosts (requires sudo) |
+| `make docker-setup` | First-time setup: start containers, create users and teams |
+| `make deploy` | Build and deploy plugin to both Docker servers |
 | `make dist` | Build plugin bundle only |
-| `make release` | Full release: tests, build, SBOM audit, sign, checksum |
 | `make test` | Run all tests |
 | `make check-style` | Lint code |
 | `make nuke` | Remove everything: containers, data, build artifacts |
+
+### Docker Management Commands
+
+| Command | Description |
+|---------|-------------|
+| `make docker-start` | Start containers (without user setup) |
+| `make docker-stop` | Stop containers (preserves data) |
+| `make docker-down` | Stop and remove containers |
+| `make docker-clean` | Remove containers and all data |
+| `make docker-logs` | Follow Server A logs |
+| `make docker-logs-b` | Follow Server B logs |
+| `make docker-reset` | Disable and re-enable plugin on both servers |
+| `make docker-disable` | Disable plugin on both servers |
+| `make docker-enable` | Enable plugin on both servers |
+| `make docker-plugin-list` | List installed plugins on both servers |
+| `make docker-kill-orphans` | Kill orphaned containers on MM ports |
+
+### Release and Security
+
+| Command | Description |
+|---------|-------------|
+| `make release` | Full release: checks, tests, SBOM audit, CodeQL, sign, checksum |
+| `make release-tag` | Create git tag for the current version |
+| `make sbom-audit` | Generate SBOMs and scan for vulnerabilities |
+| `make codeql-analyze` | Run CodeQL security analysis on all code |
+| `make security-gate` | Check scan results for critical/high issues |
 
 ## Technology Stack
 

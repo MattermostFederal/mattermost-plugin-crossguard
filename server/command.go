@@ -8,7 +8,11 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 )
 
-const commandTrigger = "crossguard"
+const (
+	commandTrigger     = "crossguard"
+	actionInitTeam     = "init-team"
+	actionTeardownTeam = "teardown-team"
+)
 
 func (p *Plugin) registerCommand() error {
 	return p.API.RegisterCommand(&model.Command{
@@ -84,6 +88,10 @@ func (p *Plugin) executeInitTeam(args *model.CommandArgs) *model.CommandResponse
 	if resolveErr != "" {
 		if len(allConns) == 0 {
 			return respondEphemeral("No NATS connections configured. Add connections in the System Console first.")
+		}
+		if inputName == "" && len(allConns) > 1 {
+			p.sendConnectionPicker(args.UserId, args.ChannelId, args.TeamId, allConns, actionInitTeam)
+			return &model.CommandResponse{}
 		}
 		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(allConns, ", "))
 	}
@@ -316,6 +324,10 @@ func (p *Plugin) executeTeardownTeam(args *model.CommandArgs) *model.CommandResp
 
 	connName, resolveErr := resolveLinkedConnectionName(inputName, linked)
 	if resolveErr != "" {
+		if inputName == "" && len(linked) > 1 {
+			p.sendConnectionPicker(args.UserId, args.ChannelId, args.TeamId, linked, actionTeardownTeam)
+			return &model.CommandResponse{}
+		}
 		if len(linked) > 0 {
 			return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(linked, ", "))
 		}
@@ -340,6 +352,52 @@ func (p *Plugin) isChannelAdminOrHigher(userID, channelID, teamID string) bool {
 	}
 
 	return p.isTeamAdminOrSystemAdmin(userID, teamID)
+}
+
+func (p *Plugin) sendConnectionPicker(userID, channelID, teamID string, connections []string, action string) {
+	siteURL := p.API.GetConfig().ServiceSettings.SiteURL
+	if siteURL == nil || *siteURL == "" {
+		p.API.LogError("SiteURL is not configured, cannot send interactive message")
+		return
+	}
+	baseURL := fmt.Sprintf("%s/plugins/%s/api/v1/actions/select-connection", *siteURL, manifest.Id)
+
+	title := "Select a connection to link to this team:"
+	if action == actionTeardownTeam {
+		title = "Select a connection to unlink from this team:"
+	}
+
+	actions := make([]*model.PostAction, 0, len(connections))
+	for _, conn := range connections {
+		actions = append(actions, &model.PostAction{
+			Id:   conn,
+			Name: conn,
+			Type: model.PostActionTypeButton,
+			Integration: &model.PostActionIntegration{
+				URL: baseURL,
+				Context: map[string]any{
+					"action":          action,
+					"connection_name": conn,
+					"team_id":         teamID,
+				},
+			},
+		})
+	}
+
+	post := &model.Post{
+		UserId:    p.botUserID,
+		ChannelId: channelID,
+		Props: model.StringInterface{
+			"attachments": []*model.SlackAttachment{
+				{
+					Title:   title,
+					Actions: actions,
+				},
+			},
+		},
+	}
+
+	p.API.SendEphemeralPost(userID, post)
 }
 
 func respondEphemeral(format string, a ...any) *model.CommandResponse {

@@ -21,6 +21,7 @@ func (p *Plugin) initAPI() {
 	router.HandleFunc("/api/v1/teams/{team_id}/teardown", p.handleTeardownTeam).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/channels/{channel_id}/init", p.handleInitChannel).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/channels/{channel_id}/teardown", p.handleTeardownChannel).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/actions/select-connection", p.handleSelectConnection).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/status", p.handleGlobalStatus).Methods(http.MethodGet)
 	router.HandleFunc("/api/v1/teams/{team_id}/status", p.handleTeamStatus).Methods(http.MethodGet)
 	p.router = router
@@ -369,6 +370,83 @@ func (p *Plugin) handleGlobalStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (p *Plugin) handleSelectConnection(w http.ResponseWriter, r *http.Request) {
+	var req model.PostActionIntegrationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	userID := req.UserId
+	if userID == "" {
+		writeJSONError(w, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	user, appErr := p.API.GetUser(userID)
+	if appErr != nil {
+		writeJSONError(w, "failed to get user", http.StatusInternalServerError)
+		return
+	}
+
+	action, _ := req.Context["action"].(string)
+	connName, _ := req.Context["connection_name"].(string)
+	teamID, _ := req.Context["team_id"].(string)
+
+	if action == "" || connName == "" || teamID == "" {
+		writeJSONError(w, "missing required context", http.StatusBadRequest)
+		return
+	}
+
+	if !p.isTeamAdminOrSystemAdmin(userID, teamID) {
+		writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	var responseText string
+
+	switch action {
+	case actionInitTeam:
+		team, alreadyLinked, svcErr := p.initTeamForCrossGuard(user, teamID, connName)
+		switch {
+		case svcErr != nil:
+			responseText = svcErr.Message
+		case alreadyLinked:
+			responseText = fmt.Sprintf("Connection `%s` is already linked to this team. (team ID: %s, team name: %s)", connName, team.Id, team.Name)
+		default:
+			responseText = fmt.Sprintf("Connection `%s` linked to this team successfully.", connName)
+		}
+
+	case actionTeardownTeam:
+		_, svcErr := p.teardownTeamForCrossGuard(user, teamID, connName)
+		if svcErr != nil {
+			responseText = svcErr.Message
+		} else {
+			responseText = fmt.Sprintf("Connection `%s` unlinked from this team successfully.", connName)
+		}
+
+	default:
+		writeJSONError(w, "unknown action", http.StatusBadRequest)
+		return
+	}
+
+	resp := &model.PostActionIntegrationResponse{
+		Update: &model.Post{
+			Props: model.StringInterface{
+				"attachments": []*model.SlackAttachment{
+					{
+						Text: responseText,
+					},
+				},
+			},
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (p *Plugin) handleTeamStatus(w http.ResponseWriter, r *http.Request) {

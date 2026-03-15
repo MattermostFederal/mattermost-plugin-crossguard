@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -132,14 +133,14 @@ func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandRespo
 
 	channelConns, _ := p.kvstore.GetChannelConnections(channelID)
 
-	teamStatus := "No"
+	teamStatus := ":x: No"
 	if resp.Initialized {
-		teamStatus = "Yes"
+		teamStatus = ":white_check_mark: Yes"
 	}
 
-	channelStatus := "No"
+	channelStatus := ":x: No"
 	if len(channelConns) > 0 {
-		channelStatus = "Yes"
+		channelStatus = ":white_check_mark: Yes"
 	}
 
 	team, _ := p.API.GetTeam(teamID)
@@ -206,9 +207,9 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 	sb.WriteString("#### Cross Guard Status\n\n")
 
 	channelConns, _ := p.kvstore.GetChannelConnections(channelID)
-	channelStatus := "No"
+	channelStatus := ":x: No"
 	if len(channelConns) > 0 {
-		channelStatus = "Yes"
+		channelStatus = ":white_check_mark: Yes"
 	}
 	channel, _ := p.API.GetChannel(channelID)
 	channelName := channelID
@@ -303,13 +304,21 @@ func (p *Plugin) executeInitChannel(args *model.CommandArgs) *model.CommandRespo
 		inputName = parts[2]
 	}
 
-	connName, _, resolveErr := p.resolveConnectionName(inputName, teamConns)
+	allConns := p.getAllConnectionNames()
+	connName, _, resolveErr := p.resolveConnectionName(inputName, allConns)
 	if resolveErr != "" {
-		if inputName == "" && len(teamConns) > 1 {
-			p.sendConnectionPicker(args.UserId, args.ChannelId, args.ChannelId, teamConns, actionInitChannel)
+		if len(allConns) == 0 {
+			return respondEphemeral("No NATS connections configured. Check the System Console settings.")
+		}
+		if inputName == "" && len(allConns) > 1 {
+			p.sendConnectionPicker(args.UserId, args.ChannelId, args.ChannelId, allConns, actionInitChannel)
 			return &model.CommandResponse{}
 		}
-		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(teamConns, ", "))
+		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(allConns, ", "))
+	}
+
+	if !slices.Contains(teamConns, connName) {
+		return respondEphemeral("Connection `%s` is not linked to this team. Run `/%s init-team` first.", connName, commandTrigger)
 	}
 
 	ch, alreadyLinked, svcErr := p.initChannelForCrossGuard(user, args.ChannelId, connName)
@@ -338,6 +347,9 @@ func (p *Plugin) executeTeardownChannel(args *model.CommandArgs) *model.CommandR
 	if err != nil {
 		return respondEphemeral("Failed to check channel connections.")
 	}
+	if len(linked) == 0 {
+		return respondEphemeral("No connections are linked to this channel.")
+	}
 
 	parts := strings.Fields(args.Command)
 	inputName := ""
@@ -345,16 +357,22 @@ func (p *Plugin) executeTeardownChannel(args *model.CommandArgs) *model.CommandR
 		inputName = parts[2]
 	}
 
-	connName, resolveErr := resolveLinkedConnectionName(inputName, linked)
+	teamConns, err := p.kvstore.GetTeamConnections(args.TeamId)
+	if err != nil {
+		return respondEphemeral("Failed to check team connections.")
+	}
+
+	connName, _, resolveErr := p.resolveConnectionName(inputName, teamConns)
 	if resolveErr != "" {
-		if inputName == "" && len(linked) > 1 {
-			p.sendConnectionPicker(args.UserId, args.ChannelId, args.ChannelId, linked, actionTeardownChannel)
+		if inputName == "" && len(teamConns) > 1 {
+			p.sendConnectionPicker(args.UserId, args.ChannelId, args.ChannelId, teamConns, actionTeardownChannel)
 			return &model.CommandResponse{}
 		}
-		if len(linked) > 0 {
-			return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(linked, ", "))
-		}
-		return respondEphemeral("%s", resolveErr)
+		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(teamConns, ", "))
+	}
+
+	if !slices.Contains(linked, connName) {
+		return respondEphemeral("Connection `%s` is not linked to this channel.", connName)
 	}
 
 	if _, svcErr := p.teardownChannelForCrossGuard(user, args.ChannelId, connName); svcErr != nil {
@@ -374,27 +392,35 @@ func (p *Plugin) executeTeardownTeam(args *model.CommandArgs) *model.CommandResp
 		return respondEphemeral("Failed to look up user.")
 	}
 
+	linked, err := p.kvstore.GetTeamConnections(args.TeamId)
+	if err != nil {
+		return respondEphemeral("Failed to check team connections.")
+	}
+	if len(linked) == 0 {
+		return respondEphemeral("No connections are linked to this team.")
+	}
+
 	parts := strings.Fields(args.Command)
 	inputName := ""
 	if len(parts) >= 3 {
 		inputName = parts[2]
 	}
 
-	linked, err := p.kvstore.GetTeamConnections(args.TeamId)
-	if err != nil {
-		return respondEphemeral("Failed to check team connections.")
-	}
-
-	connName, resolveErr := resolveLinkedConnectionName(inputName, linked)
+	allConns := p.getAllConnectionNames()
+	connName, _, resolveErr := p.resolveConnectionName(inputName, allConns)
 	if resolveErr != "" {
-		if inputName == "" && len(linked) > 1 {
-			p.sendConnectionPicker(args.UserId, args.ChannelId, args.TeamId, linked, actionTeardownTeam)
+		if len(allConns) == 0 {
+			return respondEphemeral("No NATS connections configured. Check the System Console settings.")
+		}
+		if inputName == "" && len(allConns) > 1 {
+			p.sendConnectionPicker(args.UserId, args.ChannelId, args.TeamId, allConns, actionTeardownTeam)
 			return &model.CommandResponse{}
 		}
-		if len(linked) > 0 {
-			return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(linked, ", "))
-		}
-		return respondEphemeral("%s", resolveErr)
+		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(allConns, ", "))
+	}
+
+	if !slices.Contains(linked, connName) {
+		return respondEphemeral("Connection `%s` is not linked to this team.", connName)
 	}
 
 	if _, svcErr := p.teardownTeamForCrossGuard(user, args.TeamId, connName); svcErr != nil {

@@ -257,17 +257,11 @@ func (p *Plugin) handleInitChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
-	if err != nil {
-		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
-		return
-	}
-
-	connName, _, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), teamConns)
+	connName, allConns, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), p.getAllConnectionNames())
 	if resolveErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":       resolveErr,
-			"connections": teamConns,
+			"connections": allConns,
 		})
 		return
 	}
@@ -309,17 +303,17 @@ func (p *Plugin) handleTeardownChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	linked, err := p.kvstore.GetChannelConnections(channelID)
+	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
 	if err != nil {
-		writeJSONError(w, "failed to check channel connections", http.StatusInternalServerError)
+		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
 		return
 	}
 
-	connName, resolveErr := resolveLinkedConnectionName(r.URL.Query().Get("connection_name"), linked)
+	connName, _, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), teamConns)
 	if resolveErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":       resolveErr,
-			"connections": linked,
+			"connections": teamConns,
 		})
 		return
 	}
@@ -355,17 +349,11 @@ func (p *Plugin) handleTeardownTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	linked, err := p.kvstore.GetTeamConnections(teamID)
-	if err != nil {
-		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
-		return
-	}
-
-	connName, resolveErr := resolveLinkedConnectionName(r.URL.Query().Get("connection_name"), linked)
+	connName, allConns, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), p.getAllConnectionNames())
 	if resolveErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":       resolveErr,
-			"connections": linked,
+			"connections": allConns,
 		})
 		return
 	}

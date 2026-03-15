@@ -17,9 +17,8 @@ server/manifest.go
 go.work
 go.work.sum
 
-# Docker development environment
-docker/postgres-data/
-docker/mattermost/
+# Docker development environment (runtime data)
+docker/
 
 # CodeQL (downloaded during build)
 build/codeql/

@@ -105,7 +105,12 @@ func (p *Plugin) handleInboundMessage(connName string) nats.MsgHandler {
 			case model.MessageTypeReactionRemove:
 				p.handleInboundReaction(connName, envelope, false)
 			case model.MessageTypeTest:
-				p.API.LogDebug("Received inbound test message", "conn", connName)
+				var testMsg model.TestMessage
+				if err := envelope.Decode(&testMsg); err == nil {
+					p.API.LogInfo("Received inbound test message", "conn", connName, "id", testMsg.ID)
+				} else {
+					p.API.LogInfo("Received inbound test message", "conn", connName)
+				}
 			default:
 				p.API.LogWarn("Unknown inbound message type", "conn", connName, "type", envelope.Type)
 			}

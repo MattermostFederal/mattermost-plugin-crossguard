@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 
@@ -94,7 +93,7 @@ func (p *Plugin) executeInitTeam(args *model.CommandArgs) *model.CommandResponse
 			return respondEphemeral("No NATS connections configured. Add connections in the System Console first.")
 		}
 		if inputName == "" && len(allConns) > 1 {
-			p.sendConnectionPicker(args.UserId, args.ChannelId, args.TeamId, allConns, actionInitTeam)
+			p.openConnectionDialog(args.TriggerId, args.TeamId, allConns, actionInitTeam)
 			return &model.CommandResponse{}
 		}
 		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(allConns, ", "))
@@ -311,7 +310,7 @@ func (p *Plugin) executeInitChannel(args *model.CommandArgs) *model.CommandRespo
 			return respondEphemeral("No NATS connections configured. Check the System Console settings.")
 		}
 		if inputName == "" && len(allConns) > 1 {
-			p.sendConnectionPicker(args.UserId, args.ChannelId, args.ChannelId, allConns, actionInitChannel)
+			p.openConnectionDialog(args.TriggerId, args.ChannelId, allConns, actionInitChannel)
 			return &model.CommandResponse{}
 		}
 		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(allConns, ", "))
@@ -360,7 +359,7 @@ func (p *Plugin) executeTeardownChannel(args *model.CommandArgs) *model.CommandR
 	connName, _, resolveErr := p.resolveConnectionName(inputName, linked)
 	if resolveErr != "" {
 		if inputName == "" && len(linked) > 1 {
-			p.sendConnectionPicker(args.UserId, args.ChannelId, args.ChannelId, linked, actionTeardownChannel)
+			p.openConnectionDialog(args.TriggerId, args.ChannelId, linked, actionTeardownChannel)
 			return &model.CommandResponse{}
 		}
 		return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(linked, ", "))
@@ -400,7 +399,7 @@ func (p *Plugin) executeTeardownTeam(args *model.CommandArgs) *model.CommandResp
 	connName, _, resolveErr := p.resolveConnectionName(inputName, linked)
 	if resolveErr != "" {
 		if inputName == "" && len(linked) > 1 {
-			p.sendConnectionPicker(args.UserId, args.ChannelId, args.TeamId, linked, actionTeardownTeam)
+			p.openConnectionDialog(args.TriggerId, args.TeamId, linked, actionTeardownTeam)
 			return &model.CommandResponse{}
 		}
 		return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(linked, ", "))
@@ -426,73 +425,51 @@ func (p *Plugin) isChannelAdminOrHigher(userID, channelID, teamID string) bool {
 	return p.isTeamAdminOrSystemAdmin(userID, teamID)
 }
 
-func (p *Plugin) sendConnectionPicker(userID, channelID, targetID string, connections []string, action string) {
-	baseURL := fmt.Sprintf("/plugins/%s/api/v1/actions/select-connection", manifest.Id)
-
+func (p *Plugin) openConnectionDialog(triggerID, targetID string, connections []string, action string) {
 	var title string
 	switch action {
 	case actionInitTeam:
-		title = "Select a connection to link to this team:"
+		title = "Link Connection to Team"
 	case actionTeardownTeam:
-		title = "Select a connection to unlink from this team:"
+		title = "Unlink Connection from Team"
 	case actionInitChannel:
-		title = "Select a connection to link to this channel:"
+		title = "Link Connection to Channel"
 	case actionTeardownChannel:
-		title = "Select a connection to unlink from this channel:"
+		title = "Unlink Connection from Channel"
 	}
 
-	ctx := map[string]any{
-		"action":          action,
-		"connection_name": "",
-	}
-	switch action {
-	case actionInitTeam, actionTeardownTeam:
-		ctx["team_id"] = targetID
-	case actionInitChannel, actionTeardownChannel:
-		ctx["channel_id"] = targetID
-	}
-
-	actions := make([]*model.PostAction, 0, len(connections))
+	options := make([]*model.PostActionOptions, 0, len(connections))
 	for _, conn := range connections {
-		connCtx := make(map[string]any, len(ctx))
-		maps.Copy(connCtx, ctx)
-		connCtx["connection_name"] = conn
-		actions = append(actions, &model.PostAction{
-			Id:   conn,
-			Name: conn,
-			Type: model.PostActionTypeButton,
-			Integration: &model.PostActionIntegration{
-				URL:     baseURL,
-				Context: connCtx,
-			},
+		options = append(options, &model.PostActionOptions{
+			Text:  conn,
+			Value: conn,
 		})
 	}
 
-	actions = append(actions, &model.PostAction{
-		Id:    "cancel",
-		Name:  "Cancel",
-		Type:  model.PostActionTypeButton,
-		Style: "default",
-		Integration: &model.PostActionIntegration{
-			URL:     baseURL,
-			Context: map[string]any{"action": "cancel"},
-		},
-	})
-
-	post := &model.Post{
-		UserId:    p.botUserID,
-		ChannelId: channelID,
-		Props: model.StringInterface{
-			"attachments": []*model.SlackAttachment{
+	dialog := model.OpenDialogRequest{
+		TriggerId: triggerID,
+		URL:       fmt.Sprintf("/plugins/%s/api/v1/dialog/select-connection", manifest.Id),
+		Dialog: model.Dialog{
+			CallbackId:     "select_connection",
+			Title:          title,
+			SubmitLabel:    "Confirm",
+			NotifyOnCancel: false,
+			Elements: []model.DialogElement{
 				{
-					Title:   title,
-					Actions: actions,
+					DisplayName: "Connection",
+					Name:        "connection_name",
+					Type:        "select",
+					Options:     options,
+					Placeholder: "Choose a connection...",
 				},
 			},
+			State: action + ":" + targetID,
 		},
 	}
 
-	p.API.SendEphemeralPost(userID, post)
+	if appErr := p.API.OpenInteractiveDialog(dialog); appErr != nil {
+		p.API.LogError("Failed to open connection dialog", "error", appErr.Error())
+	}
 }
 
 func respondEphemeral(format string, a ...any) *model.CommandResponse {

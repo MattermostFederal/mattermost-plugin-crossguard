@@ -10,8 +10,8 @@ import (
 
 const (
 	cacheTeamInitSize    = 64
-	cacheChannelInitSize = 64
-	cacheTTL             = 10 * time.Minute
+	cacheChannelInitSize = 1024
+	cacheTTL             = 15 * time.Minute
 )
 
 const (

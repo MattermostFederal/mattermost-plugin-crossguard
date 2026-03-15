@@ -21,7 +21,7 @@ func (p *Plugin) initAPI() {
 	router.HandleFunc("/api/v1/teams/{team_id}/teardown", p.handleTeardownTeam).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/channels/{channel_id}/init", p.handleInitChannel).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/channels/{channel_id}/teardown", p.handleTeardownChannel).Methods(http.MethodPost)
-	router.HandleFunc("/api/v1/actions/select-connection", p.handleSelectConnection).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/dialog/select-connection", p.handleDialogSelectConnection).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/status", p.handleGlobalStatus).Methods(http.MethodGet)
 	router.HandleFunc("/api/v1/teams/{team_id}/status", p.handleTeamStatus).Methods(http.MethodGet)
 	p.router = router
@@ -392,10 +392,15 @@ func (p *Plugin) handleGlobalStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (p *Plugin) handleSelectConnection(w http.ResponseWriter, r *http.Request) {
-	var req model.PostActionIntegrationRequest
+func (p *Plugin) handleDialogSelectConnection(w http.ResponseWriter, r *http.Request) {
+	var req model.SubmitDialogRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Cancelled {
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
@@ -411,45 +416,31 @@ func (p *Plugin) handleSelectConnection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	action, _ := req.Context["action"].(string)
-	if action == "cancel" {
-		resp := &model.PostActionIntegrationResponse{
-			Update: &model.Post{
-				Props: model.StringInterface{
-					"attachments": []*model.SlackAttachment{
-						{Text: "Cancelled."},
-					},
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
+	connName, _ := req.Submission["connection_name"].(string)
+	if connName == "" {
+		writeJSON(w, http.StatusOK, model.SubmitDialogResponse{
+			Errors: map[string]string{"connection_name": "Please select a connection."},
+		})
 		return
 	}
 
-	connName, _ := req.Context["connection_name"].(string)
-
-	if action == "" || connName == "" {
-		writeJSONError(w, "missing required context", http.StatusBadRequest)
+	parts := strings.SplitN(req.State, ":", 2)
+	if len(parts) != 2 {
+		writeJSONError(w, "invalid dialog state", http.StatusBadRequest)
 		return
 	}
+	action, targetID := parts[0], parts[1]
 
 	var responseText string
 
 	switch action {
 	case actionInitTeam, actionTeardownTeam:
-		teamID, _ := req.Context["team_id"].(string)
-		if teamID == "" {
-			writeJSONError(w, "missing team_id", http.StatusBadRequest)
-			return
-		}
-		if !p.isTeamAdminOrSystemAdmin(userID, teamID) {
+		if !p.isTeamAdminOrSystemAdmin(userID, targetID) {
 			writeJSONError(w, "insufficient permissions", http.StatusForbidden)
 			return
 		}
 		if action == actionInitTeam {
-			team, alreadyLinked, svcErr := p.initTeamForCrossGuard(user, teamID, connName)
+			team, alreadyLinked, svcErr := p.initTeamForCrossGuard(user, targetID, connName)
 			switch {
 			case svcErr != nil:
 				responseText = svcErr.Message
@@ -459,7 +450,7 @@ func (p *Plugin) handleSelectConnection(w http.ResponseWriter, r *http.Request) 
 				responseText = fmt.Sprintf("Connection `%s` linked to this team successfully.", connName)
 			}
 		} else {
-			_, svcErr := p.teardownTeamForCrossGuard(user, teamID, connName)
+			_, svcErr := p.teardownTeamForCrossGuard(user, targetID, connName)
 			if svcErr != nil {
 				responseText = svcErr.Message
 			} else {
@@ -468,22 +459,17 @@ func (p *Plugin) handleSelectConnection(w http.ResponseWriter, r *http.Request) 
 		}
 
 	case actionInitChannel, actionTeardownChannel:
-		channelID, _ := req.Context["channel_id"].(string)
-		if channelID == "" {
-			writeJSONError(w, "missing channel_id", http.StatusBadRequest)
-			return
-		}
-		channel, appErr := p.API.GetChannel(channelID)
-		if appErr != nil {
+		channel, chErr := p.API.GetChannel(targetID)
+		if chErr != nil {
 			writeJSONError(w, "channel not found", http.StatusBadRequest)
 			return
 		}
-		if !p.isChannelAdminOrHigher(userID, channelID, channel.TeamId) {
+		if !p.isChannelAdminOrHigher(userID, targetID, channel.TeamId) {
 			writeJSONError(w, "insufficient permissions", http.StatusForbidden)
 			return
 		}
 		if action == actionInitChannel {
-			ch, alreadyLinked, svcErr := p.initChannelForCrossGuard(user, channelID, connName)
+			ch, alreadyLinked, svcErr := p.initChannelForCrossGuard(user, targetID, connName)
 			switch {
 			case svcErr != nil:
 				responseText = svcErr.Message
@@ -493,7 +479,7 @@ func (p *Plugin) handleSelectConnection(w http.ResponseWriter, r *http.Request) 
 				responseText = fmt.Sprintf("Connection `%s` linked to this channel successfully.", connName)
 			}
 		} else {
-			_, svcErr := p.teardownChannelForCrossGuard(user, channelID, connName)
+			_, svcErr := p.teardownChannelForCrossGuard(user, targetID, connName)
 			if svcErr != nil {
 				responseText = svcErr.Message
 			} else {
@@ -506,21 +492,13 @@ func (p *Plugin) handleSelectConnection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	resp := &model.PostActionIntegrationResponse{
-		Update: &model.Post{
-			Props: model.StringInterface{
-				"attachments": []*model.SlackAttachment{
-					{
-						Text: responseText,
-					},
-				},
-			},
-		},
-	}
+	p.API.SendEphemeralPost(userID, &model.Post{
+		UserId:    p.botUserID,
+		ChannelId: req.ChannelId,
+		Message:   responseText,
+	})
 
-	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (p *Plugin) handleTeamStatus(w http.ResponseWriter, r *http.Request) {

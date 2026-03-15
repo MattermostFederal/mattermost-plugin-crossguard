@@ -93,26 +93,67 @@ func (p *Plugin) executeStatus(args *model.CommandArgs) *model.CommandResponse {
 	}
 
 	if user.IsSystemAdmin() {
-		return p.executeStatusSystemAdmin()
+		return p.executeStatusSystemAdmin(args.ChannelId)
 	}
 
-	return p.executeStatusTeam(args.TeamId)
+	return p.executeStatusTeam(args.TeamId, args.ChannelId)
 }
 
-func (p *Plugin) executeStatusTeam(teamID string) *model.CommandResponse {
+func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandResponse {
 	resp, svcErr := p.getTeamStatus(teamID)
 	if svcErr != nil {
 		return respondEphemeral("%s", svcErr.Message)
 	}
 
+	channelInit, _ := p.kvstore.GetChannelInitialized(channelID)
+
+	teamStatus := "No"
 	if resp.Initialized {
-		return respondEphemeral("Cross Guard is initialized for this team.")
+		teamStatus = "Yes"
 	}
 
-	return respondEphemeral("Cross Guard has not been initialized for this team. Run `/%s init-team` to initialize.", commandTrigger)
+	channelStatus := "No"
+	if channelInit {
+		channelStatus = "Yes"
+	}
+
+	team, _ := p.API.GetTeam(teamID)
+	channel, _ := p.API.GetChannel(channelID)
+
+	teamName := teamID
+	teamDisplayName := ""
+	if team != nil {
+		teamName = team.Name
+		teamDisplayName = team.DisplayName
+	}
+
+	channelName := channelID
+	channelDisplayName := ""
+	if channel != nil {
+		channelName = channel.Name
+		channelDisplayName = channel.DisplayName
+	}
+
+	var sb strings.Builder
+	sb.WriteString("#### Cross Guard Status\n\n")
+
+	sb.WriteString("**Channel:**\n\n")
+	sb.WriteString("| Channel | Name | ID | Relay Enabled |\n")
+	sb.WriteString("|:--------|:-----|:---|:--------------|\n")
+	fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", channelDisplayName, channelName, channelID, channelStatus)
+
+	sb.WriteString("\n**Team:**\n\n")
+	sb.WriteString("| Team | Name | ID | Initialized |\n")
+	sb.WriteString("|:-----|:-----|:---|:------------|\n")
+	fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", teamDisplayName, teamName, teamID, teamStatus)
+
+	return &model.CommandResponse{
+		ResponseType: model.CommandResponseTypeEphemeral,
+		Text:         sb.String(),
+	}
 }
 
-func (p *Plugin) executeStatusSystemAdmin() *model.CommandResponse {
+func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandResponse {
 	resp, svcErr := p.getGlobalStatus()
 	if svcErr != nil {
 		return respondEphemeral("%s", svcErr.Message)
@@ -124,7 +165,26 @@ func (p *Plugin) executeStatusSystemAdmin() *model.CommandResponse {
 
 	var sb strings.Builder
 	sb.WriteString("#### Cross Guard Status\n\n")
-	sb.WriteString("**Initialized Teams:**\n\n")
+
+	channelInit, _ := p.kvstore.GetChannelInitialized(channelID)
+	channelStatus := "No"
+	if channelInit {
+		channelStatus = "Yes"
+	}
+	channel, _ := p.API.GetChannel(channelID)
+	channelName := channelID
+	channelDisplayName := ""
+	if channel != nil {
+		channelName = channel.Name
+		channelDisplayName = channel.DisplayName
+	}
+
+	sb.WriteString("**Channel:**\n\n")
+	sb.WriteString("| Channel | Name | ID | Relay Enabled |\n")
+	sb.WriteString("|:--------|:-----|:---|:--------------|\n")
+	fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", channelDisplayName, channelName, channelID, channelStatus)
+
+	sb.WriteString("\n**Initialized Teams:**\n\n")
 	sb.WriteString("| Team | Team ID | Team Name |\n")
 	sb.WriteString("|:-----|:--------|:---------|\n")
 

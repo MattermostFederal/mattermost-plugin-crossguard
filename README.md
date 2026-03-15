@@ -43,6 +43,20 @@ After `make docker-setup`:
 
 `make deploy` automatically configures Server A with an outbound NATS connection and Server B with an inbound NATS connection.
 
+### Slash Commands
+
+Once the plugin is deployed, use `/crossguard` to manage cross-domain relay:
+
+| Command | Description |
+|---------|-------------|
+| `/crossguard init-team` | Initialize Cross Guard for the current team (requires team or system admin) |
+| `/crossguard init-channel` | Enable relay for the current channel (requires channel admin or higher) |
+| `/crossguard teardown-channel` | Disable relay for the current channel |
+| `/crossguard teardown-team` | Remove Cross Guard from the current team |
+| `/crossguard status` | Show initialization status for the current team |
+
+Typical workflow: `init-team` first, then `init-channel` on each channel you want relayed.
+
 ### Common Commands
 
 | Command | Description |
@@ -77,7 +91,7 @@ After `make docker-setup`:
 ```bash
 make release        # Full build: checks, tests, SBOM audit, CodeQL, sign, checksum
 make release-tag    # Create git tag for the version
-git push origin v$(VERSION)
+git push origin v$(PLUGIN_VERSION)
 ```
 
 ### Security Scanning

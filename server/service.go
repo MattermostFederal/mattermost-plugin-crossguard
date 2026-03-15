@@ -49,25 +49,25 @@ type GlobalStatusResponse struct {
 // initTeamForCrossGuard initializes Cross Guard for a team: writes KV state and
 // posts an announcement to town-square. Accepts the authenticated user to avoid
 // redundant API lookups.
-func (p *Plugin) initTeamForCrossGuard(user *model.User, teamID string) (*model.Team, *apiError) {
+func (p *Plugin) initTeamForCrossGuard(user *model.User, teamID string) (*model.Team, bool, *apiError) {
 	team, appErr := p.API.GetTeam(teamID)
 	if appErr != nil {
-		return nil, &apiError{Message: "team not found", Status: 404}
+		return nil, false, &apiError{Message: "team not found", Status: 404}
 	}
 
 	already, err := p.kvstore.GetTeamInitialized(teamID)
 	if err == nil && already {
-		return team, nil
+		return team, true, nil
 	}
 
 	if err := p.kvstore.SetTeamInitialized(teamID); err != nil {
 		p.API.LogError("Failed to store team init state", "team_id", teamID, "error", err.Error())
-		return nil, &apiError{Message: "failed to save team initialization state", Status: 500}
+		return nil, false, &apiError{Message: "failed to save team initialization state", Status: 500}
 	}
 
 	if err := p.kvstore.AddInitializedTeamID(teamID); err != nil {
 		p.API.LogError("Failed to add team to initialized list", "team_id", teamID, "error", err.Error())
-		return nil, &apiError{Message: "failed to save team initialization state", Status: 500}
+		return nil, false, &apiError{Message: "failed to save team initialization state", Status: 500}
 	}
 
 	channel, appErr := p.API.GetChannelByName(teamID, model.DefaultChannelName, false)
@@ -82,7 +82,7 @@ func (p *Plugin) initTeamForCrossGuard(user *model.User, teamID string) (*model.
 		}
 	}
 
-	return team, nil
+	return team, false, nil
 }
 
 // getTeamStatus returns whether a team has been initialized for Cross Guard.
@@ -152,41 +152,46 @@ func (p *Plugin) getGlobalStatus() (*GlobalStatusResponse, *apiError) {
 }
 
 // initChannelForCrossGuard marks a channel for cross-domain relay.
-func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID string) (*model.Channel, *apiError) {
+func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID string) (*model.Channel, bool, *apiError) {
 	channel, appErr := p.API.GetChannel(channelID)
 	if appErr != nil {
-		return nil, &apiError{Message: "channel not found", Status: 404}
+		return nil, false, &apiError{Message: "channel not found", Status: 404}
 	}
 
 	teamInit, err := p.kvstore.GetTeamInitialized(channel.TeamId)
 	if err != nil {
 		p.API.LogError("Failed to check team init status", "team_id", channel.TeamId, "error", err.Error())
-		return nil, &apiError{Message: "failed to check team initialization status", Status: 500}
+		return nil, false, &apiError{Message: "failed to check team initialization status", Status: 500}
 	}
 	if !teamInit {
-		return nil, &apiError{Message: "team must be initialized first (run /crossguard init-team)", Status: 400}
+		return nil, false, &apiError{Message: "team must be initialized first (run /crossguard init-team)", Status: 400}
 	}
 
 	already, err := p.kvstore.GetChannelInitialized(channelID)
 	if err == nil && already {
-		return channel, nil
+		return channel, true, nil
 	}
 
 	if err := p.kvstore.SetChannelInitialized(channelID); err != nil {
 		p.API.LogError("Failed to store channel init state", "channel_id", channelID, "error", err.Error())
-		return nil, &apiError{Message: "failed to save channel initialization state", Status: 500}
+		return nil, false, &apiError{Message: "failed to save channel initialization state", Status: 500}
+	}
+
+	channel.Shared = model.NewPointer(true)
+	if _, appErr := p.API.UpdateChannel(channel); appErr != nil {
+		p.API.LogWarn("Failed to mark channel as shared", "error", appErr.Error())
 	}
 
 	post := &model.Post{
 		UserId:    p.botUserID,
 		ChannelId: channel.Id,
-		Message:   fmt.Sprintf("Cross Guard relay enabled for this channel by @%s.", user.Username),
+		Message:   fmt.Sprintf("Cross Guard relay enabled for this channel by @%s. (channel ID: %s, channel name: %s)", user.Username, channel.Id, channel.Name),
 	}
 	if _, appErr := p.API.CreatePost(post); appErr != nil {
 		p.API.LogWarn("Failed to post channel init message", "error", appErr.Error())
 	}
 
-	return channel, nil
+	return channel, false, nil
 }
 
 // teardownChannelForCrossGuard removes a channel from relay.
@@ -206,10 +211,15 @@ func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID string
 		return nil, &apiError{Message: "failed to remove channel initialization state", Status: 500}
 	}
 
+	channel.Shared = model.NewPointer(false)
+	if _, appErr := p.API.UpdateChannel(channel); appErr != nil {
+		p.API.LogWarn("Failed to unmark channel as shared", "error", appErr.Error())
+	}
+
 	post := &model.Post{
 		UserId:    p.botUserID,
 		ChannelId: channel.Id,
-		Message:   fmt.Sprintf("Cross Guard relay disabled for this channel by @%s.", user.Username),
+		Message:   fmt.Sprintf("Cross Guard relay disabled for this channel by @%s. (channel ID: %s, channel name: %s)", user.Username, channel.Id, channel.Name),
 	}
 	if _, appErr := p.API.CreatePost(post); appErr != nil {
 		p.API.LogWarn("Failed to post channel teardown message", "error", appErr.Error())

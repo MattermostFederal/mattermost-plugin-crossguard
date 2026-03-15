@@ -74,8 +74,13 @@ func (p *Plugin) executeInitTeam(args *model.CommandArgs) *model.CommandResponse
 		return respondEphemeral("Failed to look up user.")
 	}
 
-	if _, svcErr := p.initTeamForCrossGuard(user, args.TeamId); svcErr != nil {
+	team, alreadyInit, svcErr := p.initTeamForCrossGuard(user, args.TeamId)
+	if svcErr != nil {
 		return respondEphemeral("%s", svcErr.Message)
+	}
+
+	if alreadyInit {
+		return respondEphemeral("Cross Guard is already initialized for this team. (team ID: %s, team name: %s)", team.Id, team.Name)
 	}
 
 	return &model.CommandResponse{}
@@ -174,8 +179,13 @@ func (p *Plugin) executeInitChannel(args *model.CommandArgs) *model.CommandRespo
 		return respondEphemeral("Failed to look up user.")
 	}
 
-	if _, svcErr := p.initChannelForCrossGuard(user, args.ChannelId); svcErr != nil {
+	ch, alreadyInit, svcErr := p.initChannelForCrossGuard(user, args.ChannelId)
+	if svcErr != nil {
 		return respondEphemeral("%s", svcErr.Message)
+	}
+
+	if alreadyInit {
+		return respondEphemeral("Cross Guard relay is already enabled for this channel. (channel ID: %s, channel name: %s)", ch.Id, ch.Name)
 	}
 
 	return &model.CommandResponse{}

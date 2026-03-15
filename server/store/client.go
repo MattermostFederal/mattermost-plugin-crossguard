@@ -82,7 +82,10 @@ func (kv Client) RemoveInitializedTeamID(teamID string) error {
 		if idx < 0 {
 			return ids, false
 		}
-		return slices.Delete(ids, idx, idx+1), true
+		result := make([]string, 0, len(ids)-1)
+		result = append(result, ids[:idx]...)
+		result = append(result, ids[idx+1:]...)
+		return result, true
 	})
 }
 

@@ -210,7 +210,7 @@ func (p *Plugin) handleInitTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	team, svcErr := p.initTeamForCrossGuard(user, teamID)
+	team, _, svcErr := p.initTeamForCrossGuard(user, teamID)
 	if svcErr != nil {
 		writeJSONError(w, svcErr.Message, svcErr.Status)
 		return
@@ -246,7 +246,7 @@ func (p *Plugin) handleInitChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch, svcErr := p.initChannelForCrossGuard(user, channelID)
+	ch, _, svcErr := p.initChannelForCrossGuard(user, channelID)
 	if svcErr != nil {
 		writeJSONError(w, svcErr.Message, svcErr.Status)
 		return

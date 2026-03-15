@@ -112,6 +112,16 @@ func (p *Plugin) MessageHasBeenDeleted(_ *plugin.Context, post *mmModel.Post) {
 		return
 	}
 
+	isDeletingFlag, err := p.kvstore.IsDeletingFlagSet(post.Id)
+	if err != nil {
+		p.API.LogError("Failed to check delete flag, skipping relay to avoid loop",
+			"post_id", post.Id, "error", err.Error())
+		return
+	}
+	if isDeletingFlag {
+		return
+	}
+
 	channel, team, ok := p.isChannelRelayEnabled(post.ChannelId)
 	if !ok {
 		return
@@ -137,14 +147,18 @@ func (p *Plugin) ReactionHasBeenAdded(_ *plugin.Context, reaction *mmModel.React
 		return
 	}
 
-	channel, team, ok := p.isChannelRelayEnabled(post.ChannelId)
-	if !ok {
-		return
-	}
-
 	user, appErr := p.API.GetUser(reaction.UserId)
 	if appErr != nil {
 		p.API.LogError("Failed to get user for reaction relay", "user_id", reaction.UserId, "error", appErr.Error())
+		return
+	}
+
+	if user.Position == "crossguard-sync" {
+		return
+	}
+
+	channel, team, ok := p.isChannelRelayEnabled(post.ChannelId)
+	if !ok {
 		return
 	}
 
@@ -168,14 +182,18 @@ func (p *Plugin) ReactionHasBeenRemoved(_ *plugin.Context, reaction *mmModel.Rea
 		return
 	}
 
-	channel, team, ok := p.isChannelRelayEnabled(post.ChannelId)
-	if !ok {
-		return
-	}
-
 	user, appErr := p.API.GetUser(reaction.UserId)
 	if appErr != nil {
 		p.API.LogError("Failed to get user for reaction relay", "user_id", reaction.UserId, "error", appErr.Error())
+		return
+	}
+
+	if user.Position == "crossguard-sync" {
+		return
+	}
+
+	channel, team, ok := p.isChannelRelayEnabled(post.ChannelId)
+	if !ok {
 		return
 	}
 

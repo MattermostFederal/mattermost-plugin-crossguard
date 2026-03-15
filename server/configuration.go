@@ -198,6 +198,7 @@ func (p *Plugin) OnConfigurationChange() error {
 
 	if p.relaySem != nil {
 		p.reconnectOutbound()
+		p.reconnectInbound()
 	}
 
 	return nil

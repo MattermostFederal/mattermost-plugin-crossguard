@@ -41,6 +41,8 @@ type Plugin struct {
 	relaySem      chan struct{}
 	outboundMu    sync.RWMutex
 	outboundConns []outboundConn
+	inboundMu     sync.RWMutex
+	inboundConns  []inboundConn
 }
 
 func (p *Plugin) OnActivate() error {
@@ -82,6 +84,7 @@ func (p *Plugin) OnActivate() error {
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.relaySem = make(chan struct{}, 50)
 	p.connectOutbound()
+	p.connectInbound()
 
 	return nil
 }
@@ -90,6 +93,7 @@ func (p *Plugin) OnDeactivate() error {
 	if p.cancel != nil {
 		p.cancel()
 	}
+	p.closeInbound()
 	p.wg.Wait()
 	p.closeOutbound()
 	return nil

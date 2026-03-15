@@ -106,7 +106,7 @@ func (p *Plugin) connectOutbound() {
 
 	var pool []outboundConn
 	for _, conn := range conns {
-		nc, err := connectNATSPersistent(conn, p)
+		nc, err := connectNATSPersistent(conn, p, "Outbound")
 		if err != nil {
 			p.API.LogError("Failed to connect outbound NATS for relay",
 				"name", conn.Name, "address", conn.Address, "error", err.Error())
@@ -138,7 +138,7 @@ func (p *Plugin) reconnectOutbound() {
 	p.connectOutbound()
 }
 
-func connectNATSPersistent(conn NATSConnection, p *Plugin) (*nats.Conn, error) {
+func connectNATSPersistent(conn NATSConnection, p *Plugin, direction string) (*nats.Conn, error) {
 	opts := []nats.Option{
 		nats.Timeout(natsRelayConnectTimeout),
 		nats.MaxReconnects(natsMaxReconnects),
@@ -148,10 +148,10 @@ func connectNATSPersistent(conn NATSConnection, p *Plugin) (*nats.Conn, error) {
 			if err != nil {
 				errMsg = err.Error()
 			}
-			p.API.LogWarn("Outbound NATS disconnected", "name", conn.Name, "error", errMsg)
+			p.API.LogWarn(direction+" NATS disconnected", "name", conn.Name, "error", errMsg)
 		}),
 		nats.ReconnectHandler(func(_ *nats.Conn) {
-			p.API.LogInfo("Outbound NATS reconnected", "name", conn.Name)
+			p.API.LogInfo(direction+" NATS reconnected", "name", conn.Name)
 		}),
 	}
 

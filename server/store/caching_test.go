@@ -21,6 +21,12 @@ type mockKVStore struct {
 	getChannelInitializedFn    func(string) (bool, error)
 	setChannelInitializedFn    func(string) error
 	deleteChannelInitializedFn func(string) error
+	setPostMappingFn           func(string, string, string) error
+	getPostMappingFn           func(string, string) (string, error)
+	deletePostMappingFn        func(string, string) error
+	setDeletingFlagFn          func(string) error
+	isDeletingFlagSetFn        func(string) (bool, error)
+	clearDeletingFlagFn        func(string) error
 }
 
 func (m *mockKVStore) GetTeamInitialized(teamID string) (bool, error) {
@@ -82,6 +88,48 @@ func (m *mockKVStore) SetChannelInitialized(channelID string) error {
 func (m *mockKVStore) DeleteChannelInitialized(channelID string) error {
 	if m.deleteChannelInitializedFn != nil {
 		return m.deleteChannelInitializedFn(channelID)
+	}
+	return nil
+}
+
+func (m *mockKVStore) SetPostMapping(connName, remotePostID, localPostID string) error {
+	if m.setPostMappingFn != nil {
+		return m.setPostMappingFn(connName, remotePostID, localPostID)
+	}
+	return nil
+}
+
+func (m *mockKVStore) GetPostMapping(connName, remotePostID string) (string, error) {
+	if m.getPostMappingFn != nil {
+		return m.getPostMappingFn(connName, remotePostID)
+	}
+	return "", nil
+}
+
+func (m *mockKVStore) DeletePostMapping(connName, remotePostID string) error {
+	if m.deletePostMappingFn != nil {
+		return m.deletePostMappingFn(connName, remotePostID)
+	}
+	return nil
+}
+
+func (m *mockKVStore) SetDeletingFlag(postID string) error {
+	if m.setDeletingFlagFn != nil {
+		return m.setDeletingFlagFn(postID)
+	}
+	return nil
+}
+
+func (m *mockKVStore) IsDeletingFlagSet(postID string) (bool, error) {
+	if m.isDeletingFlagSetFn != nil {
+		return m.isDeletingFlagSetFn(postID)
+	}
+	return false, nil
+}
+
+func (m *mockKVStore) ClearDeletingFlag(postID string) error {
+	if m.clearDeletingFlagFn != nil {
+		return m.clearDeletingFlagFn(postID)
 	}
 	return nil
 }

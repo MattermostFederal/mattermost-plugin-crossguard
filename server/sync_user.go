@@ -67,6 +67,25 @@ func (p *Plugin) ensureSyncUser(username, connName, teamID, channelID string) (s
 	return created.Id, nil
 }
 
+// resolveInboundUser resolves a remote username to a local user ID. If username
+// lookup is enabled and a real (non-sync) local user with the same username
+// exists, that user is used directly. Otherwise falls through to ensureSyncUser.
+func (p *Plugin) resolveInboundUser(username, connName, teamID, channelID string) (string, error) {
+	cfg := p.getConfiguration()
+	if cfg.isUsernameLookupEnabled() {
+		user, appErr := p.API.GetUserByUsername(username)
+		if appErr != nil {
+			p.API.LogDebug("Username lookup did not find local user, falling back to sync user",
+				"username", username, "conn", connName)
+		} else if user.Position != syncUserPosition {
+			p.ensureMembership(user.Id, teamID, channelID)
+			return user.Id, nil
+		}
+	}
+
+	return p.ensureSyncUser(username, connName, teamID, channelID)
+}
+
 func (p *Plugin) ensureMembership(userID, teamID, channelID string) {
 	if _, appErr := p.API.CreateTeamMember(teamID, userID); appErr != nil {
 		if !strings.Contains(appErr.Error(), "already") {

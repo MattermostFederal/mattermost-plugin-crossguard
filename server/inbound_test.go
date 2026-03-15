@@ -170,6 +170,9 @@ func TestHandleInboundPost(t *testing.T) {
 
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
+	api.On("GetUserByUsername", "alice").Return(nil, &mmModel.AppError{Message: "not found"})
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+		"username", "alice", "conn", "cgb").Return()
 	api.On("GetUserByUsername", "alice.cgb").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
@@ -275,6 +278,9 @@ func TestHandleInboundReaction_Add(t *testing.T) {
 
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
+	api.On("GetUserByUsername", "alice").Return(nil, &mmModel.AppError{Message: "not found"})
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+		"username", "alice", "conn", "cgb").Return()
 	api.On("GetUserByUsername", "alice.cgb").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
@@ -308,6 +314,9 @@ func TestHandleInboundReaction_Remove(t *testing.T) {
 
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
+	api.On("GetUserByUsername", "alice").Return(nil, &mmModel.AppError{Message: "not found"})
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+		"username", "alice", "conn", "cgb").Return()
 	api.On("GetUserByUsername", "alice.cgb").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
@@ -341,6 +350,9 @@ func TestHandleInboundPost_WithThread(t *testing.T) {
 
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
+	api.On("GetUserByUsername", "alice").Return(nil, &mmModel.AppError{Message: "not found"})
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+		"username", "alice", "conn", "cgb").Return()
 	api.On("GetUserByUsername", "alice.cgb").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)

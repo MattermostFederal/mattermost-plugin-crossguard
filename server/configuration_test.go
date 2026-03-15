@@ -312,6 +312,27 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 }
 
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+func TestIsUsernameLookupEnabled(t *testing.T) {
+	t.Run("nil defaults to true", func(t *testing.T) {
+		cfg := &configuration{}
+		assert.True(t, cfg.isUsernameLookupEnabled())
+	})
+
+	t.Run("explicitly true", func(t *testing.T) {
+		cfg := &configuration{UsernameLookup: boolPtr(true)}
+		assert.True(t, cfg.isUsernameLookupEnabled())
+	})
+
+	t.Run("explicitly false", func(t *testing.T) {
+		cfg := &configuration{UsernameLookup: boolPtr(false)}
+		assert.False(t, cfg.isUsernameLookupEnabled())
+	})
+}
+
 func TestIsTestMessage(t *testing.T) {
 	t.Run("valid test message is detected", func(t *testing.T) {
 		envelope, err := model.NewMessage(model.MessageTypeTest, model.TestMessage{ID: "abc-123"})

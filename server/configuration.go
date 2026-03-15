@@ -37,6 +37,11 @@ type NATSConnection struct {
 type configuration struct {
 	InboundConnections  string `json:"InboundConnections"`
 	OutboundConnections string `json:"OutboundConnections"`
+	UsernameLookup      *bool  `json:"UsernameLookup"`
+}
+
+func (c *configuration) isUsernameLookupEnabled() bool {
+	return c.UsernameLookup == nil || *c.UsernameLookup
 }
 
 func parseConnections(raw string) ([]NATSConnection, error) {

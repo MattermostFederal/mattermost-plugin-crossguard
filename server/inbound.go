@@ -171,9 +171,9 @@ func (p *Plugin) handleInboundPost(connName string, envelope *model.Message) {
 		return
 	}
 
-	userID, err := p.ensureSyncUser(postMsg.Username, connName, team.Id, channel.Id)
+	userID, err := p.resolveInboundUser(postMsg.Username, connName, team.Id, channel.Id)
 	if err != nil {
-		p.API.LogError("Inbound post: sync user failed", "conn", connName, "username", postMsg.Username, "error", err.Error())
+		p.API.LogError("Inbound post: resolve user failed", "conn", connName, "username", postMsg.Username, "error", err.Error())
 		return
 	}
 
@@ -294,9 +294,9 @@ func (p *Plugin) handleInboundReaction(connName string, envelope *model.Message,
 		return
 	}
 
-	userID, err := p.ensureSyncUser(reactionMsg.Username, connName, team.Id, channel.Id)
+	userID, err := p.resolveInboundUser(reactionMsg.Username, connName, team.Id, channel.Id)
 	if err != nil {
-		p.API.LogError("Inbound reaction: sync user failed", "conn", connName, "username", reactionMsg.Username, "error", err.Error())
+		p.API.LogError("Inbound reaction: resolve user failed", "conn", connName, "username", reactionMsg.Username, "error", err.Error())
 		return
 	}
 

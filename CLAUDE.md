@@ -141,6 +141,7 @@ After setup:
 | `make docker-logs` | Follow Server A logs |
 | `make docker-logs-b` | Follow Server B logs |
 | `make docker-reset` | Disable and re-enable plugin on both servers |
+| `make docker-smoke-test` | Run end-to-end relay smoke test (init, post, verify) |
 | `make docker-disable` | Disable plugin on both servers |
 | `make docker-enable` | Enable plugin on both servers |
 | `make docker-plugin-list` | List installed plugins on both servers |

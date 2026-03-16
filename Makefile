@@ -471,6 +471,60 @@ docker-deploy: docker-check dist
 		-d '{"PluginSettings":{"Plugins":{"crossguard":{"inboundconnections":"[{\"name\":\"relay-test\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","outboundconnections":"[]"}}}}' >/dev/null && \
 	echo "Server B configured with inbound NATS connection"
 
+## End-to-end smoke test: init teams/channels, post message on A, verify relay to B
+.PHONY: docker-smoke-test
+docker-smoke-test: docker-check
+	@echo ""
+	@echo "Running end-to-end smoke test..."
+	@TOKEN_A=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	TOKEN_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/users/login \
+		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	CHAN_A=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test/channels/name/off-topic \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	CHAN_B=$$(curl -sf http://localhost:$(MM_PORT_B)/api/v4/teams/name/test/channels/name/off-topic \
+		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "Initializing teams..." && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$CHAN_A"'","command":"/crossguard init-team outbound:relay-test"}' >/dev/null && \
+	echo "  Server A: init-team outbound:relay-test" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_B" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$CHAN_B"'","command":"/crossguard init-team inbound:relay-test"}' >/dev/null && \
+	echo "  Server B: init-team inbound:relay-test" && \
+	echo "Initializing channels..." && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$CHAN_A"'","command":"/crossguard init-channel outbound:relay-test"}' >/dev/null && \
+	echo "  Server A: init-channel outbound:relay-test on off-topic" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_B" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$CHAN_B"'","command":"/crossguard init-channel inbound:relay-test"}' >/dev/null && \
+	echo "  Server B: init-channel inbound:relay-test on off-topic" && \
+	echo "Posting smoke-test message from Server A..." && \
+	TOKEN_USERA=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"usera","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	SMOKE_ID=$$(date +%s)-$$$$ && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/posts \
+		-H "Authorization: Bearer $$TOKEN_USERA" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$CHAN_A"'","message":"smoke-test:'"$$SMOKE_ID"'"}' >/dev/null && \
+	echo "  Posted smoke-test:$$SMOKE_ID to Server A off-topic" && \
+	echo "Waiting for relay..." && \
+	sleep 3 && \
+	FOUND=$$(curl -sf "http://localhost:$(MM_PORT_B)/api/v4/channels/$$CHAN_B/posts?per_page=10" \
+		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$SMOKE_ID';found=any('smoke-test:'+sid in p.get('message','') for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
+	echo "Smoke test result: $$FOUND" || \
+	{ echo "Smoke test FAILED: message smoke-test:$$SMOKE_ID not found on Server B"; exit 1; }
+
 ## Disable and re-enable plugin on both servers
 .PHONY: docker-reset
 docker-reset: docker-check
@@ -501,9 +555,9 @@ docker-plugin-list: docker-check
 	@echo "--- Server B ---"
 	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local plugin list
 
-## Convenience alias: deploy plugin to Docker
+## Convenience alias: deploy plugin to Docker and run smoke test
 .PHONY: deploy
-deploy: docker-deploy
+deploy: docker-deploy docker-smoke-test
 
 ## Print /etc/hosts entries needed for dual-server setup
 .PHONY: hosts-setup

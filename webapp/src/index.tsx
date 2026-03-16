@@ -2,6 +2,7 @@ import manifest from 'manifest';
 
 import type {PluginRegistry} from 'types/mattermost-webapp';
 
+import CrossguardModal from './components/CrossguardModal';
 import NATSConnectionSettings from './components/NATSConnectionSettings';
 
 export default class Plugin {
@@ -13,6 +14,15 @@ export default class Plugin {
         registry.registerAdminConsoleCustomSetting(
             'OutboundConnections',
             NATSConnectionSettings,
+        );
+        registry.registerRootComponent(CrossguardModal);
+        registry.registerChannelHeaderMenuAction(
+            'Crossguard',
+            (channelID: string) => {
+                document.dispatchEvent(
+                    new CustomEvent('crossguard:open-modal', {detail: {channelID}}),
+                );
+            },
         );
     }
 }

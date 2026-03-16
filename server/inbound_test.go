@@ -28,7 +28,7 @@ func newTestKVStore() *testKVStore {
 }
 
 func (s *testKVStore) GetTeamConnections(string) ([]string, error) {
-	return []string{"inbound:cgb", "outbound:cgb"}, nil
+	return []string{"inbound:high", "outbound:high"}, nil
 }
 func (s *testKVStore) SetTeamConnections(string, []string) error { return nil }
 func (s *testKVStore) DeleteTeamConnections(string) error        { return nil }
@@ -39,7 +39,7 @@ func (s *testKVStore) GetInitializedTeamIDs() ([]string, error)  { return nil, n
 func (s *testKVStore) AddInitializedTeamID(string) error         { return nil }
 func (s *testKVStore) RemoveInitializedTeamID(string) error      { return nil }
 func (s *testKVStore) GetChannelConnections(string) ([]string, error) {
-	return []string{"inbound:cgb", "outbound:cgb"}, nil
+	return []string{"inbound:high", "outbound:high"}, nil
 }
 func (s *testKVStore) SetChannelConnections(string, []string) error { return nil }
 func (s *testKVStore) DeleteChannelConnections(string) error        { return nil }
@@ -131,7 +131,7 @@ func TestResolveTeamAndChannel(t *testing.T) {
 		api.On("GetTeamByName", "test-a").Return(team, nil)
 		api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 
-		gotTeam, gotChannel, err := p.resolveTeamAndChannel("cgb", "test-a", "town-square")
+		gotTeam, gotChannel, err := p.resolveTeamAndChannel("high", "test-a", "town-square")
 		require.NoError(t, err)
 		assert.Equal(t, "team-id", gotTeam.Id)
 		assert.Equal(t, "chan-id", gotChannel.Id)
@@ -143,7 +143,7 @@ func TestResolveTeamAndChannel(t *testing.T) {
 
 		api.On("GetTeamByName", "unknown").Return(nil, &mmModel.AppError{Message: "not found"})
 
-		_, _, err := p.resolveTeamAndChannel("cgb", "unknown", "town-square")
+		_, _, err := p.resolveTeamAndChannel("high", "unknown", "town-square")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not found")
 	})
@@ -156,7 +156,7 @@ func TestResolveTeamAndChannel(t *testing.T) {
 		api.On("GetTeamByName", "test-a").Return(team, nil)
 		api.On("GetChannelByName", "team-id", "unknown-chan", false).Return(nil, &mmModel.AppError{Message: "not found"})
 
-		_, _, err := p.resolveTeamAndChannel("cgb", "test-a", "unknown-chan")
+		_, _, err := p.resolveTeamAndChannel("high", "test-a", "unknown-chan")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not found")
 	})
@@ -181,7 +181,7 @@ func TestResolveTeamAndChannel(t *testing.T) {
 		api.On("CreatePost", mock.AnythingOfType("*model.Post")).Return(&mmModel.Post{Id: "prompt-post-id"}, nil)
 		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
-		_, _, err := p.resolveTeamAndChannel("cgb", "test-a", "town-square")
+		_, _, err := p.resolveTeamAndChannel("high", "test-a", "town-square")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not linked")
 	})
@@ -202,16 +202,15 @@ func TestHandleInboundPost(t *testing.T) {
 
 	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
 	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
-	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.cgb", Position: syncUserPosition}
+	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.high", Position: syncUserPosition}
 	notFoundErr := &mmModel.AppError{Message: "not found"}
 
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
 	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
-		"username", "alice", "conn", "cgb").Return()
-	api.On("GetUserByUsername", "alice:cgb").Return(nil, notFoundErr)
-	api.On("GetUserByUsername", "alice.cgb").Return(syncUser, nil)
+		"username", "alice", "conn", "high").Return()
+	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
 	api.On("CreatePost", mock.MatchedBy(func(post *mmModel.Post) bool {
@@ -231,9 +230,9 @@ func TestHandleInboundPost(t *testing.T) {
 	envelope, err := model.NewMessage(model.MessageTypePost, postMsg)
 	require.NoError(t, err)
 
-	p.handleInboundPost("cgb", envelope)
+	p.handleInboundPost("high", envelope)
 
-	assert.Equal(t, "local-post-id", kvs.postMappings["cgb-remote-post-id"])
+	assert.Equal(t, "local-post-id", kvs.postMappings["high-remote-post-id"])
 	api.AssertExpectations(t)
 }
 
@@ -241,7 +240,7 @@ func TestHandleInboundUpdate(t *testing.T) {
 	api := &plugintest.API{}
 	p, kvs := setupTestPlugin(api)
 
-	kvs.postMappings["cgb-remote-post-id"] = "local-post-id"
+	kvs.postMappings["high-remote-post-id"] = "local-post-id"
 
 	existingPost := &mmModel.Post{
 		Id:      "local-post-id",
@@ -261,7 +260,7 @@ func TestHandleInboundUpdate(t *testing.T) {
 	envelope, err := model.NewMessage(model.MessageTypeUpdate, postMsg)
 	require.NoError(t, err)
 
-	p.handleInboundUpdate("cgb", envelope)
+	p.handleInboundUpdate("high", envelope)
 	api.AssertExpectations(t)
 }
 
@@ -269,20 +268,20 @@ func TestHandleInboundUpdate_NoMapping(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogWarn", "Inbound update: no post mapping found", "conn", "cgb", "remote_id", "unknown-id").Return()
+	api.On("LogWarn", "Inbound update: no post mapping found", "conn", "high", "remote_id", "unknown-id").Return()
 
 	postMsg := model.PostMessage{PostID: "unknown-id", Message: "edited"}
 	envelope, err := model.NewMessage(model.MessageTypeUpdate, postMsg)
 	require.NoError(t, err)
 
-	p.handleInboundUpdate("cgb", envelope)
+	p.handleInboundUpdate("high", envelope)
 }
 
 func TestHandleInboundDelete(t *testing.T) {
 	api := &plugintest.API{}
 	p, kvs := setupTestPlugin(api)
 
-	kvs.postMappings["cgb-remote-post-id"] = "local-post-id"
+	kvs.postMappings["high-remote-post-id"] = "local-post-id"
 
 	api.On("DeletePost", "local-post-id").Return(nil)
 
@@ -294,9 +293,9 @@ func TestHandleInboundDelete(t *testing.T) {
 	envelope, err := model.NewMessage(model.MessageTypeDelete, deleteMsg)
 	require.NoError(t, err)
 
-	p.handleInboundDelete("cgb", envelope)
+	p.handleInboundDelete("high", envelope)
 
-	_, exists := kvs.postMappings["cgb-remote-post-id"]
+	_, exists := kvs.postMappings["high-remote-post-id"]
 	assert.False(t, exists, "post mapping should be deleted")
 
 	assert.False(t, kvs.deletingFlags["local-post-id"], "delete flag should be cleaned up")
@@ -308,20 +307,19 @@ func TestHandleInboundReaction_Add(t *testing.T) {
 	api := &plugintest.API{}
 	p, kvs := setupTestPlugin(api)
 
-	kvs.postMappings["cgb-remote-post-id"] = "local-post-id"
+	kvs.postMappings["high-remote-post-id"] = "local-post-id"
 
 	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
 	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
-	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.cgb", Position: syncUserPosition}
+	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.high", Position: syncUserPosition}
 	notFoundErr := &mmModel.AppError{Message: "not found"}
 
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
 	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
-		"username", "alice", "conn", "cgb").Return()
-	api.On("GetUserByUsername", "alice:cgb").Return(nil, notFoundErr)
-	api.On("GetUserByUsername", "alice.cgb").Return(syncUser, nil)
+		"username", "alice", "conn", "high").Return()
+	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
 	api.On("AddReaction", mock.MatchedBy(func(r *mmModel.Reaction) bool {
@@ -338,7 +336,7 @@ func TestHandleInboundReaction_Add(t *testing.T) {
 	envelope, err := model.NewMessage(model.MessageTypeReactionAdd, reactionMsg)
 	require.NoError(t, err)
 
-	p.handleInboundReaction("cgb", envelope, true)
+	p.handleInboundReaction("high", envelope, true)
 	api.AssertExpectations(t)
 }
 
@@ -346,20 +344,19 @@ func TestHandleInboundReaction_Remove(t *testing.T) {
 	api := &plugintest.API{}
 	p, kvs := setupTestPlugin(api)
 
-	kvs.postMappings["cgb-remote-post-id"] = "local-post-id"
+	kvs.postMappings["high-remote-post-id"] = "local-post-id"
 
 	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
 	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
-	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.cgb", Position: syncUserPosition}
+	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.high", Position: syncUserPosition}
 	notFoundErr := &mmModel.AppError{Message: "not found"}
 
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
 	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
-		"username", "alice", "conn", "cgb").Return()
-	api.On("GetUserByUsername", "alice:cgb").Return(nil, notFoundErr)
-	api.On("GetUserByUsername", "alice.cgb").Return(syncUser, nil)
+		"username", "alice", "conn", "high").Return()
+	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
 	api.On("RemoveReaction", mock.MatchedBy(func(r *mmModel.Reaction) bool {
@@ -376,7 +373,7 @@ func TestHandleInboundReaction_Remove(t *testing.T) {
 	envelope, err := model.NewMessage(model.MessageTypeReactionRemove, reactionMsg)
 	require.NoError(t, err)
 
-	p.handleInboundReaction("cgb", envelope, false)
+	p.handleInboundReaction("high", envelope, false)
 	api.AssertExpectations(t)
 }
 
@@ -384,20 +381,19 @@ func TestHandleInboundPost_WithThread(t *testing.T) {
 	api := &plugintest.API{}
 	p, kvs := setupTestPlugin(api)
 
-	kvs.postMappings["cgb-remote-root-id"] = "local-root-id"
+	kvs.postMappings["high-remote-root-id"] = "local-root-id"
 
 	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
 	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
-	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.cgb", Position: syncUserPosition}
+	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.high", Position: syncUserPosition}
 	notFoundErr := &mmModel.AppError{Message: "not found"}
 
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
 	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
-		"username", "alice", "conn", "cgb").Return()
-	api.On("GetUserByUsername", "alice:cgb").Return(nil, notFoundErr)
-	api.On("GetUserByUsername", "alice.cgb").Return(syncUser, nil)
+		"username", "alice", "conn", "high").Return()
+	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
 	api.On("CreatePost", mock.MatchedBy(func(post *mmModel.Post) bool {
@@ -415,8 +411,8 @@ func TestHandleInboundPost_WithThread(t *testing.T) {
 	envelope, err := model.NewMessage(model.MessageTypePost, postMsg)
 	require.NoError(t, err)
 
-	p.handleInboundPost("cgb", envelope)
+	p.handleInboundPost("high", envelope)
 
-	assert.Equal(t, "local-reply-id", kvs.postMappings["cgb-remote-reply-id"])
+	assert.Equal(t, "local-reply-id", kvs.postMappings["high-remote-reply-id"])
 	api.AssertExpectations(t)
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
@@ -50,6 +51,32 @@ type GlobalStatusResponse struct {
 	Teams       []TeamStatusEntry        `json:"teams"`
 	Connections []RedactedNATSConnection `json:"connections"`
 	Warnings    []string                 `json:"warnings,omitempty"`
+}
+
+const (
+	crossguardHeaderPrefix = "\U0001F517 " // link emoji + space
+
+	// Direction prefixes for connection names stored in the KV store.
+	directionOutbound = "outbound:"
+	directionInbound  = "inbound:"
+)
+
+func addCrossguardHeaderPrefix(header string) string {
+	if strings.HasPrefix(header, crossguardHeaderPrefix) {
+		return header
+	}
+	return crossguardHeaderPrefix + header
+}
+
+func removeCrossguardHeaderPrefix(header string) string {
+	return strings.TrimPrefix(header, crossguardHeaderPrefix)
+}
+
+func (p *Plugin) publishChannelConnectionUpdate(channelID string, connections string) {
+	p.API.PublishWebSocketEvent("channel_connections_updated", map[string]any{
+		"channel_id":  channelID,
+		"connections": connections,
+	}, &model.WebsocketBroadcast{ChannelId: channelID})
 }
 
 // initTeamForCrossGuard links a connection to a team. If the team was not
@@ -231,6 +258,10 @@ func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *ap
 		return nil, &apiError{Message: "channel not found", Status: 404}
 	}
 
+	if channel.Type == model.ChannelTypeDirect || channel.Type == model.ChannelTypeGroup {
+		return nil, &apiError{Message: "Cross Guard is not available for direct or group messages", Status: 400}
+	}
+
 	team, appErr := p.API.GetTeam(channel.TeamId)
 	if appErr != nil {
 		return nil, &apiError{Message: "team not found", Status: 404}
@@ -328,10 +359,13 @@ func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID, connName 
 		return nil, false, &apiError{Message: "failed to save channel connection state", Status: 500}
 	}
 
-	if len(updated) == 1 {
-		channel.Shared = model.NewPointer(true)
-		if _, appErr := p.API.UpdateChannel(channel); appErr != nil {
-			p.API.LogWarn("Failed to mark channel as shared", "error", appErr.Error())
+	p.publishChannelConnectionUpdate(channelID, strings.Join(updated, ","))
+
+	freshChannel, appErr := p.API.GetChannel(channelID)
+	if appErr == nil {
+		freshChannel.Header = addCrossguardHeaderPrefix(freshChannel.Header)
+		if _, appErr := p.API.UpdateChannel(freshChannel); appErr != nil {
+			p.API.LogWarn("Failed to update channel header with CrossGuard prefix", "channel_id", channelID, "error", appErr.Error())
 		}
 	}
 
@@ -387,10 +421,17 @@ func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID, connN
 			return nil, &apiError{Message: "failed to remove channel connections", Status: 500}
 		}
 
-		channel.Shared = model.NewPointer(false)
-		if _, appErr := p.API.UpdateChannel(channel); appErr != nil {
-			p.API.LogWarn("Failed to unmark channel as shared", "error", appErr.Error())
+		freshChannel, fErr := p.API.GetChannel(channelID)
+		if fErr == nil {
+			freshChannel.Header = removeCrossguardHeaderPrefix(freshChannel.Header)
+			if _, appErr := p.API.UpdateChannel(freshChannel); appErr != nil {
+				p.API.LogWarn("Failed to remove CrossGuard prefix from channel header", "channel_id", channelID, "error", appErr.Error())
+			}
 		}
+
+		p.publishChannelConnectionUpdate(channelID, "")
+	} else {
+		p.publishChannelConnectionUpdate(channelID, strings.Join(updated, ","))
 	}
 
 	msg := fmt.Sprintf("Cross Guard connection `%s` unlinked from this channel by @%s.", connName, user.Username)
@@ -479,14 +520,14 @@ func (p *Plugin) getAllConnectionNames() []string {
 		p.API.LogWarn("Failed to parse outbound connections", "error", outErr.Error())
 	} else {
 		for _, conn := range outbound {
-			names = append(names, "outbound:"+conn.Name)
+			names = append(names, directionOutbound+conn.Name)
 		}
 	}
 	if inErr != nil {
 		p.API.LogWarn("Failed to parse inbound connections", "error", inErr.Error())
 	} else {
 		for _, conn := range inbound {
-			names = append(names, "inbound:"+conn.Name)
+			names = append(names, directionInbound+conn.Name)
 		}
 	}
 	return names
@@ -513,27 +554,6 @@ func (p *Plugin) resolveConnectionName(connName string, available []string) (str
 	}
 
 	return connName, available, ""
-}
-
-// resolveLinkedConnectionName resolves the connection name from the linked list.
-// If connName is empty and there is exactly one linked connection, it auto-selects it.
-func resolveLinkedConnectionName(connName string, linked []string) (string, string) {
-	if len(linked) == 0 {
-		return "", "no connections linked"
-	}
-
-	if connName == "" {
-		if len(linked) == 1 {
-			return linked[0], ""
-		}
-		return "", "multiple connections linked, specify connection_name"
-	}
-
-	if !slices.Contains(linked, connName) {
-		return "", fmt.Sprintf("connection %q is not linked", connName)
-	}
-
-	return connName, ""
 }
 
 // redactConnections strips sensitive fields from NATS connections for the status response.

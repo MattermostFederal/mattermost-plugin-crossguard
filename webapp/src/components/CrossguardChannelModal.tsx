@@ -415,7 +415,7 @@ const CrossguardChannelModal: React.FC = () => {
         >
             <div style={s.modal}>
                 <div style={s.header}>
-                    <h2 style={s.title}>{`Crossguard Settings for ${teamName || '...'} > ${channelName || '...'}`}</h2>
+                    <h2 style={s.title}>{`Cross Guard Settings for ${teamName || '...'} > ${channelName || '...'}`}</h2>
                     <button
                         style={s.closeBtn}
                         onClick={() => setChannelID(null)}

@@ -2,15 +2,24 @@ import manifest from 'manifest';
 
 import type {PluginRegistry, UniqueIdentifier} from 'types/mattermost-webapp';
 
+import CrossguardChannelIndicator from './components/CrossguardChannelIndicator';
 import CrossguardChannelModal from './components/CrossguardChannelModal';
 import CrossguardTeamModal from './components/CrossguardTeamModal';
+import CrossguardUserPopover from './components/CrossguardUserPopover';
 import NATSConnectionSettings from './components/NATSConnectionSettings';
+import {fetchChannelConnections, setChannelConnections} from './connection_state';
 
 interface ReduxStore {
     getState(): {
         entities: {
             teams: {
                 currentTeamId: string;
+            };
+            channels: {
+                currentChannelId: string;
+                channels: Record<string, {
+                    props?: Record<string, string>;
+                }>;
             };
         };
     };
@@ -37,18 +46,48 @@ export default class Plugin {
         registry.registerRootComponent(CrossguardChannelModal);
         registry.registerRootComponent(CrossguardTeamModal);
 
+        registry.registerSidebarChannelLinkLabelComponent(CrossguardChannelIndicator);
+        registry.registerPopoverUserAttributesComponent(CrossguardUserPopover);
+
+        registry.registerWebSocketEventHandler(
+            `custom_${manifest.id}_channel_connections_updated`,
+            (event: {data: {channel_id: string; connections: string}}) => {
+                setChannelConnections(event.data.channel_id, event.data.connections);
+            },
+        );
+
         let lastTeamId = '';
-        const checkTeam = () => {
+        let lastChannelId = '';
+        let lastChannelsRef: Record<string, unknown> = {};
+        let knownChannelIds = new Set<string>();
+        const checkState = () => {
             const state = store.getState();
             const teamId = state?.entities?.teams?.currentTeamId || '';
+            const channelId = state?.entities?.channels?.currentChannelId || '';
+            const channels = state?.entities?.channels?.channels || {};
+
             if (teamId && teamId !== lastTeamId) {
                 lastTeamId = teamId;
+                knownChannelIds = new Set<string>();
                 this.updateMenuForTeam(teamId);
+            }
+
+            if (channels !== lastChannelsRef) {
+                lastChannelsRef = channels;
+                const currentIds = Object.keys(channels);
+                const newIds = currentIds.filter((id) => !knownChannelIds.has(id));
+                if (newIds.length > 0) {
+                    knownChannelIds = new Set(currentIds);
+                    fetchChannelConnections(newIds);
+                }
+            } else if (channelId && channelId !== lastChannelId) {
+                lastChannelId = channelId;
+                fetchChannelConnections([channelId]);
             }
         };
 
-        this.unsubscribe = store.subscribe(checkTeam);
-        checkTeam();
+        this.unsubscribe = store.subscribe(checkState);
+        checkState();
     }
 
     public uninitialize() {
@@ -74,7 +113,9 @@ export default class Plugin {
             }
             this.addMenuAction();
             this.addMainMenuAction(teamId);
-        } catch {
+        } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('updateMenuForTeam failed', e);
             this.removeMenuAction();
             this.removeMainMenuAction();
         }
@@ -85,7 +126,7 @@ export default class Plugin {
             return;
         }
         this.menuActionId = this.registry.registerChannelHeaderMenuAction(
-            'Crossguard',
+            'Cross Guard',
             (channelID: string) => {
                 document.dispatchEvent(
                     new CustomEvent('crossguard:open-modal', {detail: {channelID}}),
@@ -108,7 +149,7 @@ export default class Plugin {
             return;
         }
         this.mainMenuActionId = this.registry.registerMainMenuAction(
-            'Crossguard',
+            'Cross Guard',
             () => {
                 document.dispatchEvent(
                     new CustomEvent('crossguard:open-team-modal', {detail: {teamID: teamId}}),

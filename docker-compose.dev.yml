@@ -63,7 +63,7 @@ services:
       TZ: UTC
       MM_SQLSETTINGS_DRIVERNAME: postgres
       MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_password@postgres-a:5432/mattermost?sslmode=disable&connect_timeout=10
-      MM_SERVICESETTINGS_SITEURL: http://cga.test:${MM_PORT_A:-8075}
+      MM_SERVICESETTINGS_SITEURL: http://low.test:${MM_PORT_A:-8075}
       MM_SERVICESETTINGS_LISTENADDRESS: :8065
       MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
       MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"
@@ -94,7 +94,7 @@ services:
       TZ: UTC
       MM_SQLSETTINGS_DRIVERNAME: postgres
       MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_password@postgres-b:5432/mattermost?sslmode=disable&connect_timeout=10
-      MM_SERVICESETTINGS_SITEURL: http://cgb.test:${MM_PORT_B:-8076}
+      MM_SERVICESETTINGS_SITEURL: http://high.test:${MM_PORT_B:-8076}
       MM_SERVICESETTINGS_LISTENADDRESS: :8065
       MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
       MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"

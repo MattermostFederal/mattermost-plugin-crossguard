@@ -15,32 +15,32 @@ func TestIsOutboundLinked(t *testing.T) {
 	}{
 		{
 			name:         "linked outbound connection",
-			outboundName: "cgb",
-			connNames:    []string{"outbound:cgb", "inbound:cgb"},
+			outboundName: "high",
+			connNames:    []string{"outbound:high", "inbound:high"},
 			expected:     true,
 		},
 		{
 			name:         "not linked outbound connection",
 			outboundName: "other",
-			connNames:    []string{"outbound:cgb", "inbound:cgb"},
+			connNames:    []string{"outbound:high", "inbound:high"},
 			expected:     false,
 		},
 		{
 			name:         "inbound name does not match outbound check",
-			outboundName: "cgb",
-			connNames:    []string{"inbound:cgb"},
+			outboundName: "high",
+			connNames:    []string{"inbound:high"},
 			expected:     false,
 		},
 		{
 			name:         "empty connection list",
-			outboundName: "cgb",
+			outboundName: "high",
 			connNames:    nil,
 			expected:     false,
 		},
 		{
 			name:         "partial name match does not count",
-			outboundName: "cg",
-			connNames:    []string{"outbound:cgb"},
+			outboundName: "hig",
+			connNames:    []string{"outbound:high"},
 			expected:     false,
 		},
 	}

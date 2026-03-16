@@ -214,15 +214,15 @@ router.HandleFunc("/api/v1/teams/{team_id}/teardown", p.handleTeardownTeam).Meth
 CLI usage examples:
 ```bash
 # Init channel
-curl -X POST http://cga.test:8075/plugins/crossguard/api/v1/channels/{channel_id}/init \
+curl -X POST http://low.test:8075/plugins/crossguard/api/v1/channels/{channel_id}/init \
   -H "Authorization: Bearer <token>"
 
 # Teardown channel
-curl -X POST http://cga.test:8075/plugins/crossguard/api/v1/channels/{channel_id}/teardown \
+curl -X POST http://low.test:8075/plugins/crossguard/api/v1/channels/{channel_id}/teardown \
   -H "Authorization: Bearer <token>"
 
 # Teardown team
-curl -X POST http://cga.test:8075/plugins/crossguard/api/v1/teams/{team_id}/teardown \
+curl -X POST http://low.test:8075/plugins/crossguard/api/v1/teams/{team_id}/teardown \
   -H "Authorization: Bearer <token>"
 ```
 

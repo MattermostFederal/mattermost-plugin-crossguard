@@ -129,7 +129,7 @@ func (p *Plugin) resolveTeamAndChannel(connName, teamName, channelName string) (
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to check team connections: %w", err)
 	}
-	inboundPrefixed := "inbound:" + connName
+	inboundPrefixed := directionInbound + connName
 	if !slices.Contains(conns, inboundPrefixed) {
 		p.handleUnlinkedInbound(team, connName)
 		return nil, nil, fmt.Errorf("inbound connection %q is not linked to team %q", connName, teamName)

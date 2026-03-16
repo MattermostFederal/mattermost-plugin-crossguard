@@ -29,6 +29,7 @@ func (p *Plugin) initAPI() {
 	router.HandleFunc("/api/v1/status", p.handleGlobalStatus).Methods(http.MethodGet)
 	router.HandleFunc("/api/v1/teams/{team_id}/status", p.handleTeamStatus).Methods(http.MethodGet)
 	router.HandleFunc("/api/v1/channels/{channel_id}/status", p.handleChannelStatus).Methods(http.MethodGet)
+	router.HandleFunc("/api/v1/channels/connections", p.handleBulkChannelConnections).Methods(http.MethodGet)
 	p.router = router
 }
 
@@ -264,6 +265,7 @@ func (p *Plugin) handleInitChannel(w http.ResponseWriter, r *http.Request) {
 
 	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
 	if err != nil {
+		p.API.LogError("Failed to get team connections", "team_id", channel.TeamId, "error", err.Error())
 		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
 		return
 	}
@@ -316,6 +318,7 @@ func (p *Plugin) handleTeardownChannel(w http.ResponseWriter, r *http.Request) {
 
 	chanConns, err := p.kvstore.GetChannelConnections(channelID)
 	if err != nil {
+		p.API.LogError("Failed to get channel connections", "channel_id", channelID, "error", err.Error())
 		writeJSONError(w, "failed to check channel connections", http.StatusInternalServerError)
 		return
 	}
@@ -362,6 +365,7 @@ func (p *Plugin) handleTeardownTeam(w http.ResponseWriter, r *http.Request) {
 
 	teamConns, err := p.kvstore.GetTeamConnections(teamID)
 	if err != nil {
+		p.API.LogError("Failed to get team connections", "team_id", teamID, "error", err.Error())
 		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
 		return
 	}
@@ -447,6 +451,11 @@ func (p *Plugin) handleDialogSelectConnection(w http.ResponseWriter, r *http.Req
 		return
 	}
 	action, targetID := parts[0], parts[1]
+
+	if !model.IsValidId(targetID) {
+		writeJSONError(w, "invalid target ID in dialog state", http.StatusBadRequest)
+		return
+	}
 
 	var responseText string
 
@@ -570,4 +579,51 @@ func (p *Plugin) handleChannelStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+const maxBulkChannelIDs = 2048
+
+func (p *Plugin) handleBulkChannelConnections(w http.ResponseWriter, r *http.Request) {
+	user := p.getAuthenticatedUser(w, r)
+	if user == nil {
+		return
+	}
+
+	idsParam := strings.TrimSpace(r.URL.Query().Get("ids"))
+	if idsParam == "" {
+		writeJSONError(w, "ids query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	ids := strings.Split(idsParam, ",")
+	if len(ids) > maxBulkChannelIDs {
+		writeJSONError(w, fmt.Sprintf("too many channel IDs (max %d)", maxBulkChannelIDs), http.StatusBadRequest)
+		return
+	}
+
+	result := make(map[string]string)
+
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if !model.IsValidId(id) {
+			continue
+		}
+
+		member, appErr := p.API.GetChannelMember(id, user.Id)
+		if appErr != nil || member == nil {
+			continue
+		}
+
+		conns, err := p.kvstore.GetChannelConnections(id)
+		if err != nil {
+			p.API.LogWarn("Failed to get channel connections for bulk lookup", "channel_id", id, "error", err.Error())
+			continue
+		}
+
+		if len(conns) > 0 {
+			result[id] = strings.Join(conns, ",")
+		}
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }

@@ -358,9 +358,9 @@ docker-logs-b: docker-check
 ## First-time setup: start containers and create users on both servers
 .PHONY: docker-setup
 docker-setup: docker-start
-	@if ! grep -q 'cga.test' /etc/hosts || ! grep -q 'cgb.test' /etc/hosts; then \
+	@if ! grep -q 'low.test' /etc/hosts || ! grep -q 'high.test' /etc/hosts; then \
 		echo ""; \
-		echo "WARNING: /etc/hosts is missing cga.test and/or cgb.test entries."; \
+		echo "WARNING: /etc/hosts is missing low.test and/or high.test entries."; \
 		echo "Run 'make hosts-setup' to add them, or the admin console will not work correctly."; \
 		echo ""; \
 	fi
@@ -406,14 +406,30 @@ docker-setup: docker-start
 		--display-name "Test B" 2>/dev/null || echo "Team 'Test B' already exists on Server B"
 	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team users add test admin 2>/dev/null || echo "Admin already in Test B team"
 	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team users add test userb 2>/dev/null || echo "userb already in Test B team"
+	@echo "Setting Onyx theme for Server B users..."
+	@TOKEN_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/users/login \
+		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	ADMIN_ID=$$(curl -sf http://localhost:$(MM_PORT_B)/api/v4/users/username/admin \
+		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	USERB_ID=$$(curl -sf http://localhost:$(MM_PORT_B)/api/v4/users/username/userb \
+		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	ONYX_ESCAPED=$$(echo '{"sidebarBg":"#202228","sidebarText":"#ffffff","sidebarUnreadText":"#ffffff","sidebarTextHoverBg":"#25262a","sidebarTextActiveBorder":"#4a7ce8","sidebarTextActiveColor":"#ffffff","sidebarHeaderBg":"#24272d","sidebarHeaderTextColor":"#ffffff","sidebarTeamBarBg":"#292c33","onlineIndicator":"#3db887","awayIndicator":"#f5ab00","dndIndicator":"#d24b4e","mentionBg":"#4b7ce7","mentionColor":"#ffffff","centerChannelBg":"#191b1f","centerChannelColor":"#e3e4e8","newMessageSeparator":"#1adbdb","linkColor":"#5d89ea","buttonBg":"#4a7ce8","buttonColor":"#ffffff","errorTextColor":"#da6c6e","mentionHighlightBg":"#0d6e6e","mentionHighlightLink":"#a4f4f4","codeTheme":"monokai"}' | sed 's/"/\\"/g') && \
+	curl -sf -X PUT http://localhost:$(MM_PORT_B)/api/v4/users/$$ADMIN_ID/preferences \
+		-H "Authorization: Bearer $$TOKEN_B" -H "Content-Type: application/json" \
+		-d "[{\"user_id\":\"$$ADMIN_ID\",\"category\":\"theme\",\"name\":\"\",\"value\":\"$$ONYX_ESCAPED\"}]" >/dev/null && \
+	curl -sf -X PUT http://localhost:$(MM_PORT_B)/api/v4/users/$$USERB_ID/preferences \
+		-H "Authorization: Bearer $$TOKEN_B" -H "Content-Type: application/json" \
+		-d "[{\"user_id\":\"$$USERB_ID\",\"category\":\"theme\",\"name\":\"\",\"value\":\"$$ONYX_ESCAPED\"}]" >/dev/null && \
+	echo "  Onyx theme set for admin and userb on Server B"
 	@echo ""
 	@echo "=========================================="
-	@echo "Server A (CGA): http://cga.test:$(MM_PORT_A)"
+	@echo "Server A (Low): http://low.test:$(MM_PORT_A)"
 	@echo "  Admin login: admin / password"
 	@echo "  User login:  usera / password"
 	@echo "  Team:        Test A"
 	@echo ""
-	@echo "Server B (CGB): http://cgb.test:$(MM_PORT_B)"
+	@echo "Server B (High): http://high.test:$(MM_PORT_B)"
 	@echo "  Admin login: admin / password"
 	@echo "  User login:  userb / password"
 	@echo "  Team:        Test B"
@@ -460,16 +476,16 @@ docker-deploy: docker-check dist
 	curl -sf -X PUT http://localhost:$(MM_PORT_A)/api/v4/config/patch \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","inboundconnections":"[]"}}}}' >/dev/null && \
-	echo "Server A configured with outbound NATS connection"
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","inboundconnections":"[{\"name\":\"high-to-low\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\"}]"}}}}' >/dev/null && \
+	echo "Server A configured with outbound:low-to-high + inbound:high-to-low"
 	@TOKEN_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/users/login \
 		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
 		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
 	curl -sf -X PUT http://localhost:$(MM_PORT_B)/api/v4/config/patch \
 		-H "Authorization: Bearer $$TOKEN_B" \
 		-H "Content-Type: application/json" \
-		-d '{"PluginSettings":{"Plugins":{"crossguard":{"inboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","outboundconnections":"[]"}}}}' >/dev/null && \
-	echo "Server B configured with inbound NATS connection"
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"inboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","outboundconnections":"[{\"name\":\"high-to-low\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\"}]"}}}}' >/dev/null && \
+	echo "Server B configured with inbound:low-to-high + outbound:high-to-low"
 
 ## End-to-end smoke test: init teams/channels, post message on A, verify relay to B
 .PHONY: docker-smoke-test
@@ -482,32 +498,111 @@ docker-smoke-test: docker-check
 	TOKEN_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/users/login \
 		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
 		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
-	CHAN_A=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test/channels/name/off-topic \
+	echo "Getting team IDs..." && \
+	TEAM_A=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test \
 		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
-	CHAN_B=$$(curl -sf http://localhost:$(MM_PORT_B)/api/v4/teams/name/test/channels/name/off-topic \
+	TEAM_B=$$(curl -sf http://localhost:$(MM_PORT_B)/api/v4/teams/name/test \
 		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "Creating dedicated channels..." && \
+	LTH_A=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"team_id":"'"$$TEAM_A"'","name":"low-to-high","display_name":"Low To High","type":"O"}' \
+		2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || \
+		curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test/channels/name/low-to-high \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "  Server A: low-to-high channel ($$LTH_A)" && \
+	LTH_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/channels \
+		-H "Authorization: Bearer $$TOKEN_B" -H "Content-Type: application/json" \
+		-d '{"team_id":"'"$$TEAM_B"'","name":"low-to-high","display_name":"Low To High","type":"O"}' \
+		2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || \
+		curl -sf http://localhost:$(MM_PORT_B)/api/v4/teams/name/test/channels/name/low-to-high \
+		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "  Server B: low-to-high channel ($$LTH_B)" && \
+	BD_A=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"team_id":"'"$$TEAM_A"'","name":"bi-directional","display_name":"Bi-Directional","type":"O"}' \
+		2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || \
+		curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test/channels/name/bi-directional \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "  Server A: bi-directional channel ($$BD_A)" && \
+	BD_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/channels \
+		-H "Authorization: Bearer $$TOKEN_B" -H "Content-Type: application/json" \
+		-d '{"team_id":"'"$$TEAM_B"'","name":"bi-directional","display_name":"Bi-Directional","type":"O"}' \
+		2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || \
+		curl -sf http://localhost:$(MM_PORT_B)/api/v4/teams/name/test/channels/name/bi-directional \
+		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "  Server B: bi-directional channel ($$BD_B)" && \
+	echo "Adding users to channels..." && \
+	USERA_ID=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/users/username/usera \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	USERB_ID=$$(curl -sf http://localhost:$(MM_PORT_B)/api/v4/users/username/userb \
+		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels/$$LTH_A/members \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"user_id":"'"$$USERA_ID"'"}' >/dev/null 2>&1 || true && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels/$$BD_A/members \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"user_id":"'"$$USERA_ID"'"}' >/dev/null 2>&1 || true && \
+	echo "  Server A: usera added to low-to-high, bi-directional" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/channels/$$LTH_B/members \
+		-H "Authorization: Bearer $$TOKEN_B" -H "Content-Type: application/json" \
+		-d '{"user_id":"'"$$USERB_ID"'"}' >/dev/null 2>&1 || true && \
+	curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/channels/$$BD_B/members \
+		-H "Authorization: Bearer $$TOKEN_B" -H "Content-Type: application/json" \
+		-d '{"user_id":"'"$$USERB_ID"'"}' >/dev/null 2>&1 || true && \
+	echo "  Server B: userb added to low-to-high, bi-directional" && \
 	echo "Initializing teams..." && \
 	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"channel_id":"'"$$CHAN_A"'","command":"/crossguard init-team outbound:low-to-high"}' >/dev/null && \
+		-d '{"channel_id":"'"$$LTH_A"'","command":"/crossguard init-team outbound:low-to-high"}' >/dev/null && \
 	echo "  Server A: init-team outbound:low-to-high" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$LTH_A"'","command":"/crossguard init-team inbound:high-to-low"}' >/dev/null && \
+	echo "  Server A: init-team inbound:high-to-low" && \
 	curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/commands/execute \
 		-H "Authorization: Bearer $$TOKEN_B" \
 		-H "Content-Type: application/json" \
-		-d '{"channel_id":"'"$$CHAN_B"'","command":"/crossguard init-team inbound:low-to-high"}' >/dev/null && \
+		-d '{"channel_id":"'"$$LTH_B"'","command":"/crossguard init-team inbound:low-to-high"}' >/dev/null && \
 	echo "  Server B: init-team inbound:low-to-high" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_B" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$LTH_B"'","command":"/crossguard init-team outbound:high-to-low"}' >/dev/null && \
+	echo "  Server B: init-team outbound:high-to-low" && \
 	echo "Initializing channels..." && \
 	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"channel_id":"'"$$CHAN_A"'","command":"/crossguard init-channel outbound:low-to-high"}' >/dev/null && \
-	echo "  Server A: init-channel outbound:low-to-high on off-topic" && \
+		-d '{"channel_id":"'"$$LTH_A"'","command":"/crossguard init-channel outbound:low-to-high"}' >/dev/null && \
+	echo "  Server A: low-to-high init-channel outbound:low-to-high" && \
 	curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/commands/execute \
 		-H "Authorization: Bearer $$TOKEN_B" \
 		-H "Content-Type: application/json" \
-		-d '{"channel_id":"'"$$CHAN_B"'","command":"/crossguard init-channel inbound:low-to-high"}' >/dev/null && \
-	echo "  Server B: init-channel inbound:low-to-high on off-topic" && \
+		-d '{"channel_id":"'"$$LTH_B"'","command":"/crossguard init-channel inbound:low-to-high"}' >/dev/null && \
+	echo "  Server B: low-to-high init-channel inbound:low-to-high" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$BD_A"'","command":"/crossguard init-channel outbound:low-to-high"}' >/dev/null && \
+	echo "  Server A: bi-directional init-channel outbound:low-to-high" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$BD_A"'","command":"/crossguard init-channel inbound:high-to-low"}' >/dev/null && \
+	echo "  Server A: bi-directional init-channel inbound:high-to-low" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_B" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$BD_B"'","command":"/crossguard init-channel inbound:low-to-high"}' >/dev/null && \
+	echo "  Server B: bi-directional init-channel inbound:low-to-high" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_B" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$BD_B"'","command":"/crossguard init-channel outbound:high-to-low"}' >/dev/null && \
+	echo "  Server B: bi-directional init-channel outbound:high-to-low" && \
 	echo "Posting smoke-test message from Server A..." && \
 	TOKEN_USERA=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
 		-d '{"login_id":"usera","password":"password"}' -i 2>/dev/null \
@@ -516,14 +611,14 @@ docker-smoke-test: docker-check
 	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/posts \
 		-H "Authorization: Bearer $$TOKEN_USERA" \
 		-H "Content-Type: application/json" \
-		-d '{"channel_id":"'"$$CHAN_A"'","message":"smoke-test:'"$$SMOKE_ID"'"}' >/dev/null && \
-	echo "  Posted smoke-test:$$SMOKE_ID to Server A off-topic" && \
+		-d '{"channel_id":"'"$$LTH_A"'","message":"smoke-test:'"$$SMOKE_ID"'"}' >/dev/null && \
+	echo "  Posted smoke-test:$$SMOKE_ID to Server A low-to-high" && \
 	echo "Waiting for relay..." && \
 	sleep 3 && \
-	FOUND=$$(curl -sf "http://localhost:$(MM_PORT_B)/api/v4/channels/$$CHAN_B/posts?per_page=10" \
+	FOUND=$$(curl -sf "http://localhost:$(MM_PORT_B)/api/v4/channels/$$LTH_B/posts?per_page=10" \
 		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$SMOKE_ID';found=any('smoke-test:'+sid in p.get('message','') for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
 	echo "Smoke test result: $$FOUND" || \
-	{ echo "Smoke test FAILED: message smoke-test:$$SMOKE_ID not found on Server B"; exit 1; }
+	{ echo "Smoke test FAILED: message smoke-test:$$SMOKE_ID not found on Server B low-to-high"; exit 1; }
 
 ## Disable and re-enable plugin on both servers
 .PHONY: docker-reset
@@ -562,11 +657,11 @@ deploy: docker-deploy docker-smoke-test
 ## Print /etc/hosts entries needed for dual-server setup
 .PHONY: hosts-setup
 hosts-setup:
-	@if grep -q 'cga.test' /etc/hosts && grep -q 'cgb.test' /etc/hosts; then \
-		echo "/etc/hosts already has cga.test and cgb.test entries."; \
+	@if grep -q 'low.test' /etc/hosts && grep -q 'high.test' /etc/hosts; then \
+		echo "/etc/hosts already has low.test and high.test entries."; \
 	else \
-		echo "Adding cga.test and cgb.test to /etc/hosts (requires sudo)..."; \
-		echo '127.0.0.1  cga.test cgb.test' | sudo tee -a /etc/hosts; \
+		echo "Adding low.test and high.test to /etc/hosts (requires sudo)..."; \
+		echo '127.0.0.1  low.test high.test' | sudo tee -a /etc/hosts; \
 		echo "Done. /etc/hosts updated."; \
 	fi
 

@@ -127,7 +127,7 @@ func (p *Plugin) handlePromptAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inboundConn := "inbound:" + connName
+	inboundConn := directionInbound + connName
 	if _, _, svcErr := p.initTeamForCrossGuard(user, teamID, inboundConn); svcErr != nil {
 		writePostActionResponse(w, fmt.Sprintf("Failed to link connection: %s", svcErr.Message))
 		return
@@ -318,7 +318,7 @@ func (p *Plugin) handleChannelPromptAccept(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	inboundConn := "inbound:" + connName
+	inboundConn := directionInbound + connName
 	if _, _, svcErr := p.initChannelForCrossGuard(user, channelID, inboundConn); svcErr != nil {
 		writePostActionResponse(w, fmt.Sprintf("Failed to link connection: %s", svcErr.Message))
 		return

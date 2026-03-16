@@ -407,7 +407,7 @@ const CrossguardTeamModal: React.FC = () => {
         >
             <div style={s.modal}>
                 <div style={s.header}>
-                    <h2 style={s.title}>{`Crossguard Settings for ${teamName || '...'}`}</h2>
+                    <h2 style={s.title}>{`Cross Guard Settings for ${teamName || '...'}`}</h2>
                     <button
                         style={s.closeBtn}
                         onClick={() => setTeamID(null)}

@@ -73,7 +73,7 @@ type inboundConn struct {
 
 #### 2. `server/sync_user.go` - Synthetic user management
 
-**Username format:** `{username}.{connName}` (e.g., `usera.cgb`)
+**Username format:** `{username}.{connName}` (e.g., `usera.high`)
 
 - Connection names are validated as `^[a-z0-9]+(-[a-z0-9]+)*$` (configuration.go:12), so dots create an unambiguous boundary.
 - Mattermost usernames allow dots, so the format is valid.
@@ -115,7 +115,7 @@ type KVStore interface {
 
 #### 4. `server/store/client.go` - Implement post mapping methods
 
-KV key pattern: `pm-{connName}-{remotePostID}` -> `localPostID` (string value). The `pm-` prefix is short to stay within the 50-char KV key limit (e.g., `pm-cgb-` = 7 chars + 26-char post ID = 33 chars, well within limit). Namespacing by connection name prevents collisions when multiple remote servers are connected.
+KV key pattern: `pm-{connName}-{remotePostID}` -> `localPostID` (string value). The `pm-` prefix is short to stay within the 50-char KV key limit (e.g., `pm-high-` = 7 chars + 26-char post ID = 33 chars, well within limit). Namespacing by connection name prevents collisions when multiple remote servers are connected.
 
 Simple Get/Set/Delete on the KV store. These go through the existing store layer so they benefit from the plugin's KV infrastructure.
 
@@ -331,7 +331,7 @@ NATS msg arrives on inbound subscription
 ## Acceptance Criteria
 
 - [ ] Posts from Server A appear on Server B in the matching team/channel
-- [ ] Synthetic users are created with munged usernames (e.g., `usera.cgb`)
+- [ ] Synthetic users are created with munged usernames (e.g., `usera.high`)
 - [ ] Post edits and deletes propagate correctly
 - [ ] Reactions propagate correctly
 - [ ] No relay loops (posts don't bounce back and forth)

@@ -106,15 +106,15 @@ The dev environment runs two Mattermost servers with a shared NATS bus.
 ### Getting Started
 
 ```bash
-make hosts-setup    # Add cga.test and cgb.test to /etc/hosts (one-time, requires sudo)
+make hosts-setup    # Add low.test and high.test to /etc/hosts (one-time, requires sudo)
 make docker-setup   # Start containers, create users and teams
 make deploy         # Build and deploy plugin to both servers
 ```
 
 After setup:
 
-- **Server A (CGA)**: http://cga.test:8075 (admin/password, usera/password, Team: Test A)
-- **Server B (CGB)**: http://cgb.test:8076 (admin/password, userb/password, Team: Test B)
+- **Server A (Low)**: http://low.test:8075 (admin/password, usera/password, Team: Test A)
+- **Server B (High)**: http://high.test:8076 (admin/password, userb/password, Team: Test B)
 - **NATS**: nats://localhost:4222 (monitor: http://localhost:8222)
 - **NATS (from plugins)**: nats://nats:4222
 
@@ -122,7 +122,7 @@ After setup:
 
 | Command | Description |
 |---------|-------------|
-| `make hosts-setup` | Add cga.test/cgb.test to /etc/hosts (requires sudo) |
+| `make hosts-setup` | Add low.test/high.test to /etc/hosts (requires sudo) |
 | `make docker-setup` | First-time setup: start containers, create users and teams |
 | `make deploy` | Build and deploy plugin to both Docker servers |
 | `make dist` | Build plugin bundle only |

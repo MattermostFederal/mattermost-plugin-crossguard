@@ -1,9 +1,17 @@
 import manifest from 'manifest';
 import React from 'react';
-import {useSelector} from 'react-redux';
 
-type View = 'actions' | 'select-connection';
-type PendingAction = 'team' | 'channel' | null;
+interface ConnectionStatus {
+    name: string;
+    linked: boolean;
+}
+
+interface ChannelStatusResponse {
+    channel_id: string;
+    channel_name: string;
+    team_name: string;
+    team_connections: ConnectionStatus[];
+}
 
 interface Status {
     loading: boolean;
@@ -16,11 +24,22 @@ function getCSRFToken(): string {
     return match ? match[1] : '';
 }
 
+function formatConnectionLabel(name: string, teamName: string): string {
+    const colonIdx = name.indexOf(':');
+    if (colonIdx === -1) {
+        return name;
+    }
+    const direction = name.substring(0, colonIdx);
+    const connName = name.substring(colonIdx + 1);
+    if (direction === 'inbound') {
+        return `NATS.io (${connName})  \u2192  Mattermost (${teamName})`;
+    }
+    return `Mattermost (${teamName})  \u2192  NATS.io (${connName})`;
+}
+
 const colors = {
     primary: '#1C58D9',
-    primaryHover: '#1851C4',
     danger: '#D24B4E',
-    success: '#3DB887',
     border: 'rgba(var(--center-channel-color-rgb, 61, 60, 64), 0.16)',
     bg: 'var(--center-channel-bg, #fff)',
     text: 'var(--center-channel-color, #3D3C40)',
@@ -32,30 +51,63 @@ const STATUS_DISPLAY_MS = 5000;
 
 const CrossguardModal: React.FC = () => {
     const [channelID, setChannelID] = React.useState<string | null>(null);
-    const [view, setView] = React.useState<View>('actions');
-    const [pendingAction, setPendingAction] = React.useState<PendingAction>(null);
-    const [connections, setConnections] = React.useState<string[]>([]);
-    const [selectedConnection, setSelectedConnection] = React.useState('');
+    const [teamName, setTeamName] = React.useState('');
+    const [teamConnections, setTeamConnections] = React.useState<ConnectionStatus[]>([]);
+    const [fetching, setFetching] = React.useState(false);
     const [status, setStatus] = React.useState<Status>({loading: false});
+    const [actionInProgress, setActionInProgress] = React.useState<string | null>(null);
+    const statusTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const currentTeamId = useSelector((state: any) => state.entities?.teams?.currentTeamId || '');
+    React.useEffect(() => {
+        return () => {
+            if (statusTimerRef.current) {
+                clearTimeout(statusTimerRef.current);
+            }
+        };
+    }, []);
 
     React.useEffect(() => {
         const handler = (e: Event) => {
             const detail = (e as CustomEvent).detail;
             if (detail?.channelID) {
                 setChannelID(detail.channelID);
-                setView('actions');
-                setPendingAction(null);
-                setConnections([]);
-                setSelectedConnection('');
+                setTeamName('');
+                setTeamConnections([]);
                 setStatus({loading: false});
+                setActionInProgress(null);
             }
         };
         document.addEventListener('crossguard:open-modal', handler);
         return () => document.removeEventListener('crossguard:open-modal', handler);
     }, []);
+
+    const fetchStatus = React.useCallback(async (chID: string) => {
+        setFetching(true);
+        try {
+            const response = await fetch(`/plugins/${manifest.id}/api/v1/channels/${chID}/status`, {
+                credentials: 'same-origin',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+            });
+            if (!response.ok) {
+                const data = await response.json();
+                setStatus({loading: false, success: false, message: data.error || 'Failed to load channel status.'});
+                return;
+            }
+            const data: ChannelStatusResponse = await response.json();
+            setTeamName(data.team_name);
+            setTeamConnections(data.team_connections || []);
+        } catch {
+            setStatus({loading: false, success: false, message: 'Network error loading channel status.'});
+        } finally {
+            setFetching(false);
+        }
+    }, []);
+
+    React.useEffect(() => {
+        if (channelID) {
+            fetchStatus(channelID);
+        }
+    }, [channelID, fetchStatus]);
 
     React.useEffect(() => {
         if (!channelID) {
@@ -84,55 +136,35 @@ const CrossguardModal: React.FC = () => {
         return {ok: response.ok, data};
     }, []);
 
-    const handleAction = React.useCallback(async (action: 'team' | 'channel', connectionName?: string) => {
+    const handleToggle = React.useCallback(async (connName: string, linked: boolean) => {
+        if (!channelID) {
+            return;
+        }
+        const action = linked ? 'teardown' : 'init';
+        const verb = linked ? 'unlinked' : 'linked';
+        const failVerb = linked ? 'unlink' : 'link';
+        setActionInProgress(connName);
         setStatus({loading: true});
-
-        let url: string;
-        if (action === 'team') {
-            url = `/plugins/${manifest.id}/api/v1/teams/${currentTeamId}/init`;
-        } else {
-            url = `/plugins/${manifest.id}/api/v1/channels/${channelID}/init`;
+        if (statusTimerRef.current) {
+            clearTimeout(statusTimerRef.current);
         }
-
-        if (connectionName) {
-            url += `?connection_name=${encodeURIComponent(connectionName)}`;
-        }
-
         try {
+            const url = `/plugins/${manifest.id}/api/v1/channels/${channelID}/${action}?connection_name=${encodeURIComponent(connName)}`;
             const {ok, data} = await callAPI(url);
-
             if (ok) {
-                const label = action === 'team' ? 'Team' : 'Channel';
-                setStatus({loading: false, success: true, message: `${label} initialized for connection "${data.connection_name}".`});
-                setView('actions');
-                setPendingAction(null);
-                setTimeout(() => setStatus({loading: false}), STATUS_DISPLAY_MS);
-                return;
+                setStatus({loading: false, success: true, message: `Connection "${connName}" ${verb}.`});
+            } else {
+                setStatus({loading: false, success: false, message: (data.error as string) || `Failed to ${failVerb} connection.`});
             }
-
-            if (data.connections && Array.isArray(data.connections)) {
-                setConnections(data.connections as string[]);
-                setSelectedConnection((data.connections as string[])[0] || '');
-                setPendingAction(action);
-                setView('select-connection');
-                setStatus({loading: false});
-                return;
-            }
-
-            setStatus({loading: false, success: false, message: (data.error as string) || 'Request failed.'});
-            setTimeout(() => setStatus({loading: false}), STATUS_DISPLAY_MS);
-        } catch (err) {
-            const message = err instanceof Error ? err.message : 'Network error';
-            setStatus({loading: false, success: false, message});
-            setTimeout(() => setStatus({loading: false}), STATUS_DISPLAY_MS);
+            await fetchStatus(channelID);
+            statusTimerRef.current = setTimeout(() => setStatus({loading: false}), STATUS_DISPLAY_MS);
+        } catch {
+            setStatus({loading: false, success: false, message: 'Network error.'});
+            statusTimerRef.current = setTimeout(() => setStatus({loading: false}), STATUS_DISPLAY_MS);
+        } finally {
+            setActionInProgress(null);
         }
-    }, [callAPI, channelID, currentTeamId]);
-
-    const handleConfirmConnection = React.useCallback(() => {
-        if (pendingAction && selectedConnection) {
-            handleAction(pendingAction, selectedConnection);
-        }
-    }, [handleAction, pendingAction, selectedConnection]);
+    }, [callAPI, channelID, fetchStatus]);
 
     const handleBackdropClick = React.useCallback((e: React.MouseEvent) => {
         if (e.target === e.currentTarget) {
@@ -160,7 +192,7 @@ const CrossguardModal: React.FC = () => {
         modal: {
             background: colors.bg,
             borderRadius: '8px',
-            width: '480px',
+            width: '560px',
             maxWidth: '90vw',
             boxShadow: '0 12px 32px rgba(0, 0, 0, 0.2)',
             color: colors.text,
@@ -189,35 +221,45 @@ const CrossguardModal: React.FC = () => {
         body: {
             padding: '24px',
         },
-        btnPrimary: {
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '6px',
-            padding: '10px 20px',
+        table: {
+            width: '100%',
+            borderCollapse: 'collapse' as const,
+        },
+        th: {
+            textAlign: 'left' as const,
+            padding: '8px 12px',
+            fontSize: '12px',
+            fontWeight: 600,
+            color: colors.textMuted,
+            borderBottom: `1px solid ${colors.border}`,
+            textTransform: 'uppercase' as const,
+            letterSpacing: '0.5px',
+        },
+        td: {
+            padding: '10px 12px',
+            fontSize: '14px',
+            borderBottom: `1px solid ${colors.border}`,
+            verticalAlign: 'middle' as const,
+        },
+        btnLink: {
+            padding: '6px 16px',
             cursor: 'pointer',
             border: 'none',
             borderRadius: '4px',
             background: colors.primary,
             color: '#fff',
-            fontSize: '14px',
+            fontSize: '13px',
             fontWeight: 600,
-            width: '100%',
-            justifyContent: 'center',
         },
-        btnSecondary: {
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '6px',
-            padding: '10px 20px',
+        btnUnlink: {
+            padding: '6px 16px',
             cursor: 'pointer',
-            border: `1px solid ${colors.border}`,
+            border: 'none',
             borderRadius: '4px',
-            background: colors.bg,
-            color: colors.text,
-            fontSize: '14px',
+            background: colors.danger,
+            color: '#fff',
+            fontSize: '13px',
             fontWeight: 600,
-            width: '100%',
-            justifyContent: 'center',
         },
         statusBanner: {
             display: 'flex',
@@ -237,97 +279,69 @@ const CrossguardModal: React.FC = () => {
             background: 'rgba(210, 75, 78, 0.12)',
             color: colors.danger,
         },
-        select: {
-            width: '100%',
-            padding: '10px 12px',
-            border: `1px solid ${colors.border}`,
-            borderRadius: '4px',
+        emptyState: {
             fontSize: '14px',
-            color: colors.text,
-            background: colors.bg,
-            marginBottom: '16px',
-        },
-        label: {
-            display: 'block',
-            marginBottom: '8px',
-            fontWeight: 600,
-            fontSize: '13px',
-            color: colors.text,
-        },
-        helpText: {
-            fontSize: '12px',
             color: colors.textSubtle,
-            marginBottom: '16px',
-            lineHeight: '18px',
+            textAlign: 'center' as const,
+            padding: '24px 0',
         },
     };
 
-    const renderActions = () => (
-        <div>
-            <p style={{...modalStyles.helpText, marginBottom: '20px', marginTop: 0}}>
-                {'Initialize the current team or channel for cross-domain message relay.'}
-            </p>
-            <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
-                <button
-                    style={modalStyles.btnPrimary}
-                    onClick={() => handleAction('team')}
-                    disabled={status.loading}
-                >
-                    {status.loading && pendingAction === 'team' ? 'Initializing...' : 'Init Team'}
-                </button>
-                <button
-                    style={modalStyles.btnPrimary}
-                    onClick={() => handleAction('channel')}
-                    disabled={status.loading}
-                >
-                    {status.loading && pendingAction === 'channel' ? 'Initializing...' : 'Init Channel'}
-                </button>
-            </div>
-            {renderStatus()}
-        </div>
-    );
+    const renderBody = () => {
+        if (fetching) {
+            return <p style={{...modalStyles.emptyState, color: colors.textMuted}}>{'Loading...'}</p>;
+        }
 
-    const renderConnectionSelector = () => (
-        <div>
-            <p style={{...modalStyles.helpText, marginTop: 0}}>
-                {'Multiple connections are configured. Select which connection to use.'}
-            </p>
-            <label style={modalStyles.label}>{'Connection'}</label>
-            <select
-                style={modalStyles.select}
-                value={selectedConnection}
-                onChange={(e) => setSelectedConnection(e.target.value)}
-            >
-                {connections.map((name) => (
-                    <option
-                        key={name}
-                        value={name}
-                    >
-                        {name}
-                    </option>
-                ))}
-            </select>
-            <div style={{display: 'flex', gap: '8px'}}>
-                <button
-                    style={modalStyles.btnPrimary}
-                    onClick={handleConfirmConnection}
-                    disabled={status.loading || !selectedConnection}
-                >
-                    {status.loading ? 'Initializing...' : 'Confirm'}
-                </button>
-                <button
-                    style={modalStyles.btnSecondary}
-                    onClick={() => {
-                        setView('actions');
-                        setPendingAction(null);
-                    }}
-                >
-                    {'Back'}
-                </button>
-            </div>
-            {renderStatus()}
-        </div>
-    );
+        if (teamConnections.length === 0) {
+            return (
+                <p style={modalStyles.emptyState}>
+                    {'No connections available. Configure connections in the System Console.'}
+                </p>
+            );
+        }
+
+        return (
+            <table style={modalStyles.table}>
+                <thead>
+                    <tr>
+                        <th style={modalStyles.th}>{'Connection'}</th>
+                        <th style={{...modalStyles.th, textAlign: 'right' as const, width: '100px'}}>{'Action'}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {teamConnections.map((conn) => {
+                        const isActioning = actionInProgress === conn.name;
+                        return (
+                            <tr key={conn.name}>
+                                <td style={modalStyles.td}>
+                                    {formatConnectionLabel(conn.name, teamName)}
+                                </td>
+                                <td style={{...modalStyles.td, textAlign: 'right' as const}}>
+                                    {conn.linked ? (
+                                        <button
+                                            style={modalStyles.btnUnlink}
+                                            onClick={() => handleToggle(conn.name, true)}
+                                            disabled={actionInProgress !== null}
+                                        >
+                                            {isActioning ? 'Unlinking...' : 'Unlink'}
+                                        </button>
+                                    ) : (
+                                        <button
+                                            style={modalStyles.btnLink}
+                                            onClick={() => handleToggle(conn.name, false)}
+                                            disabled={actionInProgress !== null}
+                                        >
+                                            {isActioning ? 'Linking...' : 'Link'}
+                                        </button>
+                                    )}
+                                </td>
+                            </tr>
+                        );
+                    })}
+                </tbody>
+            </table>
+        );
+    };
 
     const renderStatus = () => {
         if (status.loading || status.success === undefined) {
@@ -360,8 +374,8 @@ const CrossguardModal: React.FC = () => {
                     </button>
                 </div>
                 <div style={modalStyles.body}>
-                    {view === 'actions' && renderActions()}
-                    {view === 'select-connection' && renderConnectionSelector()}
+                    {renderBody()}
+                    {renderStatus()}
                 </div>
             </div>
         </div>

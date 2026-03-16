@@ -175,6 +175,56 @@ func (p *Plugin) getGlobalStatus() (*GlobalStatusResponse, *apiError) {
 	return resp, nil
 }
 
+// ChannelStatusResponse is the JSON response for a channel's connection status.
+type ChannelStatusResponse struct {
+	ChannelID       string             `json:"channel_id"`
+	ChannelName     string             `json:"channel_name"`
+	TeamName        string             `json:"team_name"`
+	TeamConnections []ConnectionStatus `json:"team_connections"`
+}
+
+// ConnectionStatus represents a single connection and whether it is linked to the channel.
+type ConnectionStatus struct {
+	Name   string `json:"name"`
+	Linked bool   `json:"linked"`
+}
+
+// getChannelStatus returns the connection status for a channel, showing all
+// configured connections and whether each is linked to this channel.
+func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *apiError) {
+	channel, appErr := p.API.GetChannel(channelID)
+	if appErr != nil {
+		return nil, &apiError{Message: "channel not found", Status: 404}
+	}
+
+	team, appErr := p.API.GetTeam(channel.TeamId)
+	if appErr != nil {
+		return nil, &apiError{Message: "team not found", Status: 404}
+	}
+
+	channelConns, err := p.kvstore.GetChannelConnections(channelID)
+	if err != nil {
+		p.API.LogError("Failed to get channel connections", "channel_id", channelID, "error", err.Error())
+		return nil, &apiError{Message: "failed to get channel connections", Status: 500}
+	}
+
+	allConns := p.getAllConnectionNames()
+	statuses := make([]ConnectionStatus, 0, len(allConns))
+	for _, name := range allConns {
+		statuses = append(statuses, ConnectionStatus{
+			Name:   name,
+			Linked: slices.Contains(channelConns, name),
+		})
+	}
+
+	return &ChannelStatusResponse{
+		ChannelID:       channel.Id,
+		ChannelName:     channel.Name,
+		TeamName:        team.DisplayName,
+		TeamConnections: statuses,
+	}, nil
+}
+
 // initChannelForCrossGuard links a connection to a channel. If the channel did
 // not previously have any connections, it also marks the channel as shared and
 // posts an announcement. Returns (channel, alreadyLinked, error).
@@ -189,12 +239,11 @@ func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID, connName 
 		p.API.LogError("Failed to get team connections", "team_id", channel.TeamId, "error", err.Error())
 		return nil, false, &apiError{Message: "failed to check team initialization state", Status: 500}
 	}
-	if len(teamConns) == 0 {
-		return nil, false, &apiError{Message: "team must be initialized first (run /crossguard init-team)", Status: 400}
-	}
 
 	if !slices.Contains(teamConns, connName) {
-		return nil, false, &apiError{Message: fmt.Sprintf("connection %q is not linked to this team", connName), Status: 400}
+		if _, _, svcErr := p.initTeamForCrossGuard(user, channel.TeamId, connName); svcErr != nil {
+			return nil, false, svcErr
+		}
 	}
 
 	existing, err := p.kvstore.GetChannelConnections(channelID)

@@ -24,6 +24,7 @@ func (p *Plugin) initAPI() {
 	router.HandleFunc("/api/v1/dialog/select-connection", p.handleDialogSelectConnection).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/status", p.handleGlobalStatus).Methods(http.MethodGet)
 	router.HandleFunc("/api/v1/teams/{team_id}/status", p.handleTeamStatus).Methods(http.MethodGet)
+	router.HandleFunc("/api/v1/channels/{channel_id}/status", p.handleChannelStatus).Methods(http.MethodGet)
 	p.router = router
 }
 
@@ -520,6 +521,33 @@ func (p *Plugin) handleTeamStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, svcErr := p.getTeamStatus(teamID)
+	if svcErr != nil {
+		writeJSONError(w, svcErr.Message, svcErr.Status)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (p *Plugin) handleChannelStatus(w http.ResponseWriter, r *http.Request) {
+	user := p.getAuthenticatedUser(w, r)
+	if user == nil {
+		return
+	}
+
+	channelID := mux.Vars(r)["channel_id"]
+	if !model.IsValidId(channelID) {
+		writeJSONError(w, "invalid channel_id", http.StatusBadRequest)
+		return
+	}
+
+	member, appErr := p.API.GetChannelMember(channelID, user.Id)
+	if appErr != nil || member == nil {
+		writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+		return
+	}
+
+	resp, svcErr := p.getChannelStatus(channelID)
 	if svcErr != nil {
 		writeJSONError(w, svcErr.Message, svcErr.Status)
 		return

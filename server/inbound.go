@@ -129,12 +129,9 @@ func (p *Plugin) resolveTeamAndChannel(connName, teamName, channelName string) (
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to check team connections: %w", err)
 	}
-	if len(conns) == 0 {
-		return nil, nil, fmt.Errorf("team %q is not initialized for relay", teamName)
-	}
-
 	inboundPrefixed := "inbound:" + connName
 	if !slices.Contains(conns, inboundPrefixed) {
+		p.handleUnlinkedInbound(team, connName)
 		return nil, nil, fmt.Errorf("inbound connection %q is not linked to team %q", connName, teamName)
 	}
 
@@ -147,11 +144,8 @@ func (p *Plugin) resolveTeamAndChannel(connName, teamName, channelName string) (
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to check channel connections: %w", err)
 	}
-	if len(chanConns) == 0 {
-		return nil, nil, fmt.Errorf("channel %q in team %q is not initialized for relay", channelName, teamName)
-	}
-
 	if !slices.Contains(chanConns, inboundPrefixed) {
+		p.handleUnlinkedInboundChannel(team, channel, connName)
 		return nil, nil, fmt.Errorf("inbound connection %q is not linked to channel %q in team %q", connName, channelName, teamName)
 	}
 

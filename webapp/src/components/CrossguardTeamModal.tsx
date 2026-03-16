@@ -4,13 +4,15 @@ import React from 'react';
 interface ConnectionStatus {
     name: string;
     linked: boolean;
+    orphaned?: boolean;
 }
 
-interface ChannelStatusResponse {
-    channel_id: string;
-    channel_name: string;
+interface TeamStatusResponse {
+    team_id: string;
     team_name: string;
-    team_connections: ConnectionStatus[];
+    team_display_name: string;
+    initialized: boolean;
+    connections: ConnectionStatus[];
 }
 
 interface Status {
@@ -24,17 +26,15 @@ function getCSRFToken(): string {
     return match ? match[1] : '';
 }
 
-function formatConnectionLabel(name: string, teamName: string): string {
+function parseConnection(name: string): {direction: string; connName: string} {
     const colonIdx = name.indexOf(':');
     if (colonIdx === -1) {
-        return name;
+        return {direction: '', connName: name};
     }
-    const direction = name.substring(0, colonIdx);
-    const connName = name.substring(colonIdx + 1);
-    if (direction === 'inbound') {
-        return `NATS.io (${connName})  \u2192  Mattermost (${teamName})`;
-    }
-    return `Mattermost (${teamName})  \u2192  NATS.io (${connName})`;
+    return {
+        direction: name.substring(0, colonIdx),
+        connName: name.substring(colonIdx + 1),
+    };
 }
 
 const colors = {
@@ -45,14 +45,16 @@ const colors = {
     text: 'var(--center-channel-color, #3D3C40)',
     textMuted: 'rgba(var(--center-channel-color-rgb, 61, 60, 64), 0.64)',
     textSubtle: 'rgba(var(--center-channel-color-rgb, 61, 60, 64), 0.48)',
+    inbound: '#1B9AAA',
+    outbound: '#5A4FCF',
 };
 
 const STATUS_DISPLAY_MS = 5000;
 
-const CrossguardModal: React.FC = () => {
-    const [channelID, setChannelID] = React.useState<string | null>(null);
+const CrossguardTeamModal: React.FC = () => {
+    const [teamID, setTeamID] = React.useState<string | null>(null);
     const [teamName, setTeamName] = React.useState('');
-    const [teamConnections, setTeamConnections] = React.useState<ConnectionStatus[]>([]);
+    const [connections, setConnections] = React.useState<ConnectionStatus[]>([]);
     const [fetching, setFetching] = React.useState(false);
     const [status, setStatus] = React.useState<Status>({loading: false});
     const [actionInProgress, setActionInProgress] = React.useState<string | null>(null);
@@ -69,58 +71,58 @@ const CrossguardModal: React.FC = () => {
     React.useEffect(() => {
         const handler = (e: Event) => {
             const detail = (e as CustomEvent).detail;
-            if (detail?.channelID) {
-                setChannelID(detail.channelID);
+            if (detail?.teamID) {
+                setTeamID(detail.teamID);
                 setTeamName('');
-                setTeamConnections([]);
+                setConnections([]);
                 setStatus({loading: false});
                 setActionInProgress(null);
             }
         };
-        document.addEventListener('crossguard:open-modal', handler);
-        return () => document.removeEventListener('crossguard:open-modal', handler);
+        document.addEventListener('crossguard:open-team-modal', handler);
+        return () => document.removeEventListener('crossguard:open-team-modal', handler);
     }, []);
 
-    const fetchStatus = React.useCallback(async (chID: string) => {
+    const fetchStatus = React.useCallback(async (tID: string) => {
         setFetching(true);
         try {
-            const response = await fetch(`/plugins/${manifest.id}/api/v1/channels/${chID}/status`, {
+            const response = await fetch(`/plugins/${manifest.id}/api/v1/teams/${tID}/status`, {
                 credentials: 'same-origin',
                 headers: {'X-Requested-With': 'XMLHttpRequest'},
             });
             if (!response.ok) {
                 const data = await response.json();
-                setStatus({loading: false, success: false, message: data.error || 'Failed to load channel status.'});
+                setStatus({loading: false, success: false, message: data.error || 'Failed to load team status.'});
                 return;
             }
-            const data: ChannelStatusResponse = await response.json();
-            setTeamName(data.team_name);
-            setTeamConnections(data.team_connections || []);
+            const data: TeamStatusResponse = await response.json();
+            setTeamName(data.team_display_name);
+            setConnections(data.connections || []);
         } catch {
-            setStatus({loading: false, success: false, message: 'Network error loading channel status.'});
+            setStatus({loading: false, success: false, message: 'Network error loading team status.'});
         } finally {
             setFetching(false);
         }
     }, []);
 
     React.useEffect(() => {
-        if (channelID) {
-            fetchStatus(channelID);
+        if (teamID) {
+            fetchStatus(teamID);
         }
-    }, [channelID, fetchStatus]);
+    }, [teamID, fetchStatus]);
 
     React.useEffect(() => {
-        if (!channelID) {
+        if (!teamID) {
             return undefined;
         }
         const handler = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
-                setChannelID(null);
+                setTeamID(null);
             }
         };
         document.addEventListener('keydown', handler);
         return () => document.removeEventListener('keydown', handler);
-    }, [channelID]);
+    }, [teamID]);
 
     const callAPI = React.useCallback(async (url: string): Promise<{ok: boolean; data: Record<string, unknown>}> => {
         const response = await fetch(url, {
@@ -137,7 +139,7 @@ const CrossguardModal: React.FC = () => {
     }, []);
 
     const handleToggle = React.useCallback(async (connName: string, linked: boolean) => {
-        if (!channelID) {
+        if (!teamID) {
             return;
         }
         const action = linked ? 'teardown' : 'init';
@@ -149,14 +151,14 @@ const CrossguardModal: React.FC = () => {
             clearTimeout(statusTimerRef.current);
         }
         try {
-            const url = `/plugins/${manifest.id}/api/v1/channels/${channelID}/${action}?connection_name=${encodeURIComponent(connName)}`;
+            const url = `/plugins/${manifest.id}/api/v1/teams/${teamID}/${action}?connection_name=${encodeURIComponent(connName)}`;
             const {ok, data} = await callAPI(url);
             if (ok) {
                 setStatus({loading: false, success: true, message: `Connection "${connName}" ${verb}.`});
             } else {
                 setStatus({loading: false, success: false, message: (data.error as string) || `Failed to ${failVerb} connection.`});
             }
-            await fetchStatus(channelID);
+            await fetchStatus(teamID);
             statusTimerRef.current = setTimeout(() => setStatus({loading: false}), STATUS_DISPLAY_MS);
         } catch {
             setStatus({loading: false, success: false, message: 'Network error.'});
@@ -164,19 +166,19 @@ const CrossguardModal: React.FC = () => {
         } finally {
             setActionInProgress(null);
         }
-    }, [callAPI, channelID, fetchStatus]);
+    }, [callAPI, teamID, fetchStatus]);
 
     const handleBackdropClick = React.useCallback((e: React.MouseEvent) => {
         if (e.target === e.currentTarget) {
-            setChannelID(null);
+            setTeamID(null);
         }
     }, []);
 
-    if (!channelID) {
+    if (!teamID) {
         return null;
     }
 
-    const modalStyles: Record<string, React.CSSProperties> = {
+    const s: Record<string, React.CSSProperties> = {
         backdrop: {
             position: 'fixed',
             top: 0,
@@ -221,25 +223,47 @@ const CrossguardModal: React.FC = () => {
         body: {
             padding: '24px',
         },
-        table: {
-            width: '100%',
-            borderCollapse: 'collapse' as const,
+        card: {
+            border: `1px solid ${colors.border}`,
+            borderRadius: '8px',
+            padding: '14px 16px',
+            marginBottom: '10px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
         },
-        th: {
-            textAlign: 'left' as const,
-            padding: '8px 12px',
-            fontSize: '12px',
+        cardAccent: {
+            width: '4px',
+            alignSelf: 'stretch',
+            borderRadius: '2px',
+            flexShrink: 0,
+        },
+        cardContent: {
+            flex: 1,
+            minWidth: 0,
+        },
+        cardTop: {
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            marginBottom: '4px',
+        },
+        connName: {
+            fontSize: '15px',
             fontWeight: 600,
-            color: colors.textMuted,
-            borderBottom: `1px solid ${colors.border}`,
-            textTransform: 'uppercase' as const,
-            letterSpacing: '0.5px',
+            color: colors.text,
         },
-        td: {
-            padding: '10px 12px',
-            fontSize: '14px',
-            borderBottom: `1px solid ${colors.border}`,
-            verticalAlign: 'middle' as const,
+        directionBadge: {
+            display: 'inline-flex',
+            alignItems: 'center',
+            padding: '2px 10px',
+            borderRadius: '10px',
+            fontSize: '11px',
+            fontWeight: 600,
+            lineHeight: '16px',
+            textTransform: 'uppercase' as const,
+            letterSpacing: '0.3px',
+            whiteSpace: 'nowrap' as const,
         },
         btnLink: {
             padding: '6px 16px',
@@ -250,6 +274,7 @@ const CrossguardModal: React.FC = () => {
             color: '#fff',
             fontSize: '13px',
             fontWeight: 600,
+            whiteSpace: 'nowrap' as const,
         },
         btnUnlink: {
             padding: '6px 16px',
@@ -260,6 +285,7 @@ const CrossguardModal: React.FC = () => {
             color: '#fff',
             fontSize: '13px',
             fontWeight: 600,
+            whiteSpace: 'nowrap' as const,
         },
         statusBanner: {
             display: 'flex',
@@ -289,57 +315,73 @@ const CrossguardModal: React.FC = () => {
 
     const renderBody = () => {
         if (fetching) {
-            return <p style={{...modalStyles.emptyState, color: colors.textMuted}}>{'Loading...'}</p>;
+            return <p style={{...s.emptyState, color: colors.textMuted}}>{'Loading...'}</p>;
         }
 
-        if (teamConnections.length === 0) {
+        if (connections.length === 0) {
             return (
-                <p style={modalStyles.emptyState}>
+                <p style={s.emptyState}>
                     {'No connections available. Configure connections in the System Console.'}
                 </p>
             );
         }
 
         return (
-            <table style={modalStyles.table}>
-                <thead>
-                    <tr>
-                        <th style={modalStyles.th}>{'Connection'}</th>
-                        <th style={{...modalStyles.th, textAlign: 'right' as const, width: '100px'}}>{'Action'}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {teamConnections.map((conn) => {
-                        const isActioning = actionInProgress === conn.name;
-                        return (
-                            <tr key={conn.name}>
-                                <td style={modalStyles.td}>
-                                    {formatConnectionLabel(conn.name, teamName)}
-                                </td>
-                                <td style={{...modalStyles.td, textAlign: 'right' as const}}>
-                                    {conn.linked ? (
-                                        <button
-                                            style={modalStyles.btnUnlink}
-                                            onClick={() => handleToggle(conn.name, true)}
-                                            disabled={actionInProgress !== null}
-                                        >
-                                            {isActioning ? 'Unlinking...' : 'Unlink'}
-                                        </button>
-                                    ) : (
-                                        <button
-                                            style={modalStyles.btnLink}
-                                            onClick={() => handleToggle(conn.name, false)}
-                                            disabled={actionInProgress !== null}
-                                        >
-                                            {isActioning ? 'Linking...' : 'Link'}
-                                        </button>
-                                    )}
-                                </td>
-                            </tr>
-                        );
-                    })}
-                </tbody>
-            </table>
+            <div>
+                {connections.map((conn) => {
+                    const {direction, connName} = parseConnection(conn.name);
+                    const isInbound = direction === 'inbound';
+                    const accentColor = isInbound ? colors.inbound : colors.outbound;
+                    const isActioning = actionInProgress === conn.name;
+
+                    const badgeStyle: React.CSSProperties = {
+                        ...s.directionBadge,
+                        background: accentColor + '1A',
+                        color: accentColor,
+                    };
+
+                    const badgeLabel = isInbound ?
+                        'NATS \u2192 MATTERMOST' :
+                        'MATTERMOST \u2192 NATS';
+
+                    return (
+                        <div
+                            key={conn.name}
+                            style={{
+                                ...s.card,
+                                background: accentColor + '08',
+                                borderColor: accentColor + '30',
+                            }}
+                        >
+                            <div style={{...s.cardAccent, background: accentColor}}/>
+                            <div style={s.cardContent}>
+                                <div style={s.cardTop}>
+                                    <span style={s.connName}>{connName}</span>
+                                    <span style={badgeStyle}>{badgeLabel}</span>
+                                    {conn.orphaned && <span title={'Connection no longer in configuration'}>{'🔗\u200D💔'}</span>}
+                                </div>
+                            </div>
+                            {conn.linked ? (
+                                <button
+                                    style={s.btnUnlink}
+                                    onClick={() => handleToggle(conn.name, true)}
+                                    disabled={actionInProgress !== null}
+                                >
+                                    {isActioning ? 'Unlinking...' : 'Unlink'}
+                                </button>
+                            ) : (
+                                <button
+                                    style={s.btnLink}
+                                    onClick={() => handleToggle(conn.name, false)}
+                                    disabled={actionInProgress !== null}
+                                >
+                                    {isActioning ? 'Linking...' : 'Link'}
+                                </button>
+                            )}
+                        </div>
+                    );
+                })}
+            </div>
         );
     };
 
@@ -348,8 +390,8 @@ const CrossguardModal: React.FC = () => {
             return null;
         }
         const bannerStyle = {
-            ...modalStyles.statusBanner,
-            ...(status.success ? modalStyles.statusSuccess : modalStyles.statusError),
+            ...s.statusBanner,
+            ...(status.success ? s.statusSuccess : s.statusError),
         };
         return (
             <div style={bannerStyle}>
@@ -360,20 +402,20 @@ const CrossguardModal: React.FC = () => {
 
     return (
         <div
-            style={modalStyles.backdrop}
+            style={s.backdrop}
             onClick={handleBackdropClick}
         >
-            <div style={modalStyles.modal}>
-                <div style={modalStyles.header}>
-                    <h2 style={modalStyles.title}>{'Crossguard'}</h2>
+            <div style={s.modal}>
+                <div style={s.header}>
+                    <h2 style={s.title}>{`Crossguard Settings for ${teamName || '...'}`}</h2>
                     <button
-                        style={modalStyles.closeBtn}
-                        onClick={() => setChannelID(null)}
+                        style={s.closeBtn}
+                        onClick={() => setTeamID(null)}
                     >
                         {'\u00D7'}
                     </button>
                 </div>
-                <div style={modalStyles.body}>
+                <div style={s.body}>
                     {renderBody()}
                     {renderStatus()}
                 </div>
@@ -382,4 +424,4 @@ const CrossguardModal: React.FC = () => {
     );
 };
 
-export default CrossguardModal;
+export default CrossguardTeamModal;

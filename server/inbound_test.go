@@ -75,6 +75,38 @@ func (s *testKVStore) ClearDeletingFlag(postID string) error {
 	return nil
 }
 
+func (s *testKVStore) GetConnectionPrompt(string, string) (*store.ConnectionPrompt, error) {
+	return nil, nil
+}
+
+func (s *testKVStore) SetConnectionPrompt(string, string, *store.ConnectionPrompt) error {
+	return nil
+}
+
+func (s *testKVStore) DeleteConnectionPrompt(string, string) error {
+	return nil
+}
+
+func (s *testKVStore) CreateConnectionPrompt(string, string, *store.ConnectionPrompt) (bool, error) {
+	return true, nil
+}
+
+func (s *testKVStore) GetChannelConnectionPrompt(string, string) (*store.ConnectionPrompt, error) {
+	return nil, nil
+}
+
+func (s *testKVStore) SetChannelConnectionPrompt(string, string, *store.ConnectionPrompt) error {
+	return nil
+}
+
+func (s *testKVStore) DeleteChannelConnectionPrompt(string, string) error {
+	return nil
+}
+
+func (s *testKVStore) CreateChannelConnectionPrompt(string, string, *store.ConnectionPrompt) (bool, error) {
+	return true, nil
+}
+
 func setupTestPlugin(api *plugintest.API) (*Plugin, *testKVStore) {
 	p := &Plugin{}
 	p.SetAPI(api)
@@ -142,8 +174,12 @@ func TestResolveTeamAndChannel(t *testing.T) {
 		p.cancel = cancel
 		p.relaySem = make(chan struct{}, 50)
 
-		team := &mmModel.Team{Id: "team-id", Name: "test-a"}
+		team := &mmModel.Team{Id: "team-id", Name: "test-a", DisplayName: "Test A"}
+		channel := &mmModel.Channel{Id: "ts-id", Name: "town-square", TeamId: "team-id"}
 		api.On("GetTeamByName", "test-a").Return(team, nil)
+		api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
+		api.On("CreatePost", mock.AnythingOfType("*model.Post")).Return(&mmModel.Post{Id: "prompt-post-id"}, nil)
+		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
 
 		_, _, err := p.resolveTeamAndChannel("cgb", "test-a", "town-square")
 		require.Error(t, err)

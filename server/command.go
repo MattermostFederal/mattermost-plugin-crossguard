@@ -10,11 +10,13 @@ import (
 )
 
 const (
-	commandTrigger        = "crossguard"
-	actionInitTeam        = "init-team"
-	actionTeardownTeam    = "teardown-team"
-	actionInitChannel     = "init-channel"
-	actionTeardownChannel = "teardown-channel"
+	commandTrigger           = "crossguard"
+	actionInitTeam           = "init-team"
+	actionTeardownTeam       = "teardown-team"
+	actionInitChannel        = "init-channel"
+	actionTeardownChannel    = "teardown-channel"
+	actionResetPrompt        = "reset-prompt"
+	actionResetChannelPrompt = "reset-channel-prompt"
 )
 
 func (p *Plugin) registerCommand() error {
@@ -22,7 +24,7 @@ func (p *Plugin) registerCommand() error {
 		Trigger:          commandTrigger,
 		AutoComplete:     true,
 		AutoCompleteDesc: "Cross Guard commands",
-		AutoCompleteHint: "[init-team|init-channel|teardown-team|teardown-channel|status]",
+		AutoCompleteHint: "[init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|status]",
 		AutocompleteData: getAutocompleteData(),
 	})
 }
@@ -42,6 +44,12 @@ func getAutocompleteData() *model.AutocompleteData {
 	teardownChannel := model.NewAutocompleteData("teardown-channel", "[connection-name]", "Unlink a NATS connection from this channel (requires channel admin or higher)")
 	cmd.AddCommand(teardownChannel)
 
+	resetPrompt := model.NewAutocompleteData("reset-prompt", "<connection-name>", "Clear a blocked or pending connection prompt for this team")
+	cmd.AddCommand(resetPrompt)
+
+	resetChannelPrompt := model.NewAutocompleteData("reset-channel-prompt", "<connection-name>", "Clear a blocked or pending connection prompt for this channel")
+	cmd.AddCommand(resetChannelPrompt)
+
 	status := model.NewAutocompleteData("status", "", "Check Cross Guard status for this team")
 	cmd.AddCommand(status)
 
@@ -51,7 +59,7 @@ func getAutocompleteData() *model.AutocompleteData {
 func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
 	parts := strings.Fields(args.Command)
 	if len(parts) < 2 {
-		return respondEphemeral("Usage: /%s [init-team|init-channel|teardown-team|teardown-channel|status]", commandTrigger), nil
+		return respondEphemeral("Usage: /%s [init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|status]", commandTrigger), nil
 	}
 
 	subcommand := parts[1]
@@ -64,10 +72,14 @@ func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*mo
 		return p.executeTeardownTeam(args), nil
 	case "teardown-channel":
 		return p.executeTeardownChannel(args), nil
+	case actionResetPrompt:
+		return p.executeResetPrompt(args), nil
+	case actionResetChannelPrompt:
+		return p.executeResetChannelPrompt(args), nil
 	case "status":
 		return p.executeStatus(args), nil
 	default:
-		return respondEphemeral("Unknown subcommand: %s. Usage: /%s [init-team|init-channel|teardown-team|teardown-channel|status]", subcommand, commandTrigger), nil
+		return respondEphemeral("Unknown subcommand: %s. Usage: /%s [init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|status]", subcommand, commandTrigger), nil
 	}
 }
 
@@ -410,6 +422,58 @@ func (p *Plugin) executeTeardownTeam(args *model.CommandArgs) *model.CommandResp
 	}
 
 	return &model.CommandResponse{}
+}
+
+func (p *Plugin) executeResetPrompt(args *model.CommandArgs) *model.CommandResponse {
+	if !p.isTeamAdminOrSystemAdmin(args.UserId, args.TeamId) {
+		return respondEphemeral("You must be a team admin or system admin to reset connection prompts.")
+	}
+
+	parts := strings.Fields(args.Command)
+	if len(parts) < 3 {
+		return respondEphemeral("Usage: /%s reset-prompt <connection-name>", commandTrigger)
+	}
+	connName := parts[2]
+
+	prompt, err := p.kvstore.GetConnectionPrompt(args.TeamId, connName)
+	if err != nil {
+		return respondEphemeral("Failed to check connection prompt.")
+	}
+	if prompt == nil {
+		return respondEphemeral("No prompt found for connection `%s` on this team.", connName)
+	}
+
+	if err := p.kvstore.DeleteConnectionPrompt(args.TeamId, connName); err != nil {
+		return respondEphemeral("Failed to clear connection prompt.")
+	}
+
+	return respondEphemeral("Connection prompt for `%s` cleared. A new prompt will appear on the next inbound message.", connName)
+}
+
+func (p *Plugin) executeResetChannelPrompt(args *model.CommandArgs) *model.CommandResponse {
+	if !p.isTeamAdminOrSystemAdmin(args.UserId, args.TeamId) {
+		return respondEphemeral("You must be a team admin or system admin to reset channel connection prompts.")
+	}
+
+	parts := strings.Fields(args.Command)
+	if len(parts) < 3 {
+		return respondEphemeral("Usage: /%s reset-channel-prompt <connection-name>", commandTrigger)
+	}
+	connName := parts[2]
+
+	prompt, err := p.kvstore.GetChannelConnectionPrompt(args.ChannelId, connName)
+	if err != nil {
+		return respondEphemeral("Failed to check channel connection prompt.")
+	}
+	if prompt == nil {
+		return respondEphemeral("No channel prompt found for connection `%s` on this channel.", connName)
+	}
+
+	if err := p.kvstore.DeleteChannelConnectionPrompt(args.ChannelId, connName); err != nil {
+		return respondEphemeral("Failed to clear channel connection prompt.")
+	}
+
+	return respondEphemeral("Channel connection prompt for `%s` cleared. A new prompt will appear on the next inbound message.", connName)
 }
 
 func (p *Plugin) isChannelAdminOrHigher(userID, channelID, teamID string) bool {

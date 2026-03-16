@@ -182,6 +182,38 @@ func (m *mockKVStore) ClearDeletingFlag(postID string) error {
 	return nil
 }
 
+func (m *mockKVStore) GetConnectionPrompt(teamID, connName string) (*ConnectionPrompt, error) {
+	return nil, nil
+}
+
+func (m *mockKVStore) SetConnectionPrompt(teamID, connName string, prompt *ConnectionPrompt) error {
+	return nil
+}
+
+func (m *mockKVStore) DeleteConnectionPrompt(teamID, connName string) error {
+	return nil
+}
+
+func (m *mockKVStore) CreateConnectionPrompt(teamID, connName string, prompt *ConnectionPrompt) (bool, error) {
+	return true, nil
+}
+
+func (m *mockKVStore) GetChannelConnectionPrompt(channelID, connName string) (*ConnectionPrompt, error) {
+	return nil, nil
+}
+
+func (m *mockKVStore) SetChannelConnectionPrompt(channelID, connName string, prompt *ConnectionPrompt) error {
+	return nil
+}
+
+func (m *mockKVStore) DeleteChannelConnectionPrompt(channelID, connName string) error {
+	return nil
+}
+
+func (m *mockKVStore) CreateChannelConnectionPrompt(channelID, connName string, prompt *ConnectionPrompt) (bool, error) {
+	return true, nil
+}
+
 func newTestCaching(inner *mockKVStore) (*CachingKVStore, *plugintest.API) {
 	api := &plugintest.API{}
 	api.On("PublishPluginClusterEvent", mock.Anything, mock.Anything).Return(nil)

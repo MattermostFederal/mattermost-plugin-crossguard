@@ -9,19 +9,23 @@ import (
 
 // Client wraps the Mattermost pluginapi KV store.
 type Client struct {
-	client              *pluginapi.Client
-	teamInitPrefix      string
-	channelInitPrefix   string
-	initializedTeamsKey string
+	client               *pluginapi.Client
+	teamInitPrefix       string
+	channelInitPrefix    string
+	initializedTeamsKey  string
+	connPromptPrefix     string
+	chanConnPromptPrefix string
 }
 
 // NewKVStore creates a new KV store client.
 func NewKVStore(client *pluginapi.Client, pluginID string) KVStore {
 	return Client{
-		client:              client,
-		teamInitPrefix:      pluginID + "-teaminit-",
-		channelInitPrefix:   pluginID + "-channelinit-",
-		initializedTeamsKey: pluginID + "-initialized-teams",
+		client:               client,
+		teamInitPrefix:       pluginID + "-teaminit-",
+		channelInitPrefix:    pluginID + "-channelinit-",
+		initializedTeamsKey:  pluginID + "-initialized-teams",
+		connPromptPrefix:     pluginID + "-connprompt-",
+		chanConnPromptPrefix: pluginID + "-chanprompt-",
 	}
 }
 
@@ -249,6 +253,86 @@ func (kv Client) ClearDeletingFlag(postID string) error {
 		return errors.Wrap(err, "failed to clear deleting flag")
 	}
 	return nil
+}
+
+// GetConnectionPrompt retrieves the connection prompt state for a team+connection.
+func (kv Client) GetConnectionPrompt(teamID, connName string) (*ConnectionPrompt, error) {
+	var prompt ConnectionPrompt
+	err := kv.client.KV.Get(kv.connPromptPrefix+teamID+"-"+connName, &prompt)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get connection prompt")
+	}
+	if prompt.State == "" {
+		return nil, nil
+	}
+	return &prompt, nil
+}
+
+// SetConnectionPrompt stores the connection prompt state for a team+connection.
+func (kv Client) SetConnectionPrompt(teamID, connName string, prompt *ConnectionPrompt) error {
+	_, err := kv.client.KV.Set(kv.connPromptPrefix+teamID+"-"+connName, prompt)
+	if err != nil {
+		return errors.Wrap(err, "failed to set connection prompt")
+	}
+	return nil
+}
+
+// DeleteConnectionPrompt removes the connection prompt state for a team+connection.
+func (kv Client) DeleteConnectionPrompt(teamID, connName string) error {
+	if err := kv.client.KV.Delete(kv.connPromptPrefix + teamID + "-" + connName); err != nil {
+		return errors.Wrap(err, "failed to delete connection prompt")
+	}
+	return nil
+}
+
+// CreateConnectionPrompt atomically creates a connection prompt only if none exists.
+// Returns true if created, false if a prompt already exists for this team+connection.
+func (kv Client) CreateConnectionPrompt(teamID, connName string, prompt *ConnectionPrompt) (bool, error) {
+	saved, err := kv.client.KV.Set(kv.connPromptPrefix+teamID+"-"+connName, prompt, pluginapi.SetAtomic(nil))
+	if err != nil {
+		return false, errors.Wrap(err, "failed to create connection prompt")
+	}
+	return saved, nil
+}
+
+// GetChannelConnectionPrompt retrieves the connection prompt state for a channel+connection.
+func (kv Client) GetChannelConnectionPrompt(channelID, connName string) (*ConnectionPrompt, error) {
+	var prompt ConnectionPrompt
+	err := kv.client.KV.Get(kv.chanConnPromptPrefix+channelID+"-"+connName, &prompt)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get channel connection prompt")
+	}
+	if prompt.State == "" {
+		return nil, nil
+	}
+	return &prompt, nil
+}
+
+// SetChannelConnectionPrompt stores the connection prompt state for a channel+connection.
+func (kv Client) SetChannelConnectionPrompt(channelID, connName string, prompt *ConnectionPrompt) error {
+	_, err := kv.client.KV.Set(kv.chanConnPromptPrefix+channelID+"-"+connName, prompt)
+	if err != nil {
+		return errors.Wrap(err, "failed to set channel connection prompt")
+	}
+	return nil
+}
+
+// DeleteChannelConnectionPrompt removes the connection prompt state for a channel+connection.
+func (kv Client) DeleteChannelConnectionPrompt(channelID, connName string) error {
+	if err := kv.client.KV.Delete(kv.chanConnPromptPrefix + channelID + "-" + connName); err != nil {
+		return errors.Wrap(err, "failed to delete channel connection prompt")
+	}
+	return nil
+}
+
+// CreateChannelConnectionPrompt atomically creates a channel connection prompt only if none exists.
+// Returns true if created, false if a prompt already exists for this channel+connection.
+func (kv Client) CreateChannelConnectionPrompt(channelID, connName string, prompt *ConnectionPrompt) (bool, error) {
+	saved, err := kv.client.KV.Set(kv.chanConnPromptPrefix+channelID+"-"+connName, prompt, pluginapi.SetAtomic(nil))
+	if err != nil {
+		return false, errors.Wrap(err, "failed to create channel connection prompt")
+	}
+	return saved, nil
 }
 
 // casModifyStringList atomically modifies a string list stored in KV.

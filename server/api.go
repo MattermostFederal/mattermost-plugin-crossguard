@@ -22,6 +22,10 @@ func (p *Plugin) initAPI() {
 	router.HandleFunc("/api/v1/channels/{channel_id}/init", p.handleInitChannel).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/channels/{channel_id}/teardown", p.handleTeardownChannel).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/dialog/select-connection", p.handleDialogSelectConnection).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/prompt/accept", p.handlePromptAccept).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/prompt/block", p.handlePromptBlock).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/prompt/channel/accept", p.handleChannelPromptAccept).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/prompt/channel/block", p.handleChannelPromptBlock).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/status", p.handleGlobalStatus).Methods(http.MethodGet)
 	router.HandleFunc("/api/v1/teams/{team_id}/status", p.handleTeamStatus).Methods(http.MethodGet)
 	router.HandleFunc("/api/v1/channels/{channel_id}/status", p.handleChannelStatus).Methods(http.MethodGet)
@@ -258,11 +262,17 @@ func (p *Plugin) handleInitChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	connName, allConns, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), p.getAllConnectionNames())
+	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
+	if err != nil {
+		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
+		return
+	}
+
+	connName, _, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), teamConns)
 	if resolveErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":       resolveErr,
-			"connections": allConns,
+			"connections": teamConns,
 		})
 		return
 	}
@@ -304,17 +314,17 @@ func (p *Plugin) handleTeardownChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
+	chanConns, err := p.kvstore.GetChannelConnections(channelID)
 	if err != nil {
-		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
+		writeJSONError(w, "failed to check channel connections", http.StatusInternalServerError)
 		return
 	}
 
-	connName, _, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), teamConns)
+	connName, _, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), chanConns)
 	if resolveErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":       resolveErr,
-			"connections": teamConns,
+			"connections": chanConns,
 		})
 		return
 	}
@@ -350,11 +360,17 @@ func (p *Plugin) handleTeardownTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	connName, allConns, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), p.getAllConnectionNames())
+	teamConns, err := p.kvstore.GetTeamConnections(teamID)
+	if err != nil {
+		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
+		return
+	}
+
+	connName, _, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), teamConns)
 	if resolveErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":       resolveErr,
-			"connections": allConns,
+			"connections": teamConns,
 		})
 		return
 	}

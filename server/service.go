@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"slices"
+	"sort"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
@@ -19,10 +20,12 @@ func (e *apiError) Error() string {
 
 // TeamStatusResponse is the JSON response for a single team's initialization status.
 type TeamStatusResponse struct {
-	TeamID            string   `json:"team_id"`
-	TeamName          string   `json:"team_name"`
-	Initialized       bool     `json:"initialized"`
-	LinkedConnections []string `json:"linked_connections"`
+	TeamID            string             `json:"team_id"`
+	TeamName          string             `json:"team_name"`
+	TeamDisplayName   string             `json:"team_display_name"`
+	Initialized       bool               `json:"initialized"`
+	LinkedConnections []string           `json:"linked_connections"`
+	Connections       []ConnectionStatus `json:"connections"`
 }
 
 // TeamStatusEntry represents one initialized team in the global status response.
@@ -114,11 +117,40 @@ func (p *Plugin) getTeamStatus(teamID string) (*TeamStatusResponse, *apiError) {
 		return nil, &apiError{Message: "failed to check team status", Status: 500}
 	}
 
+	allConns := p.getAllConnectionNames()
+	configSet := make(map[string]struct{}, len(allConns))
+	connSet := make(map[string]struct{})
+	for _, name := range allConns {
+		configSet[name] = struct{}{}
+		connSet[name] = struct{}{}
+	}
+	for _, name := range conns {
+		connSet[name] = struct{}{}
+	}
+
+	relevantConns := make([]string, 0, len(connSet))
+	for name := range connSet {
+		relevantConns = append(relevantConns, name)
+	}
+	sort.Strings(relevantConns)
+
+	statuses := make([]ConnectionStatus, 0, len(relevantConns))
+	for _, name := range relevantConns {
+		_, inConfig := configSet[name]
+		statuses = append(statuses, ConnectionStatus{
+			Name:     name,
+			Linked:   slices.Contains(conns, name),
+			Orphaned: !inConfig,
+		})
+	}
+
 	return &TeamStatusResponse{
 		TeamID:            team.Id,
 		TeamName:          team.Name,
+		TeamDisplayName:   team.DisplayName,
 		Initialized:       len(conns) > 0,
 		LinkedConnections: conns,
+		Connections:       statuses,
 	}, nil
 }
 
@@ -177,20 +209,22 @@ func (p *Plugin) getGlobalStatus() (*GlobalStatusResponse, *apiError) {
 
 // ChannelStatusResponse is the JSON response for a channel's connection status.
 type ChannelStatusResponse struct {
-	ChannelID       string             `json:"channel_id"`
-	ChannelName     string             `json:"channel_name"`
-	TeamName        string             `json:"team_name"`
-	TeamConnections []ConnectionStatus `json:"team_connections"`
+	ChannelID          string             `json:"channel_id"`
+	ChannelName        string             `json:"channel_name"`
+	ChannelDisplayName string             `json:"channel_display_name"`
+	TeamName           string             `json:"team_name"`
+	TeamConnections    []ConnectionStatus `json:"team_connections"`
 }
 
-// ConnectionStatus represents a single connection and whether it is linked to the channel.
+// ConnectionStatus represents a single connection and whether it is linked.
 type ConnectionStatus struct {
-	Name   string `json:"name"`
-	Linked bool   `json:"linked"`
+	Name     string `json:"name"`
+	Linked   bool   `json:"linked"`
+	Orphaned bool   `json:"orphaned,omitempty"`
 }
 
-// getChannelStatus returns the connection status for a channel, showing all
-// configured connections and whether each is linked to this channel.
+// getChannelStatus returns the connection status for a channel, showing
+// team-linked connections and any orphaned channel connections.
 func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *apiError) {
 	channel, appErr := p.API.GetChannel(channelID)
 	if appErr != nil {
@@ -208,20 +242,47 @@ func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *ap
 		return nil, &apiError{Message: "failed to get channel connections", Status: 500}
 	}
 
+	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
+	if err != nil {
+		p.API.LogError("Failed to get team connections", "team_id", channel.TeamId, "error", err.Error())
+		return nil, &apiError{Message: "failed to get team connections", Status: 500}
+	}
+
 	allConns := p.getAllConnectionNames()
-	statuses := make([]ConnectionStatus, 0, len(allConns))
+	configSet := make(map[string]struct{}, len(allConns))
+	connSet := make(map[string]struct{})
 	for _, name := range allConns {
+		configSet[name] = struct{}{}
+	}
+	for _, name := range teamConns {
+		connSet[name] = struct{}{}
+	}
+	for _, name := range channelConns {
+		connSet[name] = struct{}{}
+	}
+
+	relevantConns := make([]string, 0, len(connSet))
+	for name := range connSet {
+		relevantConns = append(relevantConns, name)
+	}
+	sort.Strings(relevantConns)
+
+	statuses := make([]ConnectionStatus, 0, len(relevantConns))
+	for _, name := range relevantConns {
+		_, inConfig := configSet[name]
 		statuses = append(statuses, ConnectionStatus{
-			Name:   name,
-			Linked: slices.Contains(channelConns, name),
+			Name:     name,
+			Linked:   slices.Contains(channelConns, name),
+			Orphaned: !inConfig,
 		})
 	}
 
 	return &ChannelStatusResponse{
-		ChannelID:       channel.Id,
-		ChannelName:     channel.Name,
-		TeamName:        team.DisplayName,
-		TeamConnections: statuses,
+		ChannelID:          channel.Id,
+		ChannelName:        channel.Name,
+		ChannelDisplayName: channel.DisplayName,
+		TeamName:           team.DisplayName,
+		TeamConnections:    statuses,
 	}, nil
 }
 

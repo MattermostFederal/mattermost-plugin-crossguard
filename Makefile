@@ -460,7 +460,7 @@ docker-deploy: docker-check dist
 	curl -sf -X PUT http://localhost:$(MM_PORT_A)/api/v4/config/patch \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"relay-test\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","inboundconnections":"[]"}}}}' >/dev/null && \
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","inboundconnections":"[]"}}}}' >/dev/null && \
 	echo "Server A configured with outbound NATS connection"
 	@TOKEN_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/users/login \
 		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
@@ -468,7 +468,7 @@ docker-deploy: docker-check dist
 	curl -sf -X PUT http://localhost:$(MM_PORT_B)/api/v4/config/patch \
 		-H "Authorization: Bearer $$TOKEN_B" \
 		-H "Content-Type: application/json" \
-		-d '{"PluginSettings":{"Plugins":{"crossguard":{"inboundconnections":"[{\"name\":\"relay-test\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","outboundconnections":"[]"}}}}' >/dev/null && \
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"inboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","outboundconnections":"[]"}}}}' >/dev/null && \
 	echo "Server B configured with inbound NATS connection"
 
 ## End-to-end smoke test: init teams/channels, post message on A, verify relay to B
@@ -490,24 +490,24 @@ docker-smoke-test: docker-check
 	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"channel_id":"'"$$CHAN_A"'","command":"/crossguard init-team outbound:relay-test"}' >/dev/null && \
-	echo "  Server A: init-team outbound:relay-test" && \
+		-d '{"channel_id":"'"$$CHAN_A"'","command":"/crossguard init-team outbound:low-to-high"}' >/dev/null && \
+	echo "  Server A: init-team outbound:low-to-high" && \
 	curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/commands/execute \
 		-H "Authorization: Bearer $$TOKEN_B" \
 		-H "Content-Type: application/json" \
-		-d '{"channel_id":"'"$$CHAN_B"'","command":"/crossguard init-team inbound:relay-test"}' >/dev/null && \
-	echo "  Server B: init-team inbound:relay-test" && \
+		-d '{"channel_id":"'"$$CHAN_B"'","command":"/crossguard init-team inbound:low-to-high"}' >/dev/null && \
+	echo "  Server B: init-team inbound:low-to-high" && \
 	echo "Initializing channels..." && \
 	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"channel_id":"'"$$CHAN_A"'","command":"/crossguard init-channel outbound:relay-test"}' >/dev/null && \
-	echo "  Server A: init-channel outbound:relay-test on off-topic" && \
+		-d '{"channel_id":"'"$$CHAN_A"'","command":"/crossguard init-channel outbound:low-to-high"}' >/dev/null && \
+	echo "  Server A: init-channel outbound:low-to-high on off-topic" && \
 	curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/commands/execute \
 		-H "Authorization: Bearer $$TOKEN_B" \
 		-H "Content-Type: application/json" \
-		-d '{"channel_id":"'"$$CHAN_B"'","command":"/crossguard init-channel inbound:relay-test"}' >/dev/null && \
-	echo "  Server B: init-channel inbound:relay-test on off-topic" && \
+		-d '{"channel_id":"'"$$CHAN_B"'","command":"/crossguard init-channel inbound:low-to-high"}' >/dev/null && \
+	echo "  Server B: init-channel inbound:low-to-high on off-topic" && \
 	echo "Posting smoke-test message from Server A..." && \
 	TOKEN_USERA=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
 		-d '{"login_id":"usera","password":"password"}' -i 2>/dev/null \

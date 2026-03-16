@@ -388,8 +388,8 @@ docker-setup: docker-start
 	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team create \
 		--name test \
 		--display-name "Test A" 2>/dev/null || echo "Team 'Test A' already exists on Server A"
-	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team users add test-a admin 2>/dev/null || echo "Admin already in Test A team"
-	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team users add test-a usera 2>/dev/null || echo "usera already in Test A team"
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team users add test admin 2>/dev/null || echo "Admin already in Test A team"
+	@$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team users add test usera 2>/dev/null || echo "usera already in Test A team"
 	@echo ""
 	@echo "--- Setting up Server B ---"
 	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local user create \
@@ -404,8 +404,8 @@ docker-setup: docker-start
 	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team create \
 		--name test \
 		--display-name "Test B" 2>/dev/null || echo "Team 'Test B' already exists on Server B"
-	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team users add test-b admin 2>/dev/null || echo "Admin already in Test B team"
-	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team users add test-b userb 2>/dev/null || echo "userb already in Test B team"
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team users add test admin 2>/dev/null || echo "Admin already in Test B team"
+	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local team users add test userb 2>/dev/null || echo "userb already in Test B team"
 	@echo ""
 	@echo "=========================================="
 	@echo "Server A (CGA): http://cga.test:$(MM_PORT_A)"

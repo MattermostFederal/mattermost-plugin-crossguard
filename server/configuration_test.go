@@ -333,6 +333,23 @@ func TestIsUsernameLookupEnabled(t *testing.T) {
 	})
 }
 
+func TestIsRestrictedToSystemAdmins(t *testing.T) {
+	t.Run("nil defaults to false", func(t *testing.T) {
+		cfg := &configuration{}
+		assert.False(t, cfg.isRestrictedToSystemAdmins())
+	})
+
+	t.Run("explicitly true", func(t *testing.T) {
+		cfg := &configuration{RestrictToSystemAdmins: boolPtr(true)}
+		assert.True(t, cfg.isRestrictedToSystemAdmins())
+	})
+
+	t.Run("explicitly false", func(t *testing.T) {
+		cfg := &configuration{RestrictToSystemAdmins: boolPtr(false)}
+		assert.False(t, cfg.isRestrictedToSystemAdmins())
+	})
+}
+
 func TestIsTestMessage(t *testing.T) {
 	t.Run("valid test message is detected", func(t *testing.T) {
 		envelope, err := model.NewMessage(model.MessageTypeTest, model.TestMessage{ID: "abc-123"})

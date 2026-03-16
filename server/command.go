@@ -283,6 +283,10 @@ func (p *Plugin) isTeamAdminOrSystemAdmin(userID, teamID string) bool {
 		return true
 	}
 
+	if p.getConfiguration().isRestrictedToSystemAdmins() {
+		return false
+	}
+
 	member, appErr := p.API.GetTeamMember(teamID, userID)
 	if appErr != nil {
 		return false
@@ -477,6 +481,10 @@ func (p *Plugin) executeResetChannelPrompt(args *model.CommandArgs) *model.Comma
 }
 
 func (p *Plugin) isChannelAdminOrHigher(userID, channelID, teamID string) bool {
+	if p.getConfiguration().isRestrictedToSystemAdmins() {
+		return p.isTeamAdminOrSystemAdmin(userID, teamID)
+	}
+
 	member, appErr := p.API.GetChannelMember(channelID, userID)
 	if appErr != nil || member == nil {
 		return false

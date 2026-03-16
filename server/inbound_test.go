@@ -167,12 +167,14 @@ func TestHandleInboundPost(t *testing.T) {
 	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
 	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
 	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.cgb", Position: syncUserPosition}
+	notFoundErr := &mmModel.AppError{Message: "not found"}
 
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
-	api.On("GetUserByUsername", "alice").Return(nil, &mmModel.AppError{Message: "not found"})
+	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
 	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
 		"username", "alice", "conn", "cgb").Return()
+	api.On("GetUserByUsername", "alice:cgb").Return(nil, notFoundErr)
 	api.On("GetUserByUsername", "alice.cgb").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
@@ -275,12 +277,14 @@ func TestHandleInboundReaction_Add(t *testing.T) {
 	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
 	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
 	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.cgb", Position: syncUserPosition}
+	notFoundErr := &mmModel.AppError{Message: "not found"}
 
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
-	api.On("GetUserByUsername", "alice").Return(nil, &mmModel.AppError{Message: "not found"})
+	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
 	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
 		"username", "alice", "conn", "cgb").Return()
+	api.On("GetUserByUsername", "alice:cgb").Return(nil, notFoundErr)
 	api.On("GetUserByUsername", "alice.cgb").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
@@ -311,12 +315,14 @@ func TestHandleInboundReaction_Remove(t *testing.T) {
 	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
 	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
 	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.cgb", Position: syncUserPosition}
+	notFoundErr := &mmModel.AppError{Message: "not found"}
 
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
-	api.On("GetUserByUsername", "alice").Return(nil, &mmModel.AppError{Message: "not found"})
+	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
 	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
 		"username", "alice", "conn", "cgb").Return()
+	api.On("GetUserByUsername", "alice:cgb").Return(nil, notFoundErr)
 	api.On("GetUserByUsername", "alice.cgb").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
@@ -347,12 +353,14 @@ func TestHandleInboundPost_WithThread(t *testing.T) {
 	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
 	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
 	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.cgb", Position: syncUserPosition}
+	notFoundErr := &mmModel.AppError{Message: "not found"}
 
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
-	api.On("GetUserByUsername", "alice").Return(nil, &mmModel.AppError{Message: "not found"})
+	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
 	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
 		"username", "alice", "conn", "cgb").Return()
+	api.On("GetUserByUsername", "alice:cgb").Return(nil, notFoundErr)
 	api.On("GetUserByUsername", "alice.cgb").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)

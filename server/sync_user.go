@@ -15,20 +15,31 @@ const (
 // ensureSyncUser finds or creates a synthetic user representing a remote sender,
 // ensures team and channel membership, and returns the user ID.
 func (p *Plugin) ensureSyncUser(username, connName, teamID, channelID string) (string, error) {
-	munged := username + "." + connName
+	munged := username + ":" + connName
 	if len(munged) > maxUsernameLength {
 		maxUser := maxUsernameLength - len(connName) - 1
 		if maxUser < 1 {
 			return "", fmt.Errorf("connection name too long to create sync username")
 		}
-		munged = username[:maxUser] + "." + connName
+		munged = username[:maxUser] + ":" + connName
 		p.API.LogWarn("Truncated sync username to fit limit", "original", username, "munged", munged)
 	}
 
 	user, appErr := p.API.GetUserByUsername(munged)
+	if appErr != nil {
+		// Fallback for pre-existing sync users created with old "." separator
+		legacyMunged := username + "." + connName
+		if len(legacyMunged) > maxUsernameLength {
+			maxUser := maxUsernameLength - len(connName) - 1
+			if maxUser >= 1 {
+				legacyMunged = username[:maxUser] + "." + connName
+			}
+		}
+		user, appErr = p.API.GetUserByUsername(legacyMunged)
+	}
 	if appErr == nil {
 		if user.Position != syncUserPosition {
-			return "", fmt.Errorf("username %q exists but is not a sync user", munged)
+			return "", fmt.Errorf("username %q exists but is not a sync user", user.Username)
 		}
 		p.ensureMembership(user.Id, teamID, channelID)
 		return user.Id, nil
@@ -45,6 +56,7 @@ func (p *Plugin) ensureSyncUser(username, connName, teamID, channelID string) (s
 		LastName:  "(via " + connName + ")",
 		Position:  syncUserPosition,
 		RemoteId:  &remoteID,
+		Props:     mmModel.StringMap{"RemoteUsername": username},
 	}
 
 	created, createErr := p.API.CreateUser(newUser)

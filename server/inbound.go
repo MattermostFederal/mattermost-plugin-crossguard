@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"slices"
 
 	mmModel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/nats-io/nats.go"
@@ -120,17 +119,32 @@ func (p *Plugin) handleInboundMessage(connName string) nats.MsgHandler {
 }
 
 func (p *Plugin) resolveTeamAndChannel(connName, teamName, channelName string) (*mmModel.Team, *mmModel.Channel, error) {
-	team, appErr := p.API.GetTeamByName(teamName)
-	if appErr != nil {
-		return nil, nil, fmt.Errorf("team %q not found: %w", teamName, appErr)
+	// Check for an explicit rewrite rule first. If one exists, it takes
+	// precedence over a local team that happens to share the remote name.
+	team, rewriteErr := p.findTeamByRewrite(connName, teamName)
+	if rewriteErr != nil {
+		return nil, nil, fmt.Errorf("failed to check rewrite index: %w", rewriteErr)
+	}
+	if team == nil {
+		var appErr *mmModel.AppError
+		team, appErr = p.API.GetTeamByName(teamName)
+		if appErr != nil {
+			return nil, nil, fmt.Errorf("team %q not found: %w", teamName, appErr)
+		}
 	}
 
 	conns, err := p.kvstore.GetTeamConnections(team.Id)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to check team connections: %w", err)
 	}
-	inboundPrefixed := directionInbound + connName
-	if !slices.Contains(conns, inboundPrefixed) {
+	linked := false
+	for _, tc := range conns {
+		if tc.Direction == "inbound" && tc.Connection == connName {
+			linked = true
+			break
+		}
+	}
+	if !linked {
 		p.handleUnlinkedInbound(team, connName)
 		return nil, nil, fmt.Errorf("inbound connection %q is not linked to team %q", connName, teamName)
 	}
@@ -144,12 +158,34 @@ func (p *Plugin) resolveTeamAndChannel(connName, teamName, channelName string) (
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to check channel connections: %w", err)
 	}
-	if !slices.Contains(chanConns, inboundPrefixed) {
+	chanLinked := false
+	for _, tc := range chanConns {
+		if tc.Direction == "inbound" && tc.Connection == connName {
+			chanLinked = true
+			break
+		}
+	}
+	if !chanLinked {
 		p.handleUnlinkedInboundChannel(team, channel, connName)
 		return nil, nil, fmt.Errorf("inbound connection %q is not linked to channel %q in team %q", connName, channelName, teamName)
 	}
 
 	return team, channel, nil
+}
+
+func (p *Plugin) findTeamByRewrite(connName, remoteTeamName string) (*mmModel.Team, error) {
+	localTeamID, err := p.kvstore.GetTeamRewriteIndex(connName, remoteTeamName)
+	if err != nil {
+		return nil, fmt.Errorf("rewrite index lookup for %s/%s: %w", connName, remoteTeamName, err)
+	}
+	if localTeamID == "" {
+		return nil, nil
+	}
+	team, appErr := p.API.GetTeam(localTeamID)
+	if appErr != nil {
+		return nil, fmt.Errorf("rewrite target team %s not found: %w", localTeamID, appErr)
+	}
+	return team, nil
 }
 
 func (p *Plugin) handleInboundPost(connName string, envelope *model.Message) {

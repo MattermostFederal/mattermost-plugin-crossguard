@@ -9,15 +9,21 @@ import (
 )
 
 const (
-	cacheTeamInitSize    = 64
-	cacheChannelInitSize = 1024
-	cacheTTL             = 15 * time.Minute
+	cacheTeamInitSize     = 64
+	cacheChannelInitSize  = 1024
+	cacheRewriteIndexSize = 256
+	cacheTTL              = 15 * time.Minute
+
+	// Sentinel value cached when no rewrite rule exists for a (conn, team) pair.
+	// Avoids repeated KV store lookups for non-rewritten teams.
+	rewriteIndexNegative = "<none>"
 )
 
 const (
-	ClusterEventInvalidateTeamInit    = "cache_inv_teaminit"
-	ClusterEventInvalidateInitTeams   = "cache_inv_initteams"
-	ClusterEventInvalidateChannelInit = "cache_inv_chaninit"
+	ClusterEventInvalidateTeamInit     = "cache_inv_teaminit"
+	ClusterEventInvalidateInitTeams    = "cache_inv_initteams"
+	ClusterEventInvalidateChannelInit  = "cache_inv_chaninit"
+	ClusterEventInvalidateRewriteIndex = "cache_inv_rwindex"
 )
 
 // CachingKVStore wraps a KVStore with per-entity LRU caches and publishes
@@ -26,26 +32,28 @@ type CachingKVStore struct {
 	KVStore
 	api plugin.API
 
-	teamInitCache    *expirable.LRU[string, []string]
-	channelInitCache *expirable.LRU[string, []string]
-	initTeamsCache   *expirable.LRU[string, []string]
+	teamInitCache     *expirable.LRU[string, []TeamConnection]
+	channelInitCache  *expirable.LRU[string, []TeamConnection]
+	initTeamsCache    *expirable.LRU[string, []string]
+	rewriteIndexCache *expirable.LRU[string, string]
 }
 
 // NewCachingKVStore creates a caching wrapper around the given KVStore.
 func NewCachingKVStore(inner KVStore, api plugin.API) *CachingKVStore {
 	return &CachingKVStore{
-		KVStore:          inner,
-		api:              api,
-		teamInitCache:    expirable.NewLRU[string, []string](cacheTeamInitSize, nil, cacheTTL),
-		channelInitCache: expirable.NewLRU[string, []string](cacheChannelInitSize, nil, cacheTTL),
-		initTeamsCache:   expirable.NewLRU[string, []string](1, nil, cacheTTL),
+		KVStore:           inner,
+		api:               api,
+		teamInitCache:     expirable.NewLRU[string, []TeamConnection](cacheTeamInitSize, nil, cacheTTL),
+		channelInitCache:  expirable.NewLRU[string, []TeamConnection](cacheChannelInitSize, nil, cacheTTL),
+		initTeamsCache:    expirable.NewLRU[string, []string](1, nil, cacheTTL),
+		rewriteIndexCache: expirable.NewLRU[string, string](cacheRewriteIndexSize, nil, cacheTTL),
 	}
 }
 
 // GetTeamConnections checks the cache first, then falls back to the inner store.
-func (c *CachingKVStore) GetTeamConnections(teamID string) ([]string, error) {
+func (c *CachingKVStore) GetTeamConnections(teamID string) ([]TeamConnection, error) {
 	if val, ok := c.teamInitCache.Get(teamID); ok {
-		result := make([]string, len(val))
+		result := make([]TeamConnection, len(val))
 		copy(result, val)
 		return result, nil
 	}
@@ -53,15 +61,15 @@ func (c *CachingKVStore) GetTeamConnections(teamID string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	cached := make([]string, len(conns))
+	cached := make([]TeamConnection, len(conns))
 	copy(cached, conns)
 	c.teamInitCache.Add(teamID, cached)
 	return conns, nil
 }
 
 // SetTeamConnections writes to the inner store and invalidates the cache.
-func (c *CachingKVStore) SetTeamConnections(teamID string, connNames []string) error {
-	if err := c.KVStore.SetTeamConnections(teamID, connNames); err != nil {
+func (c *CachingKVStore) SetTeamConnections(teamID string, conns []TeamConnection) error {
+	if err := c.KVStore.SetTeamConnections(teamID, conns); err != nil {
 		return err
 	}
 	c.invalidate(ClusterEventInvalidateTeamInit, teamID)
@@ -87,8 +95,8 @@ func (c *CachingKVStore) IsTeamInitialized(teamID string) (bool, error) {
 }
 
 // AddTeamConnection adds a connection and invalidates the cache.
-func (c *CachingKVStore) AddTeamConnection(teamID, connName string) error {
-	if err := c.KVStore.AddTeamConnection(teamID, connName); err != nil {
+func (c *CachingKVStore) AddTeamConnection(teamID string, conn TeamConnection) error {
+	if err := c.KVStore.AddTeamConnection(teamID, conn); err != nil {
 		return err
 	}
 	c.invalidate(ClusterEventInvalidateTeamInit, teamID)
@@ -96,8 +104,8 @@ func (c *CachingKVStore) AddTeamConnection(teamID, connName string) error {
 }
 
 // RemoveTeamConnection removes a connection and invalidates the cache.
-func (c *CachingKVStore) RemoveTeamConnection(teamID, connName string) error {
-	if err := c.KVStore.RemoveTeamConnection(teamID, connName); err != nil {
+func (c *CachingKVStore) RemoveTeamConnection(teamID string, conn TeamConnection) error {
+	if err := c.KVStore.RemoveTeamConnection(teamID, conn); err != nil {
 		return err
 	}
 	c.invalidate(ClusterEventInvalidateTeamInit, teamID)
@@ -142,9 +150,9 @@ func (c *CachingKVStore) RemoveInitializedTeamID(teamID string) error {
 }
 
 // GetChannelConnections checks the cache first, then falls back to the inner store.
-func (c *CachingKVStore) GetChannelConnections(channelID string) ([]string, error) {
+func (c *CachingKVStore) GetChannelConnections(channelID string) ([]TeamConnection, error) {
 	if val, ok := c.channelInitCache.Get(channelID); ok {
-		result := make([]string, len(val))
+		result := make([]TeamConnection, len(val))
 		copy(result, val)
 		return result, nil
 	}
@@ -152,15 +160,15 @@ func (c *CachingKVStore) GetChannelConnections(channelID string) ([]string, erro
 	if err != nil {
 		return nil, err
 	}
-	cached := make([]string, len(conns))
+	cached := make([]TeamConnection, len(conns))
 	copy(cached, conns)
 	c.channelInitCache.Add(channelID, cached)
 	return conns, nil
 }
 
 // SetChannelConnections writes to the inner store and invalidates the cache.
-func (c *CachingKVStore) SetChannelConnections(channelID string, connNames []string) error {
-	if err := c.KVStore.SetChannelConnections(channelID, connNames); err != nil {
+func (c *CachingKVStore) SetChannelConnections(channelID string, conns []TeamConnection) error {
+	if err := c.KVStore.SetChannelConnections(channelID, conns); err != nil {
 		return err
 	}
 	c.invalidate(ClusterEventInvalidateChannelInit, channelID)
@@ -186,8 +194,8 @@ func (c *CachingKVStore) IsChannelInitialized(channelID string) (bool, error) {
 }
 
 // AddChannelConnection adds a connection and invalidates the cache.
-func (c *CachingKVStore) AddChannelConnection(channelID, connName string) error {
-	if err := c.KVStore.AddChannelConnection(channelID, connName); err != nil {
+func (c *CachingKVStore) AddChannelConnection(channelID string, conn TeamConnection) error {
+	if err := c.KVStore.AddChannelConnection(channelID, conn); err != nil {
 		return err
 	}
 	c.invalidate(ClusterEventInvalidateChannelInit, channelID)
@@ -195,11 +203,52 @@ func (c *CachingKVStore) AddChannelConnection(channelID, connName string) error 
 }
 
 // RemoveChannelConnection removes a connection and invalidates the cache.
-func (c *CachingKVStore) RemoveChannelConnection(channelID, connName string) error {
-	if err := c.KVStore.RemoveChannelConnection(channelID, connName); err != nil {
+func (c *CachingKVStore) RemoveChannelConnection(channelID string, conn TeamConnection) error {
+	if err := c.KVStore.RemoveChannelConnection(channelID, conn); err != nil {
 		return err
 	}
 	c.invalidate(ClusterEventInvalidateChannelInit, channelID)
+	return nil
+}
+
+// GetTeamRewriteIndex checks the cache first, then falls back to the inner store.
+func (c *CachingKVStore) GetTeamRewriteIndex(connName, remoteTeamName string) (string, error) {
+	cacheKey := connName + "/" + remoteTeamName
+	if val, ok := c.rewriteIndexCache.Get(cacheKey); ok {
+		if val == rewriteIndexNegative {
+			return "", nil
+		}
+		return val, nil
+	}
+	localTeamID, err := c.KVStore.GetTeamRewriteIndex(connName, remoteTeamName)
+	if err != nil {
+		return "", err
+	}
+	if localTeamID == "" {
+		c.rewriteIndexCache.Add(cacheKey, rewriteIndexNegative)
+	} else {
+		c.rewriteIndexCache.Add(cacheKey, localTeamID)
+	}
+	return localTeamID, nil
+}
+
+// SetTeamRewriteIndex writes to the inner store and invalidates the cache.
+func (c *CachingKVStore) SetTeamRewriteIndex(connName, remoteTeamName, localTeamID string) error {
+	if err := c.KVStore.SetTeamRewriteIndex(connName, remoteTeamName, localTeamID); err != nil {
+		return err
+	}
+	cacheKey := connName + "/" + remoteTeamName
+	c.invalidate(ClusterEventInvalidateRewriteIndex, cacheKey)
+	return nil
+}
+
+// DeleteTeamRewriteIndex removes the rewrite index and invalidates the cache.
+func (c *CachingKVStore) DeleteTeamRewriteIndex(connName, remoteTeamName string) error {
+	if err := c.KVStore.DeleteTeamRewriteIndex(connName, remoteTeamName); err != nil {
+		return err
+	}
+	cacheKey := connName + "/" + remoteTeamName
+	c.invalidate(ClusterEventInvalidateRewriteIndex, cacheKey)
 	return nil
 }
 
@@ -216,6 +265,8 @@ func (c *CachingKVStore) removeFromCache(eventID, key string) {
 		c.initTeamsCache.Remove(key)
 	case ClusterEventInvalidateChannelInit:
 		c.channelInitCache.Remove(key)
+	case ClusterEventInvalidateRewriteIndex:
+		c.rewriteIndexCache.Remove(key)
 	}
 }
 

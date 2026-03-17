@@ -3,8 +3,10 @@ import React from 'react';
 
 interface ConnectionStatus {
     name: string;
+    direction: string;
     linked: boolean;
     orphaned?: boolean;
+    remote_team_name?: string;
 }
 
 interface TeamStatusResponse {
@@ -24,17 +26,6 @@ interface Status {
 function getCSRFToken(): string {
     const match = document.cookie.match(/MMCSRF=([^;]+)/);
     return match ? match[1] : '';
-}
-
-function parseConnection(name: string): {direction: string; connName: string} {
-    const colonIdx = name.indexOf(':');
-    if (colonIdx === -1) {
-        return {direction: '', connName: name};
-    }
-    return {
-        direction: name.substring(0, colonIdx),
-        connName: name.substring(colonIdx + 1),
-    };
 }
 
 const colors = {
@@ -58,6 +49,8 @@ const CrossguardTeamModal: React.FC = () => {
     const [fetching, setFetching] = React.useState(false);
     const [status, setStatus] = React.useState<Status>({loading: false});
     const [actionInProgress, setActionInProgress] = React.useState<string | null>(null);
+    const [editingRewrite, setEditingRewrite] = React.useState<string | null>(null);
+    const [rewriteInput, setRewriteInput] = React.useState('');
     const statusTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
     React.useEffect(() => {
@@ -77,6 +70,8 @@ const CrossguardTeamModal: React.FC = () => {
                 setConnections([]);
                 setStatus({loading: false});
                 setActionInProgress(null);
+                setEditingRewrite(null);
+                setRewriteInput('');
             }
         };
         document.addEventListener('crossguard:open-team-modal', handler);
@@ -124,7 +119,7 @@ const CrossguardTeamModal: React.FC = () => {
         return () => document.removeEventListener('keydown', handler);
     }, [teamID]);
 
-    const callAPI = React.useCallback(async (url: string): Promise<{ok: boolean; data: Record<string, unknown>}> => {
+    const callAPI = React.useCallback(async (url: string, options?: RequestInit): Promise<{ok: boolean; data: Record<string, unknown>}> => {
         const response = await fetch(url, {
             method: 'POST',
             credentials: 'same-origin',
@@ -133,28 +128,30 @@ const CrossguardTeamModal: React.FC = () => {
                 'X-CSRF-Token': getCSRFToken(),
                 'X-Requested-With': 'XMLHttpRequest',
             },
+            ...options,
         });
         const data = await response.json();
         return {ok: response.ok, data};
     }, []);
 
-    const handleToggle = React.useCallback(async (connName: string, linked: boolean) => {
+    const handleToggle = React.useCallback(async (conn: ConnectionStatus, linked: boolean) => {
         if (!teamID) {
             return;
         }
+        const connKey = `${conn.direction}:${conn.name}`;
         const action = linked ? 'teardown' : 'init';
         const verb = linked ? 'unlinked' : 'linked';
         const failVerb = linked ? 'unlink' : 'link';
-        setActionInProgress(connName);
+        setActionInProgress(connKey);
         setStatus({loading: true});
         if (statusTimerRef.current) {
             clearTimeout(statusTimerRef.current);
         }
         try {
-            const url = `/plugins/${manifest.id}/api/v1/teams/${teamID}/${action}?connection_name=${encodeURIComponent(connName)}`;
+            const url = `/plugins/${manifest.id}/api/v1/teams/${teamID}/${action}?connection_name=${encodeURIComponent(connKey)}`;
             const {ok, data} = await callAPI(url);
             if (ok) {
-                setStatus({loading: false, success: true, message: `Connection "${connName}" ${verb}.`});
+                setStatus({loading: false, success: true, message: `Connection "${conn.name}" ${verb}.`});
             } else {
                 setStatus({loading: false, success: false, message: (data.error as string) || `Failed to ${failVerb} connection.`});
             }
@@ -167,6 +164,69 @@ const CrossguardTeamModal: React.FC = () => {
             setActionInProgress(null);
         }
     }, [callAPI, teamID, fetchStatus]);
+
+    const handleSaveRewrite = React.useCallback(async (connName: string, value: string) => {
+        if (!teamID) {
+            return;
+        }
+        setStatus({loading: true});
+        if (statusTimerRef.current) {
+            clearTimeout(statusTimerRef.current);
+        }
+        try {
+            const url = `/plugins/${manifest.id}/api/v1/teams/${teamID}/rewrite`;
+            const {ok, data} = await callAPI(url, {
+                body: JSON.stringify({connection: connName, remote_team_name: value}),
+            });
+            if (ok) {
+                setStatus({loading: false, success: true, message: `Remote team rewrite updated for "${connName}".`});
+            } else {
+                setStatus({loading: false, success: false, message: (data.error as string) || 'Failed to update rewrite.'});
+            }
+            await fetchStatus(teamID);
+            setEditingRewrite(null);
+            setRewriteInput('');
+            statusTimerRef.current = setTimeout(() => setStatus({loading: false}), STATUS_DISPLAY_MS);
+        } catch {
+            setStatus({loading: false, success: false, message: 'Network error.'});
+            statusTimerRef.current = setTimeout(() => setStatus({loading: false}), STATUS_DISPLAY_MS);
+        }
+    }, [callAPI, teamID, fetchStatus]);
+
+    const handleClearRewrite = React.useCallback(async (connName: string) => {
+        if (!teamID) {
+            return;
+        }
+        setStatus({loading: true});
+        if (statusTimerRef.current) {
+            clearTimeout(statusTimerRef.current);
+        }
+        try {
+            const url = `/plugins/${manifest.id}/api/v1/teams/${teamID}/rewrite?connection=${encodeURIComponent(connName)}`;
+            const response = await fetch(url, {
+                method: 'DELETE',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRF-Token': getCSRFToken(),
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+            });
+            const data = await response.json();
+            if (response.ok) {
+                setStatus({loading: false, success: true, message: `Remote team rewrite cleared for "${connName}".`});
+            } else {
+                setStatus({loading: false, success: false, message: (data.error as string) || 'Failed to clear rewrite.'});
+            }
+            await fetchStatus(teamID);
+            setEditingRewrite(null);
+            setRewriteInput('');
+            statusTimerRef.current = setTimeout(() => setStatus({loading: false}), STATUS_DISPLAY_MS);
+        } catch {
+            setStatus({loading: false, success: false, message: 'Network error.'});
+            statusTimerRef.current = setTimeout(() => setStatus({loading: false}), STATUS_DISPLAY_MS);
+        }
+    }, [teamID, fetchStatus]);
 
     const handleBackdropClick = React.useCallback((e: React.MouseEvent) => {
         if (e.target === e.currentTarget) {
@@ -311,6 +371,69 @@ const CrossguardTeamModal: React.FC = () => {
             textAlign: 'center' as const,
             padding: '24px 0',
         },
+        rewriteRow: {
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            marginTop: '4px',
+            fontSize: '12px',
+            color: colors.textMuted,
+        },
+        rewriteLabel: {
+            fontSize: '12px',
+            color: colors.textMuted,
+        },
+        rewriteValue: {
+            fontSize: '12px',
+            fontWeight: 600,
+            color: colors.textMuted,
+        },
+        rewriteBtn: {
+            background: 'none',
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: '11px',
+            fontWeight: 600,
+            color: colors.primary,
+            padding: '0 4px',
+        },
+        rewriteEditRow: {
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            marginTop: '6px',
+        },
+        rewriteInput: {
+            fontSize: '12px',
+            padding: '4px 8px',
+            border: `1px solid ${colors.border}`,
+            borderRadius: '4px',
+            outline: 'none',
+            color: colors.text,
+            background: colors.bg,
+            flex: 1,
+            maxWidth: '200px',
+        },
+        rewriteSaveBtn: {
+            background: colors.primary,
+            border: 'none',
+            cursor: 'pointer',
+            fontSize: '11px',
+            fontWeight: 600,
+            color: '#fff',
+            padding: '4px 10px',
+            borderRadius: '4px',
+        },
+        rewriteCancelBtn: {
+            background: 'none',
+            border: `1px solid ${colors.border}`,
+            cursor: 'pointer',
+            fontSize: '11px',
+            fontWeight: 600,
+            color: colors.textMuted,
+            padding: '3px 10px',
+            borderRadius: '4px',
+        },
     };
 
     const renderBody = () => {
@@ -329,10 +452,11 @@ const CrossguardTeamModal: React.FC = () => {
         return (
             <div>
                 {connections.map((conn) => {
-                    const {direction, connName} = parseConnection(conn.name);
+                    const direction = conn.direction;
                     const isInbound = direction === 'inbound';
                     const accentColor = isInbound ? colors.inbound : colors.outbound;
-                    const isActioning = actionInProgress === conn.name;
+                    const connKey = `${conn.direction}:${conn.name}`;
+                    const isActioning = actionInProgress === connKey;
 
                     const badgeStyle: React.CSSProperties = {
                         ...s.directionBadge,
@@ -344,9 +468,11 @@ const CrossguardTeamModal: React.FC = () => {
                         'NATS \u2192 MATTERMOST' :
                         'MATTERMOST \u2192 NATS';
 
+                    const isEditingThis = editingRewrite === connKey;
+
                     return (
                         <div
-                            key={conn.name}
+                            key={connKey}
                             style={{
                                 ...s.card,
                                 background: accentColor + '08',
@@ -356,15 +482,91 @@ const CrossguardTeamModal: React.FC = () => {
                             <div style={{...s.cardAccent, background: accentColor}}/>
                             <div style={s.cardContent}>
                                 <div style={s.cardTop}>
-                                    <span style={s.connName}>{connName}</span>
+                                    <span style={s.connName}>{conn.name}</span>
                                     <span style={badgeStyle}>{badgeLabel}</span>
                                     {conn.orphaned && <span title={'Connection no longer in configuration'}>{'🔗\u200D💔'}</span>}
                                 </div>
+                                {isInbound && !isEditingThis && (
+                                    <div style={s.rewriteRow}>
+                                        {conn.remote_team_name ? (
+                                            <>
+                                                <span style={s.rewriteLabel}>{'Remote team:'}</span>
+                                                <span style={s.rewriteValue}>{conn.remote_team_name}</span>
+                                                <button
+                                                    style={s.rewriteBtn}
+                                                    onClick={() => {
+                                                        setEditingRewrite(connKey);
+                                                        setRewriteInput(conn.remote_team_name || '');
+                                                    }}
+                                                >
+                                                    {'Edit'}
+                                                </button>
+                                                <button
+                                                    style={{...s.rewriteBtn, color: colors.danger}}
+                                                    onClick={() => handleClearRewrite(conn.name)}
+                                                >
+                                                    {'Clear'}
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <span style={s.rewriteLabel}>{'No remote team rewrite'}</span>
+                                                <button
+                                                    style={s.rewriteBtn}
+                                                    onClick={() => {
+                                                        setEditingRewrite(connKey);
+                                                        setRewriteInput('');
+                                                    }}
+                                                >
+                                                    {'Set'}
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
+                                )}
+                                {isInbound && isEditingThis && (
+                                    <div style={s.rewriteEditRow}>
+                                        <input
+                                            style={s.rewriteInput}
+                                            type={'text'}
+                                            placeholder={'Remote team name'}
+                                            value={rewriteInput}
+                                            onChange={(e) => setRewriteInput(e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' && rewriteInput.trim()) {
+                                                    handleSaveRewrite(conn.name, rewriteInput.trim());
+                                                }
+                                                if (e.key === 'Escape') {
+                                                    e.stopPropagation();
+                                                    setEditingRewrite(null);
+                                                    setRewriteInput('');
+                                                }
+                                            }}
+                                            autoFocus={true}
+                                        />
+                                        <button
+                                            style={s.rewriteSaveBtn}
+                                            disabled={!rewriteInput.trim()}
+                                            onClick={() => handleSaveRewrite(conn.name, rewriteInput.trim())}
+                                        >
+                                            {'Save'}
+                                        </button>
+                                        <button
+                                            style={s.rewriteCancelBtn}
+                                            onClick={() => {
+                                                setEditingRewrite(null);
+                                                setRewriteInput('');
+                                            }}
+                                        >
+                                            {'Cancel'}
+                                        </button>
+                                    </div>
+                                )}
                             </div>
                             {conn.linked ? (
                                 <button
                                     style={s.btnUnlink}
-                                    onClick={() => handleToggle(conn.name, true)}
+                                    onClick={() => handleToggle(conn, true)}
                                     disabled={actionInProgress !== null}
                                 >
                                     {isActioning ? 'Unlinking...' : 'Unlink'}
@@ -372,7 +574,7 @@ const CrossguardTeamModal: React.FC = () => {
                             ) : (
                                 <button
                                     style={s.btnLink}
-                                    onClick={() => handleToggle(conn.name, false)}
+                                    onClick={() => handleToggle(conn, false)}
                                     disabled={actionInProgress !== null}
                                 >
                                     {isActioning ? 'Linking...' : 'Link'}

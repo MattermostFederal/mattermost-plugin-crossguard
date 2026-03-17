@@ -127,7 +127,7 @@ func (p *Plugin) handlePromptAccept(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inboundConn := directionInbound + connName
+	inboundConn := store.TeamConnection{Direction: "inbound", Connection: connName}
 	if _, _, svcErr := p.initTeamForCrossGuard(user, teamID, inboundConn); svcErr != nil {
 		writePostActionResponse(w, fmt.Sprintf("Failed to link connection: %s", svcErr.Message))
 		return
@@ -139,7 +139,7 @@ func (p *Plugin) handlePromptAccept(w http.ResponseWriter, r *http.Request) {
 
 	newMessage := fmt.Sprintf(
 		"Inbound Cross Guard connection `%s` was **accepted** by @%s. The connection is now linked to this team. Channels can now be linked using the channel header menu or `/%s init-channel %s`.",
-		connName, user.Username, commandTrigger, inboundConn,
+		connName, user.Username, commandTrigger, connKey(inboundConn),
 	)
 	updatePromptPost(p, prompt.PostID, newMessage)
 
@@ -318,7 +318,7 @@ func (p *Plugin) handleChannelPromptAccept(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	inboundConn := directionInbound + connName
+	inboundConn := store.TeamConnection{Direction: "inbound", Connection: connName}
 	if _, _, svcErr := p.initChannelForCrossGuard(user, channelID, inboundConn); svcErr != nil {
 		writePostActionResponse(w, fmt.Sprintf("Failed to link connection: %s", svcErr.Message))
 		return

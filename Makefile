@@ -476,8 +476,8 @@ docker-deploy: docker-check dist
 	curl -sf -X PUT http://localhost:$(MM_PORT_A)/api/v4/config/patch \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","inboundconnections":"[{\"name\":\"high-to-low\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\"}]"}}}}' >/dev/null && \
-	echo "Server A configured with outbound:low-to-high + inbound:high-to-low"
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"},{\"name\":\"loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"}]","inboundconnections":"[{\"name\":\"high-to-low\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\"},{\"name\":\"loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"}]"}}}}' >/dev/null && \
+	echo "Server A configured with outbound:low-to-high,loopback + inbound:high-to-low,loopback"
 	@TOKEN_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/users/login \
 		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
 		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
@@ -619,6 +619,91 @@ docker-smoke-test: docker-check
 		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$SMOKE_ID';found=any('smoke-test:'+sid in p.get('message','') for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
 	echo "Smoke test result: $$FOUND" || \
 	{ echo "Smoke test FAILED: message smoke-test:$$SMOKE_ID not found on Server B low-to-high"; exit 1; }
+	@echo ""
+	@echo "Running loopback rewrite-team test..."
+	@TOKEN_A=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	echo "Creating loop team on Server A..." && \
+	$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team create \
+		--name loop \
+		--display-name "Loop" 2>/dev/null || echo "  Team 'loop' already exists on Server A" && \
+	$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team users add loop admin 2>/dev/null || true && \
+	$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local team users add loop usera 2>/dev/null || true && \
+	echo "Getting team IDs..." && \
+	LOOP_TEAM=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/loop \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	TEST_TEAM=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "Creating local-loopback channels..." && \
+	LOOP_CH=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"team_id":"'"$$LOOP_TEAM"'","name":"local-loopback","display_name":"Local Loopback","type":"O"}' \
+		2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || \
+		curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/loop/channels/name/local-loopback \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "  Server A loop/local-loopback channel ($$LOOP_CH)" && \
+	LB_CH=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"team_id":"'"$$TEST_TEAM"'","name":"local-loopback","display_name":"Local Loopback","type":"O"}' \
+		2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || \
+		curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test/channels/name/local-loopback \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "  Server A test/local-loopback channel ($$LB_CH)" && \
+	echo "Adding users to channels..." && \
+	USERA_ID=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/users/username/usera \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels/$$LOOP_CH/members \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"user_id":"'"$$USERA_ID"'"}' >/dev/null 2>&1 || true && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels/$$LB_CH/members \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"user_id":"'"$$USERA_ID"'"}' >/dev/null 2>&1 || true && \
+	echo "  usera added to both local-loopback channels" && \
+	echo "Initializing loopback teams..." && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$LOOP_CH"'","command":"/crossguard init-team outbound:loopback"}' >/dev/null && \
+	echo "  Server A loop: init-team outbound:loopback" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$LB_CH"'","command":"/crossguard init-team inbound:loopback"}' >/dev/null && \
+	echo "  Server A test: init-team inbound:loopback" && \
+	echo "Initializing loopback channels..." && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$LOOP_CH"'","command":"/crossguard init-channel outbound:loopback"}' >/dev/null && \
+	echo "  Server A loop/local-loopback: init-channel outbound:loopback" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$LB_CH"'","command":"/crossguard init-channel inbound:loopback"}' >/dev/null && \
+	echo "  Server A test/local-loopback: init-channel inbound:loopback" && \
+	echo "Setting rewrite-team rule..." && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$LB_CH"'","command":"/crossguard rewrite-team loopback loop"}' >/dev/null && \
+	echo "  Server A: rewrite-team loopback loop -> test" && \
+	echo "Posting loopback test message from Server A loop/local-loopback..." && \
+	TOKEN_USERA=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"usera","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	LB_ID=$$(date +%s)-$$$$-lb && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/posts \
+		-H "Authorization: Bearer $$TOKEN_USERA" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$LOOP_CH"'","message":"loopback-test:'"$$LB_ID"'"}' >/dev/null && \
+	echo "  Posted loopback-test:$$LB_ID to Server A loop/local-loopback" && \
+	echo "Waiting for loopback relay..." && \
+	sleep 3 && \
+	LB_FOUND=$$(curl -sf "http://localhost:$(MM_PORT_A)/api/v4/channels/$$LB_CH/posts?per_page=10" \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$LB_ID';found=any('loopback-test:'+sid in p.get('message','') for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
+	echo "Loopback test result: $$LB_FOUND" || \
+	{ echo "Loopback test FAILED: message loopback-test:$$LB_ID not found on Server A test/local-loopback"; exit 1; }
 
 ## Disable and re-enable plugin on both servers
 .PHONY: docker-reset

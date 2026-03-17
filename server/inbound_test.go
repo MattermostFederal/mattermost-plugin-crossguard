@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	mmModel "github.com/mattermost/mattermost/server/public/model"
@@ -27,25 +28,31 @@ func newTestKVStore() *testKVStore {
 	}
 }
 
-func (s *testKVStore) GetTeamConnections(string) ([]string, error) {
-	return []string{"inbound:high", "outbound:high"}, nil
+func (s *testKVStore) GetTeamConnections(string) ([]store.TeamConnection, error) {
+	return []store.TeamConnection{
+		{Direction: "inbound", Connection: "high"},
+		{Direction: "outbound", Connection: "high"},
+	}, nil
 }
-func (s *testKVStore) SetTeamConnections(string, []string) error { return nil }
-func (s *testKVStore) DeleteTeamConnections(string) error        { return nil }
-func (s *testKVStore) IsTeamInitialized(string) (bool, error)    { return true, nil }
-func (s *testKVStore) AddTeamConnection(string, string) error    { return nil }
-func (s *testKVStore) RemoveTeamConnection(string, string) error { return nil }
-func (s *testKVStore) GetInitializedTeamIDs() ([]string, error)  { return nil, nil }
-func (s *testKVStore) AddInitializedTeamID(string) error         { return nil }
-func (s *testKVStore) RemoveInitializedTeamID(string) error      { return nil }
-func (s *testKVStore) GetChannelConnections(string) ([]string, error) {
-	return []string{"inbound:high", "outbound:high"}, nil
+func (s *testKVStore) SetTeamConnections(string, []store.TeamConnection) error { return nil }
+func (s *testKVStore) DeleteTeamConnections(string) error                      { return nil }
+func (s *testKVStore) IsTeamInitialized(string) (bool, error)                  { return true, nil }
+func (s *testKVStore) AddTeamConnection(string, store.TeamConnection) error    { return nil }
+func (s *testKVStore) RemoveTeamConnection(string, store.TeamConnection) error { return nil }
+func (s *testKVStore) GetInitializedTeamIDs() ([]string, error)                { return nil, nil }
+func (s *testKVStore) AddInitializedTeamID(string) error                       { return nil }
+func (s *testKVStore) RemoveInitializedTeamID(string) error                    { return nil }
+func (s *testKVStore) GetChannelConnections(string) ([]store.TeamConnection, error) {
+	return []store.TeamConnection{
+		{Direction: "inbound", Connection: "high"},
+		{Direction: "outbound", Connection: "high"},
+	}, nil
 }
-func (s *testKVStore) SetChannelConnections(string, []string) error { return nil }
-func (s *testKVStore) DeleteChannelConnections(string) error        { return nil }
-func (s *testKVStore) IsChannelInitialized(string) (bool, error)    { return true, nil }
-func (s *testKVStore) AddChannelConnection(string, string) error    { return nil }
-func (s *testKVStore) RemoveChannelConnection(string, string) error { return nil }
+func (s *testKVStore) SetChannelConnections(string, []store.TeamConnection) error { return nil }
+func (s *testKVStore) DeleteChannelConnections(string) error                      { return nil }
+func (s *testKVStore) IsChannelInitialized(string) (bool, error)                  { return true, nil }
+func (s *testKVStore) AddChannelConnection(string, store.TeamConnection) error    { return nil }
+func (s *testKVStore) RemoveChannelConnection(string, store.TeamConnection) error { return nil }
 
 func (s *testKVStore) SetPostMapping(connName, remotePostID, localPostID string) error {
 	s.postMappings[connName+"-"+remotePostID] = localPostID
@@ -105,6 +112,18 @@ func (s *testKVStore) DeleteChannelConnectionPrompt(string, string) error {
 
 func (s *testKVStore) CreateChannelConnectionPrompt(string, string, *store.ConnectionPrompt) (bool, error) {
 	return true, nil
+}
+
+func (s *testKVStore) GetTeamRewriteIndex(string, string) (string, error) {
+	return "", nil
+}
+
+func (s *testKVStore) SetTeamRewriteIndex(string, string, string) error {
+	return nil
+}
+
+func (s *testKVStore) DeleteTeamRewriteIndex(string, string) error {
+	return nil
 }
 
 func setupTestPlugin(api *plugintest.API) (*Plugin, *testKVStore) {
@@ -168,7 +187,9 @@ func TestResolveTeamAndChannel(t *testing.T) {
 		p.botUserID = "bot-user-id"
 		kvs := newTestKVStore()
 		kvs.KVStore = nil
-		p.kvstore = &unlinkTestKVStore{testKVStore: kvs, conns: []string{"inbound:other"}}
+		p.kvstore = &unlinkTestKVStore{testKVStore: kvs, conns: []store.TeamConnection{
+			{Direction: "inbound", Connection: "other"},
+		}}
 		ctx, cancel := context.WithCancel(context.Background())
 		p.ctx = ctx
 		p.cancel = cancel
@@ -185,14 +206,127 @@ func TestResolveTeamAndChannel(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not linked")
 	})
+
+	t.Run("rewrite when team exists but connection not linked", func(t *testing.T) {
+		api := &plugintest.API{}
+		p := &Plugin{}
+		p.SetAPI(api)
+		p.botUserID = "bot-user-id"
+		ctx, cancel := context.WithCancel(context.Background())
+		p.ctx = ctx
+		p.cancel = cancel
+		p.relaySem = make(chan struct{}, 50)
+
+		destTeam := &mmModel.Team{Id: "dest-team-id", Name: "test"}
+		channel := &mmModel.Channel{Id: "dest-chan-id", Name: "local-loopback", TeamId: "dest-team-id"}
+
+		api.On("GetTeam", "dest-team-id").Return(destTeam, nil)
+		api.On("GetChannelByName", "dest-team-id", "local-loopback", false).Return(channel, nil)
+
+		kvs := &rewriteTestKVStore{
+			testKVStore: newTestKVStore(),
+			teamConns: map[string][]store.TeamConnection{
+				"src-team-id":  {{Direction: "outbound", Connection: "loopback"}},
+				"dest-team-id": {{Direction: "inbound", Connection: "loopback"}},
+			},
+			chanConns: map[string][]store.TeamConnection{
+				"dest-chan-id": {{Direction: "inbound", Connection: "loopback"}},
+			},
+			rewriteIndex: map[string]string{
+				"loopback::loop": "dest-team-id",
+			},
+		}
+		p.kvstore = kvs
+
+		gotTeam, gotChannel, err := p.resolveTeamAndChannel("loopback", "loop", "local-loopback")
+		require.NoError(t, err)
+		assert.Equal(t, "dest-team-id", gotTeam.Id)
+		assert.Equal(t, "dest-chan-id", gotChannel.Id)
+	})
+
+	t.Run("rewrite index error", func(t *testing.T) {
+		api := &plugintest.API{}
+		p := &Plugin{}
+		p.SetAPI(api)
+		p.botUserID = "bot-user-id"
+		ctx, cancel := context.WithCancel(context.Background())
+		p.ctx = ctx
+		p.cancel = cancel
+		p.relaySem = make(chan struct{}, 50)
+
+		kvs := &rewriteTestKVStore{
+			testKVStore: newTestKVStore(),
+			indexErr:    errors.New("store unavailable"),
+		}
+		p.kvstore = kvs
+
+		_, _, err := p.resolveTeamAndChannel("loopback", "loop", "local-loopback")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "rewrite index lookup")
+		assert.Contains(t, err.Error(), "store unavailable")
+	})
+
+	t.Run("rewrite target team not found", func(t *testing.T) {
+		api := &plugintest.API{}
+		p := &Plugin{}
+		p.SetAPI(api)
+		p.botUserID = "bot-user-id"
+		ctx, cancel := context.WithCancel(context.Background())
+		p.ctx = ctx
+		p.cancel = cancel
+		p.relaySem = make(chan struct{}, 50)
+
+		api.On("GetTeam", "deleted-team-id").Return(nil, &mmModel.AppError{Message: "team not found"})
+
+		kvs := &rewriteTestKVStore{
+			testKVStore: newTestKVStore(),
+			rewriteIndex: map[string]string{
+				"loopback::loop": "deleted-team-id",
+			},
+		}
+		p.kvstore = kvs
+
+		_, _, err := p.resolveTeamAndChannel("loopback", "loop", "local-loopback")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "rewrite target team")
+	})
+}
+
+type rewriteTestKVStore struct {
+	*testKVStore
+	teamConns    map[string][]store.TeamConnection
+	chanConns    map[string][]store.TeamConnection
+	rewriteIndex map[string]string
+	indexErr     error
+}
+
+func (s *rewriteTestKVStore) GetTeamConnections(teamID string) ([]store.TeamConnection, error) {
+	if conns, ok := s.teamConns[teamID]; ok {
+		return conns, nil
+	}
+	return nil, nil
+}
+
+func (s *rewriteTestKVStore) GetChannelConnections(chanID string) ([]store.TeamConnection, error) {
+	if conns, ok := s.chanConns[chanID]; ok {
+		return conns, nil
+	}
+	return nil, nil
+}
+
+func (s *rewriteTestKVStore) GetTeamRewriteIndex(connName, remoteTeamName string) (string, error) {
+	if s.indexErr != nil {
+		return "", s.indexErr
+	}
+	return s.rewriteIndex[connName+"::"+remoteTeamName], nil
 }
 
 type unlinkTestKVStore struct {
 	*testKVStore
-	conns []string
+	conns []store.TeamConnection
 }
 
-func (s *unlinkTestKVStore) GetTeamConnections(string) ([]string, error) {
+func (s *unlinkTestKVStore) GetTeamConnections(string) ([]store.TeamConnection, error) {
 	return s.conns, nil
 }
 

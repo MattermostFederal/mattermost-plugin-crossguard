@@ -2,11 +2,12 @@ package main
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
+
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
 const (
@@ -17,6 +18,7 @@ const (
 	actionTeardownChannel    = "teardown-channel"
 	actionResetPrompt        = "reset-prompt"
 	actionResetChannelPrompt = "reset-channel-prompt"
+	actionRewriteTeam        = "rewrite-team"
 )
 
 func (p *Plugin) registerCommand() error {
@@ -24,7 +26,7 @@ func (p *Plugin) registerCommand() error {
 		Trigger:          commandTrigger,
 		AutoComplete:     true,
 		AutoCompleteDesc: "Cross Guard commands",
-		AutoCompleteHint: "[init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|status]",
+		AutoCompleteHint: "[init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|rewrite-team|status]",
 		AutocompleteData: getAutocompleteData(),
 	})
 }
@@ -50,6 +52,10 @@ func getAutocompleteData() *model.AutocompleteData {
 	resetChannelPrompt := model.NewAutocompleteData("reset-channel-prompt", "<connection-name>", "Clear a blocked or pending connection prompt for this channel")
 	cmd.AddCommand(resetChannelPrompt)
 
+	rewriteTeam := model.NewAutocompleteData("rewrite-team", "[connection-name] [remote-team-name]",
+		"Set or clear a remote team name rewrite for an inbound connection on this team")
+	cmd.AddCommand(rewriteTeam)
+
 	status := model.NewAutocompleteData("status", "", "Check Cross Guard status for this team")
 	cmd.AddCommand(status)
 
@@ -59,7 +65,7 @@ func getAutocompleteData() *model.AutocompleteData {
 func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
 	parts := strings.Fields(args.Command)
 	if len(parts) < 2 {
-		return respondEphemeral("Usage: /%s [init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|status]", commandTrigger), nil
+		return respondEphemeral("Usage: /%s [init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|rewrite-team|status]", commandTrigger), nil
 	}
 
 	subcommand := parts[1]
@@ -78,8 +84,10 @@ func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*mo
 		return p.executeResetChannelPrompt(args), nil
 	case "status":
 		return p.executeStatus(args), nil
+	case actionRewriteTeam:
+		return p.executeRewriteTeam(args), nil
 	default:
-		return respondEphemeral("Unknown subcommand: %s. Usage: /%s [init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|status]", subcommand, commandTrigger), nil
+		return respondEphemeral("Unknown subcommand: %s. Usage: /%s [init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|rewrite-team|status]", subcommand, commandTrigger), nil
 	}
 }
 
@@ -108,7 +116,7 @@ func (p *Plugin) executeInitTeam(args *model.CommandArgs) *model.CommandResponse
 			p.openConnectionDialog(args.TriggerId, args.TeamId, allConns, actionInitTeam)
 			return &model.CommandResponse{}
 		}
-		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(allConns, ", "))
+		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(connectionDisplayNames(allConns), ", "))
 	}
 
 	team, alreadyLinked, svcErr := p.initTeamForCrossGuard(user, args.TeamId, connName)
@@ -117,7 +125,7 @@ func (p *Plugin) executeInitTeam(args *model.CommandArgs) *model.CommandResponse
 	}
 
 	if alreadyLinked {
-		return respondEphemeral("Connection `%s` is already linked to this team. (team ID: %s, team name: %s)", connName, team.Id, team.Name)
+		return respondEphemeral("Connection `%s` is already linked to this team. (team ID: %s, team name: %s)", connKey(connName), team.Id, team.Name)
 	}
 
 	return &model.CommandResponse{}
@@ -186,15 +194,15 @@ func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandRespo
 
 	if len(resp.LinkedConnections) > 0 {
 		sb.WriteString("\n**Team Connections:**\n\n")
-		for _, conn := range resp.LinkedConnections {
-			fmt.Fprintf(&sb, "- `%s`\n", conn)
+		for _, name := range connectionDisplayNames(resp.LinkedConnections) {
+			fmt.Fprintf(&sb, "- `%s`\n", name)
 		}
 	}
 
 	if len(channelConns) > 0 {
 		sb.WriteString("\n**Channel Connections:**\n\n")
-		for _, conn := range channelConns {
-			fmt.Fprintf(&sb, "- `%s`\n", conn)
+		for _, name := range connectionDisplayNames(channelConns) {
+			fmt.Fprintf(&sb, "- `%s`\n", name)
 		}
 	}
 
@@ -237,8 +245,8 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 
 	if len(channelConns) > 0 {
 		sb.WriteString("\n**Channel Connections:**\n\n")
-		for _, conn := range channelConns {
-			fmt.Fprintf(&sb, "- `%s`\n", conn)
+		for _, name := range connectionDisplayNames(channelConns) {
+			fmt.Fprintf(&sb, "- `%s`\n", name)
 		}
 	}
 
@@ -249,7 +257,7 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 	for _, team := range resp.Teams {
 		conns := "(none)"
 		if len(team.LinkedConnections) > 0 {
-			conns = strings.Join(team.LinkedConnections, ", ")
+			conns = strings.Join(connectionDisplayNames(team.LinkedConnections), ", ")
 		}
 		fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", team.DisplayName, team.TeamID, team.TeamName, conns)
 	}
@@ -329,11 +337,18 @@ func (p *Plugin) executeInitChannel(args *model.CommandArgs) *model.CommandRespo
 			p.openConnectionDialog(args.TriggerId, args.ChannelId, allConns, actionInitChannel)
 			return &model.CommandResponse{}
 		}
-		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(allConns, ", "))
+		return respondEphemeral("%s\n\nAvailable connections: %s", resolveErr, strings.Join(connectionDisplayNames(allConns), ", "))
 	}
 
-	if !slices.Contains(teamConns, connName) {
-		return respondEphemeral("Connection `%s` is not linked to this team. Run `/%s init-team` first.", connName, commandTrigger)
+	teamHasConn := false
+	for _, tc := range teamConns {
+		if tc.Matches(connName) {
+			teamHasConn = true
+			break
+		}
+	}
+	if !teamHasConn {
+		return respondEphemeral("Connection `%s` is not linked to this team. Run `/%s init-team` first.", connKey(connName), commandTrigger)
 	}
 
 	ch, alreadyLinked, svcErr := p.initChannelForCrossGuard(user, args.ChannelId, connName)
@@ -342,7 +357,7 @@ func (p *Plugin) executeInitChannel(args *model.CommandArgs) *model.CommandRespo
 	}
 
 	if alreadyLinked {
-		return respondEphemeral("Connection `%s` is already linked to this channel. (channel ID: %s, channel name: %s)", connName, ch.Id, ch.Name)
+		return respondEphemeral("Connection `%s` is already linked to this channel. (channel ID: %s, channel name: %s)", connKey(connName), ch.Id, ch.Name)
 	}
 
 	return &model.CommandResponse{}
@@ -378,7 +393,7 @@ func (p *Plugin) executeTeardownChannel(args *model.CommandArgs) *model.CommandR
 			p.openConnectionDialog(args.TriggerId, args.ChannelId, linked, actionTeardownChannel)
 			return &model.CommandResponse{}
 		}
-		return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(linked, ", "))
+		return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(connectionDisplayNames(linked), ", "))
 	}
 
 	if _, svcErr := p.teardownChannelForCrossGuard(user, args.ChannelId, connName); svcErr != nil {
@@ -418,7 +433,7 @@ func (p *Plugin) executeTeardownTeam(args *model.CommandArgs) *model.CommandResp
 			p.openConnectionDialog(args.TriggerId, args.TeamId, linked, actionTeardownTeam)
 			return &model.CommandResponse{}
 		}
-		return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(linked, ", "))
+		return respondEphemeral("%s\n\nLinked connections: %s", resolveErr, strings.Join(connectionDisplayNames(linked), ", "))
 	}
 
 	if _, svcErr := p.teardownTeamForCrossGuard(user, args.TeamId, connName); svcErr != nil {
@@ -426,6 +441,126 @@ func (p *Plugin) executeTeardownTeam(args *model.CommandArgs) *model.CommandResp
 	}
 
 	return &model.CommandResponse{}
+}
+
+func (p *Plugin) executeRewriteTeam(args *model.CommandArgs) *model.CommandResponse {
+	if !p.isTeamAdminOrSystemAdmin(args.UserId, args.TeamId) {
+		return respondEphemeral("You must be a team admin or system admin.")
+	}
+
+	conns, err := p.kvstore.GetTeamConnections(args.TeamId)
+	if err != nil {
+		return respondEphemeral("Failed to check team connections.")
+	}
+
+	var inboundConns []store.TeamConnection
+	for _, tc := range conns {
+		if tc.Direction == "inbound" {
+			inboundConns = append(inboundConns, tc)
+		}
+	}
+	if len(inboundConns) == 0 {
+		return respondEphemeral("No inbound connections are linked to this team.")
+	}
+
+	parts := strings.Fields(args.Command)
+	connName := ""
+	if len(parts) >= 3 {
+		connName = parts[2]
+	}
+
+	var target *store.TeamConnection
+	if connName == "" {
+		if len(inboundConns) == 1 {
+			target = &inboundConns[0]
+		} else {
+			names := make([]string, len(inboundConns))
+			for i, tc := range inboundConns {
+				names[i] = tc.Connection
+			}
+			return respondEphemeral("Multiple inbound connections, specify one: %s", strings.Join(names, ", "))
+		}
+	} else {
+		for i, tc := range inboundConns {
+			if tc.Connection == connName {
+				target = &inboundConns[i]
+				break
+			}
+		}
+		if target == nil {
+			return respondEphemeral("Inbound connection %q is not linked to this team.", connName)
+		}
+	}
+
+	remoteTeamName := ""
+	if len(parts) >= 4 {
+		remoteTeamName = parts[3]
+	}
+
+	fullConns, err := p.kvstore.GetTeamConnections(args.TeamId)
+	if err != nil {
+		return respondEphemeral("Failed to get team connections.")
+	}
+
+	var fullTarget *store.TeamConnection
+	for i, tc := range fullConns {
+		if tc.Direction == "inbound" && tc.Connection == target.Connection {
+			fullTarget = &fullConns[i]
+			break
+		}
+	}
+	if fullTarget == nil {
+		return respondEphemeral("Connection not found in team list.")
+	}
+
+	oldRemote := fullTarget.RemoteTeamName
+
+	if remoteTeamName != "" {
+		if err := p.kvstore.SetTeamRewriteIndex(target.Connection, remoteTeamName, args.TeamId); err != nil {
+			return respondEphemeral("%s", err.Error())
+		}
+		fullTarget.RemoteTeamName = remoteTeamName
+		if err := p.kvstore.SetTeamConnections(args.TeamId, fullConns); err != nil {
+			return respondEphemeral("Failed to update team connections.")
+		}
+		if oldRemote != "" && oldRemote != remoteTeamName {
+			_ = p.kvstore.DeleteTeamRewriteIndex(target.Connection, oldRemote)
+		}
+	} else {
+		fullTarget.RemoteTeamName = ""
+		if err := p.kvstore.SetTeamConnections(args.TeamId, fullConns); err != nil {
+			return respondEphemeral("Failed to update team connections.")
+		}
+		if oldRemote != "" {
+			_ = p.kvstore.DeleteTeamRewriteIndex(target.Connection, oldRemote)
+		}
+	}
+
+	user, appErr := p.API.GetUser(args.UserId)
+	if appErr != nil {
+		return respondEphemeral("Rewrite updated but failed to post audit message.")
+	}
+
+	channel, appErr := p.API.GetChannelByName(args.TeamId, "town-square", false)
+	if appErr == nil {
+		var msg string
+		if remoteTeamName != "" {
+			msg = fmt.Sprintf("Cross Guard rewrite set by @%s: inbound connection `%s` will route remote team name `%s` to this team.", user.Username, target.Connection, remoteTeamName)
+		} else {
+			msg = fmt.Sprintf("Cross Guard rewrite cleared by @%s for inbound connection `%s`.", user.Username, target.Connection)
+		}
+		post := &model.Post{
+			UserId:    p.botUserID,
+			ChannelId: channel.Id,
+			Message:   msg,
+		}
+		_, _ = p.API.CreatePost(post)
+	}
+
+	if remoteTeamName != "" {
+		return respondEphemeral("Rewrite set: inbound messages from `%s` with team name `%s` will route to this team.", target.Connection, remoteTeamName)
+	}
+	return respondEphemeral("Rewrite cleared for connection `%s`.", target.Connection)
 }
 
 func (p *Plugin) executeResetPrompt(args *model.CommandArgs) *model.CommandResponse {
@@ -497,7 +632,7 @@ func (p *Plugin) isChannelAdminOrHigher(userID, channelID, teamID string) bool {
 	return p.isTeamAdminOrSystemAdmin(userID, teamID)
 }
 
-func (p *Plugin) openConnectionDialog(triggerID, targetID string, connections []string, action string) {
+func (p *Plugin) openConnectionDialog(triggerID, targetID string, connections []store.TeamConnection, action string) {
 	var title string
 	switch action {
 	case actionInitTeam:
@@ -511,10 +646,11 @@ func (p *Plugin) openConnectionDialog(triggerID, targetID string, connections []
 	}
 
 	options := make([]*model.PostActionOptions, 0, len(connections))
-	for _, conn := range connections {
+	for _, tc := range connections {
+		key := connKey(tc)
 		options = append(options, &model.PostActionOptions{
-			Text:  conn,
-			Value: conn,
+			Text:  key,
+			Value: key,
 		})
 	}
 

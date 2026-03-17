@@ -6,13 +6,13 @@ import (
 	"crypto/x509"
 	"fmt"
 	"os"
-	"slices"
 	"time"
 
 	mmModel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/nats-io/nats.go"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
 const (
@@ -264,18 +264,18 @@ func buildReactionEnvelope(msgType string, reaction *mmModel.Reaction, channel *
 	return model.Marshal(envelope)
 }
 
-func (p *Plugin) publishToOutbound(ctx context.Context, data []byte, connNames []string) {
+func (p *Plugin) publishToOutbound(ctx context.Context, data []byte, conns []store.TeamConnection) {
 	p.outboundMu.RLock()
-	conns := make([]outboundConn, len(p.outboundConns))
-	copy(conns, p.outboundConns)
+	pool := make([]outboundConn, len(p.outboundConns))
+	copy(pool, p.outboundConns)
 	p.outboundMu.RUnlock()
 
-	if len(conns) == 0 {
+	if len(pool) == 0 {
 		return
 	}
 
-	for _, oc := range conns {
-		if !isOutboundLinked(oc.name, connNames) {
+	for _, oc := range pool {
+		if !isOutboundLinked(oc.name, conns) {
 			continue
 		}
 
@@ -312,6 +312,11 @@ func (p *Plugin) publishToOutbound(ctx context.Context, data []byte, connNames [
 }
 
 // isOutboundLinked checks if an outbound connection name is in the team's linked list.
-func isOutboundLinked(outboundName string, connNames []string) bool {
-	return slices.Contains(connNames, directionOutbound+outboundName)
+func isOutboundLinked(outboundName string, conns []store.TeamConnection) bool {
+	for _, tc := range conns {
+		if tc.Direction == "outbound" && tc.Connection == outboundName {
+			return true
+		}
+	}
+	return false
 }

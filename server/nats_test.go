@@ -4,32 +4,42 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
 func TestIsOutboundLinked(t *testing.T) {
 	tests := []struct {
 		name         string
 		outboundName string
-		connNames    []string
+		connNames    []store.TeamConnection
 		expected     bool
 	}{
 		{
 			name:         "linked outbound connection",
 			outboundName: "high",
-			connNames:    []string{"outbound:high", "inbound:high"},
-			expected:     true,
+			connNames: []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+				{Direction: "inbound", Connection: "high"},
+			},
+			expected: true,
 		},
 		{
 			name:         "not linked outbound connection",
 			outboundName: "other",
-			connNames:    []string{"outbound:high", "inbound:high"},
-			expected:     false,
+			connNames: []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+				{Direction: "inbound", Connection: "high"},
+			},
+			expected: false,
 		},
 		{
 			name:         "inbound name does not match outbound check",
 			outboundName: "high",
-			connNames:    []string{"inbound:high"},
-			expected:     false,
+			connNames: []store.TeamConnection{
+				{Direction: "inbound", Connection: "high"},
+			},
+			expected: false,
 		},
 		{
 			name:         "empty connection list",
@@ -40,8 +50,10 @@ func TestIsOutboundLinked(t *testing.T) {
 		{
 			name:         "partial name match does not count",
 			outboundName: "hig",
-			connNames:    []string{"outbound:high"},
-			expected:     false,
+			connNames: []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+			},
+			expected: false,
 		},
 	}
 

@@ -3,8 +3,10 @@ import React from 'react';
 
 interface ConnectionStatus {
     name: string;
+    direction: string;
     linked: boolean;
     orphaned?: boolean;
+    remote_team_name?: string;
 }
 
 interface ChannelStatusResponse {
@@ -24,17 +26,6 @@ interface Status {
 function getCSRFToken(): string {
     const match = document.cookie.match(/MMCSRF=([^;]+)/);
     return match ? match[1] : '';
-}
-
-function parseConnection(name: string): {direction: string; connName: string} {
-    const colonIdx = name.indexOf(':');
-    if (colonIdx === -1) {
-        return {direction: '', connName: name};
-    }
-    return {
-        direction: name.substring(0, colonIdx),
-        connName: name.substring(colonIdx + 1),
-    };
 }
 
 const colors = {
@@ -141,23 +132,24 @@ const CrossguardChannelModal: React.FC = () => {
         return {ok: response.ok, data};
     }, []);
 
-    const handleToggle = React.useCallback(async (connName: string, linked: boolean) => {
+    const handleToggle = React.useCallback(async (conn: ConnectionStatus) => {
         if (!channelID) {
             return;
         }
-        const action = linked ? 'teardown' : 'init';
-        const verb = linked ? 'unlinked' : 'linked';
-        const failVerb = linked ? 'unlink' : 'link';
-        setActionInProgress(connName);
+        const qualifiedName = `${conn.direction}:${conn.name}`;
+        const action = conn.linked ? 'teardown' : 'init';
+        const verb = conn.linked ? 'unlinked' : 'linked';
+        const failVerb = conn.linked ? 'unlink' : 'link';
+        setActionInProgress(qualifiedName);
         setStatus({loading: true});
         if (statusTimerRef.current) {
             clearTimeout(statusTimerRef.current);
         }
         try {
-            const url = `/plugins/${manifest.id}/api/v1/channels/${channelID}/${action}?connection_name=${encodeURIComponent(connName)}`;
+            const url = `/plugins/${manifest.id}/api/v1/channels/${channelID}/${action}?connection_name=${encodeURIComponent(qualifiedName)}`;
             const {ok, data} = await callAPI(url);
             if (ok) {
-                setStatus({loading: false, success: true, message: `Connection "${connName}" ${verb}.`});
+                setStatus({loading: false, success: true, message: `Connection "${conn.name}" ${verb}.`});
             } else {
                 setStatus({loading: false, success: false, message: (data.error as string) || `Failed to ${failVerb} connection.`});
             }
@@ -273,6 +265,11 @@ const CrossguardChannelModal: React.FC = () => {
             color: colors.textMuted,
             lineHeight: '18px',
         },
+        remoteTeamLabel: {
+            fontSize: '12px',
+            color: colors.textMuted,
+            lineHeight: '16px',
+        },
         btnLink: {
             padding: '6px 16px',
             cursor: 'pointer',
@@ -337,10 +334,11 @@ const CrossguardChannelModal: React.FC = () => {
         return (
             <div>
                 {teamConnections.map((conn) => {
-                    const {direction, connName} = parseConnection(conn.name);
+                    const direction = conn.direction;
+                    const qualifiedName = `${conn.direction}:${conn.name}`;
                     const isInbound = direction === 'inbound';
                     const accentColor = isInbound ? colors.inbound : colors.outbound;
-                    const isActioning = actionInProgress === conn.name;
+                    const isActioning = actionInProgress === qualifiedName;
 
                     const badgeStyle: React.CSSProperties = {
                         ...s.directionBadge,
@@ -354,7 +352,7 @@ const CrossguardChannelModal: React.FC = () => {
 
                     return (
                         <div
-                            key={conn.name}
+                            key={qualifiedName}
                             style={{
                                 ...s.card,
                                 background: accentColor + '08',
@@ -364,15 +362,20 @@ const CrossguardChannelModal: React.FC = () => {
                             <div style={{...s.cardAccent, background: accentColor}}/>
                             <div style={s.cardContent}>
                                 <div style={s.cardTop}>
-                                    <span style={s.connName}>{connName}</span>
+                                    <span style={s.connName}>{conn.name}</span>
                                     <span style={badgeStyle}>{badgeLabel}</span>
                                     {conn.orphaned && <span title={'Connection no longer in configuration'}>{'🔗\u200D💔'}</span>}
                                 </div>
+                                {conn.remote_team_name && (
+                                    <div style={s.remoteTeamLabel}>
+                                        {`Remote team: ${conn.remote_team_name}`}
+                                    </div>
+                                )}
                             </div>
                             {conn.linked ? (
                                 <button
                                     style={s.btnUnlink}
-                                    onClick={() => handleToggle(conn.name, true)}
+                                    onClick={() => handleToggle(conn)}
                                     disabled={actionInProgress !== null}
                                 >
                                     {isActioning ? 'Unlinking...' : 'Unlink'}
@@ -380,7 +383,7 @@ const CrossguardChannelModal: React.FC = () => {
                             ) : (
                                 <button
                                     style={s.btnLink}
-                                    onClick={() => handleToggle(conn.name, false)}
+                                    onClick={() => handleToggle(conn)}
                                     disabled={actionInProgress !== null}
                                 >
                                     {isActioning ? 'Linking...' : 'Link'}

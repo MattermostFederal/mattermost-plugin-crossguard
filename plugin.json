@@ -15,7 +15,7 @@
         "bundle_path": "webapp/dist/main.js"
     },
     "settings_schema": {
-        "header": "",
+        "header": "Cross-domain message relay for Mattermost Federal. [View full documentation](/plugins/crossguard/public/help/help.html).",
         "footer": "",
         "settings": [],
         "sections": [

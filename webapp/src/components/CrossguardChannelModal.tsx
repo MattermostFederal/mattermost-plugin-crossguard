@@ -316,6 +316,17 @@ const CrossguardChannelModal: React.FC = () => {
             textAlign: 'center' as const,
             padding: '24px 0',
         },
+        helpLink: {
+            marginTop: '16px',
+            paddingTop: '12px',
+            borderTop: `1px solid ${colors.border}`,
+            textAlign: 'center' as const,
+        },
+        helpAnchor: {
+            fontSize: '13px',
+            color: colors.primary,
+            textDecoration: 'none',
+        },
     };
 
     const renderBody = () => {
@@ -429,6 +440,16 @@ const CrossguardChannelModal: React.FC = () => {
                 <div style={s.body}>
                     {renderBody()}
                     {renderStatus()}
+                    <div style={s.helpLink}>
+                        <a
+                            href={`/plugins/${manifest.id}/public/help/help.html`}
+                            target={'_blank'}
+                            rel={'noopener noreferrer'}
+                            style={s.helpAnchor}
+                        >
+                            {'View Cross Guard Documentation'}
+                        </a>
+                    </div>
                 </div>
             </div>
         </div>

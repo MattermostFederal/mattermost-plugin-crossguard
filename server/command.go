@@ -19,6 +19,7 @@ const (
 	actionResetPrompt        = "reset-prompt"
 	actionResetChannelPrompt = "reset-channel-prompt"
 	actionRewriteTeam        = "rewrite-team"
+	actionHelp               = "help"
 )
 
 func (p *Plugin) registerCommand() error {
@@ -26,7 +27,7 @@ func (p *Plugin) registerCommand() error {
 		Trigger:          commandTrigger,
 		AutoComplete:     true,
 		AutoCompleteDesc: "Cross Guard commands",
-		AutoCompleteHint: "[init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|rewrite-team|status]",
+		AutoCompleteHint: "[init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|rewrite-team|status|help]",
 		AutocompleteData: getAutocompleteData(),
 	})
 }
@@ -59,13 +60,16 @@ func getAutocompleteData() *model.AutocompleteData {
 	status := model.NewAutocompleteData("status", "", "Check Cross Guard status for this team")
 	cmd.AddCommand(status)
 
+	help := model.NewAutocompleteData("help", "", "Show detailed help for all Cross Guard commands")
+	cmd.AddCommand(help)
+
 	return cmd
 }
 
 func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
 	parts := strings.Fields(args.Command)
 	if len(parts) < 2 {
-		return respondEphemeral("Usage: /%s [init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|rewrite-team|status]", commandTrigger), nil
+		return respondEphemeral("Run `/%s help` to see all available commands.", commandTrigger), nil
 	}
 
 	subcommand := parts[1]
@@ -86,8 +90,103 @@ func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*mo
 		return p.executeStatus(args), nil
 	case actionRewriteTeam:
 		return p.executeRewriteTeam(args), nil
+	case actionHelp:
+		return p.executeHelp(), nil
 	default:
-		return respondEphemeral("Unknown subcommand: %s. Usage: /%s [init-team|init-channel|teardown-team|teardown-channel|reset-prompt|reset-channel-prompt|rewrite-team|status]", subcommand, commandTrigger), nil
+		return respondEphemeral("Unknown subcommand: `%s`. Run `/%s help` to see all available commands.", subcommand, commandTrigger), nil
+	}
+}
+
+func (p *Plugin) executeHelp() *model.CommandResponse {
+	var sb strings.Builder
+
+	sb.WriteString("#### Cross Guard Help\n\n")
+
+	sb.WriteString("**Quick Reference:**\n\n")
+	sb.WriteString("| Command | Description | Permission |\n")
+	sb.WriteString("|:--------|:------------|:-----------|\n")
+	sb.WriteString("| `init-team [name]` | Link a NATS connection to this team | Team Admin |\n")
+	sb.WriteString("| `init-channel [name]` | Link a NATS connection to this channel | Channel Admin |\n")
+	sb.WriteString("| `teardown-team [name]` | Unlink a NATS connection from this team | Team Admin |\n")
+	sb.WriteString("| `teardown-channel [name]` | Unlink a NATS connection from this channel | Channel Admin |\n")
+	sb.WriteString("| `reset-prompt <name>` | Clear a pending team connection prompt | Team Admin |\n")
+	sb.WriteString("| `reset-channel-prompt <name>` | Clear a pending channel connection prompt | Team Admin |\n")
+	sb.WriteString("| `rewrite-team [name] [team]` | Set or clear a remote team name rewrite | Team Admin |\n")
+	sb.WriteString("| `status` | Show Cross Guard status for this team | Any member |\n")
+	sb.WriteString("| `help` | Show this help message | Any member |\n")
+
+	sb.WriteString("\n---\n\n")
+	sb.WriteString("**Detailed Commands:**\n\n")
+
+	sb.WriteString("##### `/crossguard init-team [connection-name]`\n")
+	sb.WriteString("Link a NATS connection to the current team, enabling cross-domain relay.\n")
+	sb.WriteString("- **Permission:** Team Admin or System Admin\n")
+	sb.WriteString("- **Arguments:** `connection-name` (optional if only one connection is configured)\n")
+	sb.WriteString("- **Example:** `/crossguard init-team myconn`\n")
+	sb.WriteString("- If multiple connections exist and no name is given, a selection dialog will appear.\n\n")
+
+	sb.WriteString("##### `/crossguard init-channel [connection-name]`\n")
+	sb.WriteString("Link a NATS connection to the current channel. The team must be initialized first.\n")
+	sb.WriteString("- **Permission:** Channel Admin, Team Admin, or System Admin\n")
+	sb.WriteString("- **Arguments:** `connection-name` (optional if only one connection is configured)\n")
+	sb.WriteString("- **Example:** `/crossguard init-channel myconn`\n")
+	sb.WriteString("- If multiple connections exist and no name is given, a selection dialog will appear.\n\n")
+
+	sb.WriteString("##### `/crossguard teardown-team [connection-name]`\n")
+	sb.WriteString("Unlink a NATS connection from the current team.\n")
+	sb.WriteString("- **Permission:** Team Admin or System Admin\n")
+	sb.WriteString("- **Arguments:** `connection-name` (optional if only one connection is linked)\n")
+	sb.WriteString("- **Example:** `/crossguard teardown-team myconn`\n\n")
+
+	sb.WriteString("##### `/crossguard teardown-channel [connection-name]`\n")
+	sb.WriteString("Unlink a NATS connection from the current channel.\n")
+	sb.WriteString("- **Permission:** Channel Admin, Team Admin, or System Admin\n")
+	sb.WriteString("- **Arguments:** `connection-name` (optional if only one connection is linked)\n")
+	sb.WriteString("- **Example:** `/crossguard teardown-channel myconn`\n\n")
+
+	sb.WriteString("##### `/crossguard reset-prompt <connection-name>`\n")
+	sb.WriteString("Clear a blocked or pending inbound connection prompt for the current team. A new prompt will appear on the next inbound message.\n")
+	sb.WriteString("- **Permission:** Team Admin or System Admin\n")
+	sb.WriteString("- **Arguments:** `connection-name` (required)\n")
+	sb.WriteString("- **Example:** `/crossguard reset-prompt myconn`\n\n")
+
+	sb.WriteString("##### `/crossguard reset-channel-prompt <connection-name>`\n")
+	sb.WriteString("Clear a blocked or pending inbound connection prompt for the current channel.\n")
+	sb.WriteString("- **Permission:** Team Admin or System Admin\n")
+	sb.WriteString("- **Arguments:** `connection-name` (required)\n")
+	sb.WriteString("- **Example:** `/crossguard reset-channel-prompt myconn`\n\n")
+
+	sb.WriteString("##### `/crossguard rewrite-team [connection-name] [remote-team-name]`\n")
+	sb.WriteString("Set or clear a remote team name rewrite for an inbound connection. When set, inbound messages with the specified remote team name will route to this team.\n")
+	sb.WriteString("- **Permission:** Team Admin or System Admin\n")
+	sb.WriteString("- **Arguments:** `connection-name` (required if multiple inbound connections), `remote-team-name` (omit to clear)\n")
+	sb.WriteString("- **Example:** `/crossguard rewrite-team myconn remote-team`\n")
+	sb.WriteString("- **Example (clear):** `/crossguard rewrite-team myconn`\n\n")
+
+	sb.WriteString("##### `/crossguard status`\n")
+	sb.WriteString("Show the Cross Guard status for the current team and channel. System Admins see a global overview of all initialized teams and NATS connections.\n")
+	sb.WriteString("- **Permission:** Any team member (System Admins see global status)\n\n")
+
+	sb.WriteString("---\n\n")
+
+	sb.WriteString("**Getting Started:**\n")
+	sb.WriteString("1. Configure NATS connections in **System Console > Plugins > Cross Guard**\n")
+	sb.WriteString("2. Run `/crossguard init-team` in the team you want to enable\n")
+	sb.WriteString("3. Run `/crossguard init-channel` in each channel that should relay messages\n")
+	sb.WriteString("4. Run `/crossguard status` to verify the setup\n\n")
+
+	sb.WriteString("**Permissions:**\n")
+	sb.WriteString("- **System Admin:** Full access to all commands\n")
+	sb.WriteString("- **Team Admin:** Can manage team and channel connections, reset prompts, set rewrites\n")
+	sb.WriteString("- **Channel Admin:** Can link/unlink channels within initialized teams\n")
+	sb.WriteString("- When `RestrictToSystemAdmins` is enabled, only System Admins can run commands\n")
+
+	sb.WriteString("\n---\n\n")
+	sb.WriteString("**Full Documentation:** [Cross Guard Help](/plugins/crossguard/public/help/help.html)\n")
+
+	return &model.CommandResponse{
+		ResponseType: model.CommandResponseTypeEphemeral,
+		Text:         sb.String(),
 	}
 }
 

@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cross Guard Documentation</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="layout">
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <h2>Cross Guard</h2>
+            <span class="version">Plugin Documentation</span>
+        </div>
+        <nav>
+            <span class="nav-section">Documentation</span>
+            <a href="help.html" class="active">Overview</a>
+            <a href="commands.html">Slash Commands</a>
+            <a href="admin.html">Admin Configuration</a>
+            <a href="api.html">REST API</a>
+            <a href="threatmodel.html">Threat Model</a>
+            <a href="whitepaper.html">Whitepaper</a>
+        </nav>
+    </aside>
+
+    <main class="content">
+        <div class="breadcrumb">
+            <a href="help.html">Docs</a>
+            <span class="separator">/</span>
+            Overview
+        </div>
+
+        <h1>Mattermost Cross Guard</h1>
+        <p class="tagline">Cross-domain message relay for Mattermost Federal</p>
+
+        <!-- What is Cross Guard? -->
+        <h2>What is Cross Guard?</h2>
+        <p>
+            Cross Guard enables message relay between separate Mattermost servers using NATS as the
+            transport layer. It is designed for environments where multiple isolated Mattermost instances
+            need to exchange messages across domain boundaries without direct database or API access
+            between servers.
+        </p>
+        <p>
+            Posts, edits, deletes, and reactions flow bidirectionally across server boundaries. Each
+            server maintains its own users, teams, and channels. Cross Guard bridges them at the
+            message level, preserving each server's independence while enabling real-time communication.
+        </p>
+        <p>
+            The plugin integrates with Mattermost's post lifecycle hooks, so relay behavior is
+            transparent to end users. Messages appear in channels as if they were posted locally.
+        </p>
+
+        <!-- How Federation Works -->
+        <h2>How Federation Works</h2>
+
+        <div class="diagram-box">
+<pre>Server A (Low Side)          NATS Bus              Server B (High Side)
++-----------------------+    +----------------+    +-----------------------+
+|                       |    |                |    |                       |
+|  User posts in        |    |   Subject:     |    |  Bot posts in         |
+|  #town-square         |---&gt;|   crossguard.  |---&gt;|  #town-square         |
+|                       |    |   relay.msg    |    |                       |
+|  Outbound hook        |    |                |    |  Inbound handler      |
++-----------------------+    +----------------+    +-----------------------+</pre>
+        </div>
+
+        <h3>Two Connection Directions</h3>
+        <ul>
+            <li>
+                <strong>Outbound:</strong> Hooks into Mattermost post lifecycle events
+                (<code>MessageHasBeenPosted</code>, <code>MessageHasBeenUpdated</code>,
+                <code>MessageHasBeenDeleted</code>, reaction events), serializes to an envelope
+                format, and publishes to NATS.
+            </li>
+            <li>
+                <strong>Inbound:</strong> Subscribes to a NATS subject, deserializes the envelope,
+                and creates, updates, or deletes posts locally.
+            </li>
+        </ul>
+
+        <h3>What Gets Relayed</h3>
+        <table>
+            <thead>
+                <tr><th>Event</th><th>Relayed?</th><th>Notes</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>New posts</td><td>Yes</td><td>Including thread replies (root_id preserved)</td></tr>
+                <tr><td>Post edits</td><td>Yes</td><td>Updated content replaces original on the remote side</td></tr>
+                <tr><td>Post deletes</td><td>Yes</td><td>Matched by original post ID</td></tr>
+                <tr><td>Reaction adds</td><td>Yes</td><td>Emoji name and user are relayed</td></tr>
+                <tr><td>Reaction removes</td><td>Yes</td><td>Matched by emoji name and post ID</td></tr>
+                <tr><td>System messages</td><td>No</td><td>Filtered out to avoid noise</td></tr>
+                <tr><td>Relay bot posts</td><td>No</td><td>Loop prevention via <code>crossguard_relayed</code> property</td></tr>
+            </tbody>
+        </table>
+
+        <!-- Key Concepts -->
+        <h2>Key Concepts</h2>
+
+        <h3>Connections</h3>
+        <p>
+            Named NATS connection configurations (inbound or outbound) defined in the System Console.
+            Referenced by name in all commands using the format <code>direction:name</code>
+            (e.g., <code>outbound:relay-to-b</code>).
+        </p>
+
+        <h3>Team Initialization</h3>
+        <p>
+            A team must be linked to a connection before any channels in that team can relay messages.
+            This is always the first step. Use <code>/crossguard init-team</code> to link a connection.
+        </p>
+
+        <h3>Channel Initialization</h3>
+        <p>
+            Individual channels within an initialized team are linked to connections. Only linked
+            channels relay messages. Use <code>/crossguard init-channel</code> to link a channel.
+        </p>
+
+        <h3>Inbound Prompts</h3>
+        <p>
+            When an inbound message arrives for a team or channel that hasn't been explicitly accepted,
+            an interactive prompt (Accept/Block buttons) is posted in town-square. Admins must accept
+            before messages flow. Use <code>/crossguard reset-prompt</code> to clear a blocked prompt.
+        </p>
+
+        <h3>Team Name Rewriting</h3>
+        <p>
+            Maps remote team names to local teams, allowing servers with different team names to relay
+            correctly. Configured per inbound connection using
+            <code>/crossguard rewrite-team</code>.
+        </p>
+
+        <h3>Username Lookup</h3>
+        <p>
+            When enabled (the <code>UsernameLookup</code> setting), inbound messages are posted as the
+            matching local user if one exists with the same username. Otherwise, a synthetic relay bot
+            posts them.
+        </p>
+
+        <!-- Getting Started -->
+        <h2>Getting Started</h2>
+
+        <ol class="steps">
+            <li>
+                <strong>Configure connections</strong> in
+                <strong>System Console &gt; Plugins &gt; Cross Guard</strong>.
+                Add NATS connection details (address, subject, auth type).
+                See the <a href="admin.html">Admin Configuration Guide</a> for details.
+            </li>
+            <li>
+                <strong>Initialize a team:</strong> Run
+                <code>/crossguard init-team [connection-name]</code> in the team you want to enable.
+            </li>
+            <li>
+                <strong>Initialize channels:</strong> Run
+                <code>/crossguard init-channel [connection-name]</code> in each channel that should
+                relay messages.
+            </li>
+            <li>
+                <strong>Verify:</strong> Run <code>/crossguard status</code> to confirm the setup
+                and check that connections are active.
+            </li>
+        </ol>
+
+        <!-- Permission Model -->
+        <h2>Permission Model</h2>
+
+        <table>
+            <thead>
+                <tr><th>Role</th><th>Scope</th><th>Notes</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><span class="permission-tag permission-sysadmin">System Admin</span></td>
+                    <td>All commands, all teams/channels. Can configure NATS connections in System Console. Can test connections via API. Sees global status overview.</td>
+                    <td>Always has full access regardless of <code>RestrictToSystemAdmins</code> setting.</td>
+                </tr>
+                <tr>
+                    <td><span class="permission-tag permission-teamadmin">Team Admin</span></td>
+                    <td><code>init-team</code>, <code>teardown-team</code>, <code>init-channel</code>, <code>teardown-channel</code>, <code>reset-prompt</code>, <code>reset-channel-prompt</code>, <code>rewrite-team</code>, <code>status</code> within their team.</td>
+                    <td>Access blocked when <code>RestrictToSystemAdmins</code> is enabled.</td>
+                </tr>
+                <tr>
+                    <td><span class="permission-tag permission-channeladmin">Channel Admin</span></td>
+                    <td><code>init-channel</code>, <code>teardown-channel</code> within their channel (team must already be initialized).</td>
+                    <td>Access blocked when <code>RestrictToSystemAdmins</code> is enabled.</td>
+                </tr>
+                <tr>
+                    <td><span class="permission-tag permission-member">Member</span></td>
+                    <td><code>status</code> (team-scoped view), <code>help</code>.</td>
+                    <td>Can see which connections are active for their team/channel.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="alert alert-info">
+            <p class="alert-title">Note</p>
+            <p>
+                When <code>RestrictToSystemAdmins</code> is enabled in plugin settings, Team Admins
+                and Channel Admins lose access to connection management commands. Only System Admins
+                can manage connections.
+            </p>
+        </div>
+
+        <!-- Navigation -->
+        <h2>Documentation Pages</h2>
+
+        <div class="nav-cards">
+            <a href="commands.html" class="nav-card">
+                <h3>Slash Command Reference</h3>
+                <p>Complete documentation for all 9 slash commands, including arguments, permissions, and examples.</p>
+            </a>
+            <a href="admin.html" class="nav-card">
+                <h3>Admin Configuration Guide</h3>
+                <p>NATS connection setup, relay settings, example configurations, and troubleshooting.</p>
+            </a>
+            <a href="api.html" class="nav-card">
+                <h3>REST API Reference</h3>
+                <p>All 16 REST endpoints with request/response examples and authentication details.</p>
+            </a>
+            <a href="threatmodel.html" class="nav-card">
+                <h3>Threat Model</h3>
+                <p>STRIDE threat analysis, trust zones, data flow documentation, and CDS deployment recommendations.</p>
+            </a>
+            <a href="whitepaper.html" class="nav-card">
+                <h3>CDS Whitepaper</h3>
+                <p>Comprehensive architecture, deployment topologies, security analysis, and cross-domain evaluation guide.</p>
+            </a>
+        </div>
+    </main>
+</div>
+</body>
+</html>

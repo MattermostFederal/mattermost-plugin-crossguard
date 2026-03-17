@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Configuration - Cross Guard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="layout">
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <h2>Cross Guard</h2>
+            <span class="version">Plugin Documentation</span>
+        </div>
+        <nav>
+            <span class="nav-section">Documentation</span>
+            <a href="help.html">Overview</a>
+            <a href="commands.html">Slash Commands</a>
+            <a href="admin.html" class="active">Admin Configuration</a>
+            <a href="api.html">REST API</a>
+            <a href="threatmodel.html">Threat Model</a>
+            <a href="whitepaper.html">Whitepaper</a>
+        </nav>
+    </aside>
+
+    <main class="content">
+        <div class="breadcrumb">
+            <a href="help.html">Docs</a>
+            <span class="separator">/</span>
+            Admin Configuration
+        </div>
+
+        <h1>Admin Configuration Guide</h1>
+        <p class="tagline">NATS connections, relay settings, and deployment examples</p>
+
+        <!-- Accessing Settings -->
+        <h2>Accessing Plugin Settings</h2>
+        <p>
+            Navigate to <strong>System Console &gt; Plugins &gt; Cross Guard</strong>. The plugin
+            must be enabled before configuration is accessible. Settings are organized into two
+            sections: NATS Configuration and Relay Settings.
+        </p>
+
+        <!-- NATS Configuration -->
+        <h2>NATS Configuration</h2>
+
+        <h3>Understanding Inbound vs Outbound</h3>
+
+        <table>
+            <thead>
+                <tr><th>Direction</th><th>Flow</th><th>Use When</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Outbound</strong></td>
+                    <td>Mattermost &rarr; NATS</td>
+                    <td>Your server is the <strong>sender</strong>. Publishes messages to NATS.</td>
+                </tr>
+                <tr>
+                    <td><strong>Inbound</strong></td>
+                    <td>NATS &rarr; Mattermost</td>
+                    <td>Your server is the <strong>receiver</strong>. Subscribes and receives messages from NATS.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <p>
+            A server can have both inbound and outbound connections simultaneously for bidirectional
+            relay. Multiple connections of the same direction are supported for multi-server topologies.
+        </p>
+
+        <!-- Connection Fields -->
+        <h3>Connection Fields</h3>
+
+        <table>
+            <thead>
+                <tr><th>Field</th><th>JSON Key</th><th>Required</th><th>Validation</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Name</strong></td>
+                    <td><code>name</code></td>
+                    <td>Yes</td>
+                    <td>Lowercase letters, numbers, and hyphens only. Pattern: <code>^[a-z0-9]+(-[a-z0-9]+)*$</code>. Must be unique across ALL connections.</td>
+                    <td>Human-readable identifier. Used in all commands and API calls. Examples: <code>relay-to-b</code>, <code>high-side</code>, <code>nats-prod</code></td>
+                </tr>
+                <tr>
+                    <td><strong>Address</strong></td>
+                    <td><code>address</code></td>
+                    <td>Yes</td>
+                    <td>Non-empty string</td>
+                    <td>NATS server URL. Format: <code>nats://hostname:port</code>. Default port is 4222. Examples: <code>nats://nats.example.com:4222</code>, <code>nats://10.0.1.50:4222</code></td>
+                </tr>
+                <tr>
+                    <td><strong>Subject</strong></td>
+                    <td><code>subject</code></td>
+                    <td>Yes</td>
+                    <td>Must start with <code>crossguard.</code> prefix</td>
+                    <td>NATS subject to publish/subscribe on. Both sides MUST use the same subject. Examples: <code>crossguard.relay.messages</code>, <code>crossguard.prod.sync</code></td>
+                </tr>
+                <tr>
+                    <td><strong>TLS Enabled</strong></td>
+                    <td><code>tls_enabled</code></td>
+                    <td>No</td>
+                    <td>Boolean</td>
+                    <td>Enable TLS encryption. Required for production with TLS-enabled NATS servers.</td>
+                </tr>
+                <tr>
+                    <td><strong>Auth Type</strong></td>
+                    <td><code>auth_type</code></td>
+                    <td>No</td>
+                    <td><code>none</code>, <code>token</code>, or <code>credentials</code>. Empty treated as <code>none</code>.</td>
+                    <td>Authentication method for the NATS server.</td>
+                </tr>
+                <tr>
+                    <td><strong>Token</strong></td>
+                    <td><code>token</code></td>
+                    <td>Conditional</td>
+                    <td>Required when <code>auth_type</code> is <code>token</code></td>
+                    <td>Authentication token for token-based auth.</td>
+                </tr>
+                <tr>
+                    <td><strong>Username</strong></td>
+                    <td><code>username</code></td>
+                    <td>Conditional</td>
+                    <td>Required when <code>auth_type</code> is <code>credentials</code></td>
+                    <td>Username for credential-based auth.</td>
+                </tr>
+                <tr>
+                    <td><strong>Password</strong></td>
+                    <td><code>password</code></td>
+                    <td>Conditional</td>
+                    <td>Required when <code>auth_type</code> is <code>credentials</code></td>
+                    <td>Password for credential-based auth.</td>
+                </tr>
+                <tr>
+                    <td><strong>Client Certificate</strong></td>
+                    <td><code>client_cert</code></td>
+                    <td>No</td>
+                    <td>If provided, <code>client_key</code> must also be provided</td>
+                    <td>Path to client TLS certificate file (requires <code>tls_enabled</code>).</td>
+                </tr>
+                <tr>
+                    <td><strong>Client Key</strong></td>
+                    <td><code>client_key</code></td>
+                    <td>No</td>
+                    <td>If provided, <code>client_cert</code> must also be provided</td>
+                    <td>Path to client TLS private key file.</td>
+                </tr>
+                <tr>
+                    <td><strong>CA Certificate</strong></td>
+                    <td><code>ca_cert</code></td>
+                    <td>No</td>
+                    <td>-</td>
+                    <td>Path to CA certificate for verifying the NATS server's TLS certificate.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Validation Rules -->
+        <h3>Validation Rules Summary</h3>
+        <ol>
+            <li>Names must be globally unique across inbound AND outbound connections</li>
+            <li>Names must be lowercase alphanumeric with hyphens (no spaces, underscores, uppercase)</li>
+            <li>Subject must always start with <code>crossguard.</code></li>
+            <li>Both sides of a relay must use the same NATS subject</li>
+            <li>Auth credentials must be complete (both username AND password for credentials auth)</li>
+            <li>TLS cert and key must be provided as a pair</li>
+        </ol>
+
+        <!-- Relay Settings -->
+        <h2>Relay Settings</h2>
+
+        <h3>Username Lookup</h3>
+
+        <table class="field-table">
+            <tbody>
+                <tr><td>Setting</td><td><code>UsernameLookup</code></td></tr>
+                <tr><td>Type</td><td>Boolean</td></tr>
+                <tr><td>Default</td><td><code>true</code></td></tr>
+            </tbody>
+        </table>
+
+        <p>
+            <strong>When enabled:</strong> Inbound messages look for a local user with the same
+            username as the remote sender. If found, the message is posted as that local user. This
+            creates a seamless experience where messages appear to come from the correct person.
+        </p>
+        <p>
+            <strong>When disabled:</strong> All inbound messages are posted by the Cross Guard relay
+            bot, with the remote username shown in the message formatting. Use this if usernames
+            don't match across servers.
+        </p>
+
+        <h3>Restrict to System Admins</h3>
+
+        <table class="field-table">
+            <tbody>
+                <tr><td>Setting</td><td><code>RestrictToSystemAdmins</code></td></tr>
+                <tr><td>Type</td><td>Boolean</td></tr>
+                <tr><td>Default</td><td><code>false</code></td></tr>
+            </tbody>
+        </table>
+
+        <p>
+            <strong>When enabled:</strong> Only System Admins can run <code>init-team</code>,
+            <code>teardown-team</code>, <code>init-channel</code>, <code>teardown-channel</code>,
+            <code>reset-prompt</code>, <code>reset-channel-prompt</code>, and
+            <code>rewrite-team</code>. Team Admins and Channel Admins are denied access.
+        </p>
+        <p>
+            <strong>When disabled:</strong> Team Admins can manage team connections, Channel Admins
+            can manage channel connections (the default permission hierarchy).
+        </p>
+
+        <div class="alert alert-tip">
+            <p class="alert-title">Tip</p>
+            <p>
+                Enable this setting in high-security environments where only centralized admins
+                should control cross-domain relay.
+            </p>
+        </div>
+
+        <!-- Testing Connections -->
+        <h2>Testing Connections</h2>
+        <p>
+            The admin console UI includes a "Test Connection" button for each configured connection.
+            Tests can be run for outbound (publishes a test message) or inbound (subscribes and
+            confirms).
+        </p>
+        <ul>
+            <li><strong>API endpoint:</strong> <code>POST /plugins/crossguard/api/v1/test-connection</code> (System Admin only)</li>
+            <li><strong>Outbound test:</strong> Publishes a message with a unique ID and confirms flush</li>
+            <li><strong>Inbound test:</strong> Subscribes to the subject and confirms the subscription is active</li>
+            <li>Tests use a temporary connection (does not affect the running plugin's connections)</li>
+        </ul>
+
+        <!-- Example Configurations -->
+        <h2>Example Configurations</h2>
+
+        <h3>Dual-Server Setup (Server A sends to Server B)</h3>
+
+        <h4>Server A (sender)</h4>
+<pre><code>Outbound Connections:
+[{
+  "name": "relay-to-b",
+  "address": "nats://nats.example.com:4222",
+  "subject": "crossguard.relay.messages",
+  "auth_type": "token",
+  "token": "shared-secret-token"
+}]
+
+Inbound Connections: []</code></pre>
+
+        <h4>Server B (receiver)</h4>
+<pre><code>Inbound Connections:
+[{
+  "name": "relay-from-a",
+  "address": "nats://nats.example.com:4222",
+  "subject": "crossguard.relay.messages",
+  "auth_type": "token",
+  "token": "shared-secret-token"
+}]
+
+Outbound Connections: []</code></pre>
+
+        <h3>Bidirectional Setup (Both servers send and receive)</h3>
+
+        <h4>Server A</h4>
+<pre><code>Outbound: [{"name": "to-b", "address": "nats://nats:4222", "subject": "crossguard.a-to-b"}]
+Inbound:  [{"name": "from-b", "address": "nats://nats:4222", "subject": "crossguard.b-to-a"}]</code></pre>
+
+        <h4>Server B</h4>
+<pre><code>Outbound: [{"name": "to-a", "address": "nats://nats:4222", "subject": "crossguard.b-to-a"}]
+Inbound:  [{"name": "from-a", "address": "nats://nats:4222", "subject": "crossguard.a-to-b"}]</code></pre>
+
+        <div class="alert alert-info">
+            <p class="alert-title">Note</p>
+            <p>
+                Each direction uses a different subject to avoid echo loops. Server A publishes on
+                <code>crossguard.a-to-b</code> and Server B subscribes to it, and vice versa.
+            </p>
+        </div>
+
+        <h3>Docker Dev Environment</h3>
+        <ul>
+            <li><strong>Server A:</strong> <code>http://low.test:8075</code> (admin/password, usera/password, Team: Test A)</li>
+            <li><strong>Server B:</strong> <code>http://high.test:8076</code> (admin/password, userb/password, Team: Test B)</li>
+            <li><strong>NATS:</strong> <code>nats://nats:4222</code> (from plugin's perspective inside Docker network)</li>
+            <li><strong>Setup:</strong> <code>make docker-setup</code>, <strong>Deploy:</strong> <code>make deploy</code></li>
+        </ul>
+
+        <!-- Troubleshooting -->
+        <h2>Troubleshooting</h2>
+
+        <table>
+            <thead>
+                <tr><th>Problem</th><th>Solution</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>"No NATS connections configured"</td>
+                    <td>Add connections in System Console > Plugins > Cross Guard first.</td>
+                </tr>
+                <tr>
+                    <td>Connection test fails</td>
+                    <td>Verify NATS server is reachable, check address/port, verify auth credentials match.</td>
+                </tr>
+                <tr>
+                    <td>Messages not relaying</td>
+                    <td>Run <code>/crossguard status</code>. Verify both team AND channel are initialized. Check NATS subject matches on both sides.</td>
+                </tr>
+                <tr>
+                    <td>"Connection not found"</td>
+                    <td>Connection name is case-sensitive and uses <code>direction:name</code> format (e.g., <code>outbound:relay-to-b</code>).</td>
+                </tr>
+                <tr>
+                    <td>Orphaned connections</td>
+                    <td>If a connection name is changed in config, existing team/channel links reference the old name. Teardown and re-init with the new name.</td>
+                </tr>
+                <tr>
+                    <td>Inbound messages blocked</td>
+                    <td>Check if an inbound prompt was blocked. Run <code>/crossguard reset-prompt &lt;name&gt;</code> to clear it and re-evaluate.</td>
+                </tr>
+                <tr>
+                    <td>Wrong team receives messages</td>
+                    <td>Check team name rewrite settings with <code>/crossguard status</code>. Remote team names must match or be rewritten.</td>
+                </tr>
+            </tbody>
+        </table>
+    </main>
+</div>
+</body>
+</html>

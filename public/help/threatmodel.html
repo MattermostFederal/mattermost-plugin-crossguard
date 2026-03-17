@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Threat Model - Cross Guard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="layout">
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <h2>Cross Guard</h2>
+            <span class="version">Plugin Documentation</span>
+        </div>
+        <nav>
+            <span class="nav-section">Documentation</span>
+            <a href="help.html">Overview</a>
+            <a href="commands.html">Slash Commands</a>
+            <a href="admin.html">Admin Configuration</a>
+            <a href="api.html">REST API</a>
+            <a href="threatmodel.html" class="active">Threat Model</a>
+            <a href="whitepaper.html">Whitepaper</a>
+        </nav>
+    </aside>
+
+    <main class="content">
+        <div class="breadcrumb">
+            <a href="help.html">Docs</a>
+            <span class="separator">/</span>
+            Threat Model
+        </div>
+
+        <h1>Mattermost Cross Guard Threat Model</h1>
+        <p class="tagline">Security analysis of Cross Guard's cross-domain relay architecture</p>
+
+        <!-- Section 1: Introduction -->
+        <h2>Introduction</h2>
+        <p>
+            Cross Guard operates as a Cross Domain Solution (CDS), bridging two or more Mattermost
+            instances across security domain boundaries using NATS as the transport. This page documents
+            the trust boundaries, the data that crosses them, and the threats and mitigations at each layer.
+        </p>
+        <p>
+            Intended audience: security reviewers, accreditors, and administrators evaluating Cross Guard
+            for deployment in classified or sensitive environments.
+        </p>
+
+        <!-- Section 2: System Architecture and Trust Zones -->
+        <h2>System Architecture and Trust Zones</h2>
+
+        <div class="diagram-box">
+<pre>Zone 1: Mattermost Server A         Zone 3: NATS Bus          Zone 5: Mattermost Server B
++----------------------------+     +------------------+     +----------------------------+
+|  Users, Teams, Channels    |     |                  |     |  Users, Teams, Channels    |
+|  Mattermost API            |     |  NATS Server     |     |  Mattermost API            |
+|  +----------------------+  |     |  (may be shared  |     |  +----------------------+  |
+|  | Zone 2: Cross Guard  |  |     |   or dedicated)  |     |  | Zone 4: Cross Guard  |  |
+|  | Plugin (Outbound)    |--|----&gt;|  Subject-based   |----&gt;|--| Plugin (Inbound)     |  |
+|  | hooks.go, nats.go    |  |     |  pub/sub routing  |     |  | inbound.go           |  |
+|  +----------------------+  |     +------------------+     |  +----------------------+  |
++----------------------------+                               +----------------------------+</pre>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Zone</th>
+                    <th>Description</th>
+                    <th>Trust Level</th>
+                    <th>Controlled By</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Zone 1: Mattermost Server A</strong></td>
+                    <td>Source Mattermost instance. Users, teams, channels, posts. Authenticated via Mattermost session management.</td>
+                    <td>Trusted</td>
+                    <td>Server A admin</td>
+                </tr>
+                <tr>
+                    <td><strong>Zone 2: Cross Guard Plugin (Outbound)</strong></td>
+                    <td>Plugin code running inside Server A. Hooks into post lifecycle events (<code>MessageHasBeenPosted</code>, <code>MessageHasBeenUpdated</code>, <code>MessageHasBeenDeleted</code>, reaction hooks in <code>hooks.go</code>). Serializes to NATS envelope, publishes via <code>nats.go:publishToOutbound()</code>.</td>
+                    <td>Trusted (same process as Mattermost)</td>
+                    <td>Plugin code + Server A admin config</td>
+                </tr>
+                <tr>
+                    <td><strong>Zone 3: NATS Bus</strong></td>
+                    <td>External message broker. Receives published messages, delivers to subscribers. Can be shared or dedicated. May be in a separate network segment.</td>
+                    <td>Semi-trusted (transport security only)</td>
+                    <td>NATS admin (may be separate from MM admin)</td>
+                </tr>
+                <tr>
+                    <td><strong>Zone 4: Cross Guard Plugin (Inbound)</strong></td>
+                    <td>Plugin code running inside Server B. Subscribes to NATS, deserializes envelopes (<code>inbound.go:handleInboundMessage()</code>), resolves teams/channels/users, creates local posts.</td>
+                    <td>Trusted (same process as Mattermost)</td>
+                    <td>Plugin code + Server B admin config</td>
+                </tr>
+                <tr>
+                    <td><strong>Zone 5: Mattermost Server B</strong></td>
+                    <td>Destination Mattermost instance. Receives relayed messages as locally-created posts.</td>
+                    <td>Trusted</td>
+                    <td>Server B admin</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Section 3: Data Crossing the Domain Boundary -->
+        <h2>Data Crossing the Domain Boundary</h2>
+
+        <p>
+            The following data structures from <code>server/model/</code> transit the NATS bus between
+            trust zones. Understanding exactly what crosses the boundary is critical for CDS evaluation.
+        </p>
+
+        <h3>Outer Envelope (<code>model/message.go:Message</code>)</h3>
+        <table class="field-table">
+            <tbody>
+                <tr><td><code>type</code></td><td>Message type constant (e.g., <code>crossguard_post</code>)</td></tr>
+                <tr><td><code>timestamp</code></td><td>RFC 3339 UTC timestamp</td></tr>
+                <tr><td><code>json</code></td><td>Serialized inner payload</td></tr>
+            </tbody>
+        </table>
+
+        <h3>PostMessage Payload (<code>crossguard_post</code>, <code>crossguard_update</code>)</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Field</th>
+                    <th>Source</th>
+                    <th>User-Controlled?</th>
+                    <th>Used On Receive For</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>post_id</code></td>
+                    <td><code>post.Id</code> (26-char Mattermost ID)</td>
+                    <td>No</td>
+                    <td>Post mapping (KV store key)</td>
+                </tr>
+                <tr>
+                    <td><code>root_id</code></td>
+                    <td><code>post.RootId</code></td>
+                    <td>No</td>
+                    <td>Thread parent resolution</td>
+                </tr>
+                <tr>
+                    <td><code>channel_id</code></td>
+                    <td><code>post.ChannelId</code></td>
+                    <td>No</td>
+                    <td>Not used directly (name-based routing)</td>
+                </tr>
+                <tr>
+                    <td><code>channel_name</code></td>
+                    <td><code>channel.Name</code></td>
+                    <td>Indirectly (admin-set)</td>
+                    <td><strong>Routing: <code>GetChannelByName()</code></strong></td>
+                </tr>
+                <tr>
+                    <td><code>team_id</code></td>
+                    <td><code>channel.TeamId</code></td>
+                    <td>No</td>
+                    <td>Not used directly</td>
+                </tr>
+                <tr>
+                    <td><code>team_name</code></td>
+                    <td><code>team.Name</code></td>
+                    <td>Indirectly (admin-set)</td>
+                    <td><strong>Routing: <code>GetTeamByName()</code> or rewrite lookup</strong></td>
+                </tr>
+                <tr>
+                    <td><code>user_id</code></td>
+                    <td><code>post.UserId</code></td>
+                    <td>No</td>
+                    <td>Not used on receive</td>
+                </tr>
+                <tr>
+                    <td><code>username</code></td>
+                    <td><code>user.Username</code></td>
+                    <td>Yes (users choose usernames)</td>
+                    <td><strong>User resolution: <code>resolveInboundUser()</code></strong></td>
+                </tr>
+                <tr>
+                    <td><code>message</code></td>
+                    <td><code>post.Message</code></td>
+                    <td><strong>Yes</strong> (full post content)</td>
+                    <td>Post body text</td>
+                </tr>
+                <tr>
+                    <td><code>create_at</code></td>
+                    <td><code>post.CreateAt</code></td>
+                    <td>No</td>
+                    <td>Not used on receive</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>DeleteMessage Payload (<code>crossguard_delete</code>)</h3>
+        <p>Fields: <code>post_id</code>, <code>channel_id</code>, <code>channel_name</code>, <code>team_id</code>, <code>team_name</code></p>
+
+        <h3>ReactionMessage Payload (<code>crossguard_reaction_add</code>, <code>crossguard_reaction_remove</code>)</h3>
+        <p>All PostMessage fields except <code>message</code>, <code>root_id</code>, <code>create_at</code>; adds <code>emoji_name</code>.</p>
+
+        <h3>Data Intentionally Excluded from Relay</h3>
+        <div class="alert alert-tip">
+            <p class="alert-title">Good security hygiene</p>
+            <p>
+                The following data is intentionally excluded from the relay envelope: file attachments
+                (<code>post.FileIds</code>), post properties (<code>post.Props</code>, except the internal
+                <code>crossguard_relayed</code> flag), user metadata (email, profile image, custom fields),
+                channel purpose/header, hashtags, pinned status, edit history, and interactive message
+                elements (buttons, menus).
+            </p>
+        </div>
+
+        <!-- Section 4: Threat Analysis -->
+        <h2>Threat Analysis (STRIDE)</h2>
+
+        <p>
+            Each threat is identified by a unique ID, categorized by STRIDE, and assessed for severity.
+            Code references point to the specific source files where the behavior occurs.
+        </p>
+
+        <!-- 4.1 Spoofing -->
+        <h3>Spoofing</h3>
+
+        <h4 id="t-spoof-1">T-SPOOF-1: Username Impersonation via Username Lookup</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
+                <tr><td>Description</td><td>When <code>UsernameLookup</code> is enabled (default: <code>true</code>), <code>resolveInboundUser()</code> in <code>sync_user.go</code> looks up a local user by the <code>username</code> field from the inbound message. If a match is found, the relayed post is created under that real local user's ID. An attacker controlling the remote Mattermost instance (or with NATS write access) can forge messages that appear to come from any local user whose username they know.</td></tr>
+                <tr><td>Code Path</td><td><code>inbound.go</code> calls <code>resolveInboundUser()</code>, which calls <code>p.API.GetUserByUsername(username)</code> in <code>sync_user.go</code>. If found and not a sync user, returns the real user ID.</td></tr>
+                <tr><td>Mitigation</td><td>
+                    <ol>
+                        <li>Disable <code>UsernameLookup</code> in plugin settings to force all inbound messages through synthetic sync users (e.g., <code>alice.relay-from-a</code>). Sync users are visually distinguishable by their <code>LastName</code> field showing <code>(via connName)</code>.</li>
+                        <li>Restrict NATS server network access to only authorized Mattermost servers using IPsec, firewall rules, or network segmentation. Configure NATS ACLs so only authorized Mattermost server clients can publish to <code>crossguard.*</code> subjects.</li>
+                    </ol>
+                </td></tr>
+                <tr><td>Residual Risk</td><td>When <code>UsernameLookup</code> is enabled, impersonation remains possible from a compromised but network-authorized Mattermost server. The combination of network-level restrictions and NATS ACLs significantly reduces the attack surface compared to an open NATS bus.</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-spoof-2">T-SPOOF-2: NATS Message Injection (No Per-Message Authentication)</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
+                <tr><td>Description</td><td>The NATS envelope (<code>model/message.go:Message</code>) contains no cryptographic signature, HMAC, or message authentication code. Any entity with publish access to the NATS subject can inject arbitrary messages that the inbound handler will process as legitimate.</td></tr>
+                <tr><td>Code Path</td><td><code>inbound.go</code> calls <code>model.UnmarshalMessage(msg.Data)</code> with no signature verification. The deserialized envelope is dispatched directly to handlers.</td></tr>
+                <tr><td>Mitigation</td><td>
+                    <ol>
+                        <li>TLS encryption (<code>nats.go</code>, min TLS 1.2) protects against passive eavesdropping. NATS authentication (token or credentials) restricts who can connect.</li>
+                        <li>Restrict NATS server network access to only authorized Mattermost servers using IPsec, firewall rules, or network segmentation. Configure NATS ACLs so only authorized Mattermost server clients can publish to <code>crossguard.*</code> subjects.</li>
+                    </ol>
+                </td></tr>
+                <tr><td>Residual Risk</td><td>A compromised but network-authorized Mattermost server with valid NATS credentials can still inject messages. No end-to-end integrity verification exists, but the combination of network-level restrictions and NATS ACLs significantly limits the attack surface.</td></tr>
+            </tbody>
+        </table>
+
+        <!-- 4.2 Tampering -->
+        <h3>Tampering</h3>
+
+        <h4 id="t-tamp-1">T-TAMP-1: Unauthorized Post Edit Propagation</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
+                <tr><td>Description</td><td><code>handleInboundUpdate()</code> in <code>inbound.go</code> looks up a local post by remote post ID mapping and replaces its <code>Message</code> field. There is no verification that the update came from the original author or that the remote user had edit permissions.</td></tr>
+                <tr><td>Code Path</td><td><code>inbound.go</code> retrieves mapping, sets <code>existing.Message = postMsg.Message</code>, calls <code>UpdatePost()</code>.</td></tr>
+                <tr><td>Mitigation</td><td>Post mapping keys (<code>pm-{connName}-{remotePostId}</code>) use connection-scoped namespaces, limiting edits to the connection that created the original post. The remote Mattermost server enforces its own edit permissions before relaying.</td></tr>
+                <tr><td>Residual Risk</td><td>If NATS credentials are compromised, fabricated update messages can modify any previously relayed post.</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-tamp-2">T-TAMP-2: Unauthorized Post Deletion</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
+                <tr><td>Description</td><td><code>handleInboundDelete()</code> in <code>inbound.go</code> deletes a local post based solely on the remote post ID in the NATS message. No author or permission verification.</td></tr>
+                <tr><td>Code Path</td><td><code>inbound.go</code> retrieves mapping, calls <code>DeletePost(localPostID)</code>.</td></tr>
+                <tr><td>Mitigation</td><td>Same connection-scoped namespace as edits. The deleting flag mechanism (<code>SetDeletingFlag</code>/<code>ClearDeletingFlag</code>) prevents delete loops but does not authenticate the delete request.</td></tr>
+                <tr><td>Residual Risk</td><td>Same as T-TAMP-1.</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-tamp-3">T-TAMP-3: Post Mapping Overwrite</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-member">LOW</span></td></tr>
+                <tr><td>Description</td><td><code>SetPostMapping()</code> in <code>inbound.go</code> stores <code>connName:remotePostId -&gt; localPostId</code>. If an attacker sends a new post with a previously-used remote post ID, the mapping is overwritten, causing future edits/deletes to target the wrong local post.</td></tr>
+                <tr><td>Mitigation</td><td>Post IDs are 26-character random strings (Mattermost <code>NewId()</code>), making collision unlikely without intentional targeting. Connection-scoped namespacing limits blast radius.</td></tr>
+            </tbody>
+        </table>
+
+        <!-- 4.3 Repudiation -->
+        <h3>Repudiation</h3>
+
+        <h4 id="t-repud-1">T-REPUD-1: No Audit Trail for Relayed Actions</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
+                <tr><td>Description</td><td>Relayed posts, edits, deletes, and reactions are created via the Mattermost Plugin API. While Mattermost logs post creation, there is no Cross Guard-specific audit log linking a local action back to the specific NATS message, remote server, or remote user that triggered it.</td></tr>
+                <tr><td>Mitigation</td><td>Plugin logs contain connection name, remote post IDs, and usernames at DEBUG/WARN level. Team init/teardown actions post bot announcements to <code>#town-square</code> with the acting user's name. The <code>crossguard_relayed</code> post property marks all inbound posts.</td></tr>
+                <tr><td>Residual Risk</td><td>Forensic reconstruction requires correlating logs across both Mattermost instances and the NATS server.</td></tr>
+            </tbody>
+        </table>
+
+        <!-- 4.4 Information Disclosure -->
+        <h3>Information Disclosure</h3>
+
+        <h4 id="t-info-1">T-INFO-1: Message Content Visible to NATS Server</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span> (in classified environments)</td></tr>
+                <tr><td>Description</td><td>TLS encrypts data in transit between plugin and NATS server, but the NATS server itself processes messages in cleartext. A compromised or malicious NATS server operator can read all relayed message content.</td></tr>
+                <tr><td>Mitigation</td><td>
+                    <ol>
+                        <li>Use a dedicated, locally-administered NATS server. Enable TLS with mutual certificate authentication (<code>client_cert</code>/<code>client_key</code> in <code>nats.go</code>). For CDS deployments, the NATS server should be within a controlled enclave.</li>
+                        <li>Restrict NATS server network access to only authorized Mattermost servers using IPsec, firewall rules, or network segmentation. Configure NATS ACLs so only authorized Mattermost server clients can subscribe to <code>crossguard.*</code> subjects.</li>
+                    </ol>
+                </td></tr>
+                <tr><td>Residual Risk</td><td>No application-layer encryption. The NATS server still sees plaintext payloads, but network-level restrictions and ACLs limit exposure to only authorized infrastructure.</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-info-2">T-INFO-2: Team/Channel Topology Leakage</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-member">LOW</span></td></tr>
+                <tr><td>Description</td><td>NATS envelopes contain <code>team_name</code> and <code>channel_name</code> from the source server. An entity with NATS subscribe access learns the team and channel structure of the sending server.</td></tr>
+                <tr><td>Mitigation</td><td>Use dedicated NATS subjects per connection pair. Restrict NATS ACLs.</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-info-3">T-INFO-3: Status Endpoint Data Exposure</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-member">LOW</span></td></tr>
+                <tr><td>Description</td><td><code>GET /api/v1/teams/{team_id}/status</code> and <code>GET /api/v1/channels/{channel_id}/status</code> are accessible to any team/channel member (not just admins). These reveal connection names, directions, and remote team name rewrites.</td></tr>
+                <tr><td>Mitigation</td><td>Global status (<code>GET /api/v1/status</code>) is restricted to System Admins. Connection credentials (tokens, passwords, cert paths) are redacted from all status responses.</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-info-4">T-INFO-4: NATS Credentials in Plugin Configuration</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-member">LOW</span></td></tr>
+                <tr><td>Description</td><td>NATS tokens and passwords are stored as plaintext strings in the plugin settings JSON (<code>configuration.go</code>). Any System Admin can view them in the System Console.</td></tr>
+                <tr><td>Mitigation</td><td>Only System Admins can access plugin configuration. Credentials are redacted in status API responses.</td></tr>
+            </tbody>
+        </table>
+
+        <!-- 4.5 Denial of Service -->
+        <h3>Denial of Service</h3>
+
+        <h4 id="t-dos-1">T-DOS-1: Inbound Message Flood</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
+                <tr><td>Description</td><td>The inbound handler uses a semaphore of 50 concurrent goroutines (<code>plugin.go</code> <code>relaySem</code>). An attacker flooding the NATS subject can fill the semaphore, causing legitimate messages to be dropped with "Relay semaphore full, dropping inbound message" warnings.</td></tr>
+                <tr><td>Code Path</td><td><code>inbound.go</code>, semaphore channel check with <code>default:</code> drop.</td></tr>
+                <tr><td>Mitigation</td><td>The semaphore prevents unbounded resource consumption. NATS server rate limiting can be configured externally. Connection authentication limits who can publish.</td></tr>
+                <tr><td>Residual Risk</td><td>No per-connection or per-subject rate limiting within the plugin itself.</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-dos-2">T-DOS-2: Outbound Retry Amplification</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-member">LOW</span></td></tr>
+                <tr><td>Description</td><td><code>publishToOutbound()</code> in <code>nats.go</code> retries failed publishes 3 times with exponential backoff (500ms, 1s, 2s). If NATS is unreachable, each outbound message blocks a goroutine for up to ~3.5 seconds.</td></tr>
+                <tr><td>Mitigation</td><td>Context cancellation (<code>ctx.Done()</code>) allows graceful shutdown. Messages are dropped (not queued) after retry exhaustion.</td></tr>
+            </tbody>
+        </table>
+
+        <!-- 4.6 Elevation of Privilege -->
+        <h3>Elevation of Privilege</h3>
+
+        <h4 id="t-priv-1">T-PRIV-1: Connection Management by Non-Admins</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
+                <tr><td>Description</td><td>By default (<code>RestrictToSystemAdmins=false</code>), Team Admins can link/unlink NATS connections to their teams, and Channel Admins can manage channel connections. A compromised or rogue Team Admin could enable relay on channels without broader organizational approval.</td></tr>
+                <tr><td>Code Path</td><td><code>command.go</code> (<code>isTeamAdminOrSystemAdmin</code>) checks <code>RestrictToSystemAdmins</code>.</td></tr>
+                <tr><td>Mitigation</td><td>Enable <code>RestrictToSystemAdmins</code> setting to lock all connection management to System Admins only. Inbound connections require explicit Accept via admin prompts before messages flow.</td></tr>
+                <tr><td>Residual Risk</td><td>With the setting disabled, the blast radius is limited to the Team Admin's own team.</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-priv-2">T-PRIV-2: Sync User Auto-Membership</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
+                <tr><td>Description</td><td><code>ensureMembership()</code> in <code>sync_user.go</code> automatically adds sync users (and real users when username lookup is enabled) to teams and channels as messages arrive. This bypasses normal Mattermost invitation/join workflows.</td></tr>
+                <tr><td>Code Path</td><td><code>sync_user.go</code> calls <code>ensureMembership(user.Id, teamID, channelID)</code>, which calls <code>CreateTeamMember</code> and <code>AddChannelMember</code>.</td></tr>
+                <tr><td>Mitigation</td><td>Only affects channels/teams that have been explicitly linked to an inbound connection by an admin. The <code>system_user</code> role assigned to sync users provides no admin privileges.</td></tr>
+            </tbody>
+        </table>
+
+        <!-- Section 5: Relay Loop Prevention -->
+        <h2>Relay Loop Prevention</h2>
+
+        <p>
+            Loop prevention is critical for CDS operation. Cross Guard uses multiple independent
+            mechanisms to ensure a relayed message is never re-relayed back to its source.
+        </p>
+
+        <h3>Primary: <code>crossguard_relayed</code> Property</h3>
+        <ul>
+            <li>Inbound posts are created with <code>post.AddProp("crossguard_relayed", true)</code> in <code>inbound.go</code></li>
+            <li>Outbound hooks check <code>post.GetProp("crossguard_relayed") != nil</code> in <code>hooks.go</code> and skip if present</li>
+            <li>This prevents a relayed post from being re-relayed back to the source</li>
+        </ul>
+
+        <h3>Secondary: Bot User Filtering</h3>
+        <ul>
+            <li>All outbound hooks check <code>post.UserId == p.botUserID</code> in <code>hooks.go</code> and skip bot posts</li>
+            <li>Bot announcements (init/teardown messages) never relay</li>
+        </ul>
+
+        <h3>Tertiary: Sync User Filtering for Reactions</h3>
+        <ul>
+            <li><code>hooks.go</code> checks <code>user.Position == "crossguard-sync"</code> to prevent sync user reactions from relaying back</li>
+        </ul>
+
+        <h3>Delete-Specific: Deleting Flag</h3>
+        <ul>
+            <li><code>inbound.go</code> sets <code>SetDeletingFlag(localPostID)</code> before calling <code>DeletePost</code></li>
+            <li><code>hooks.go</code> checks <code>IsDeletingFlagSet(post.Id)</code> in <code>MessageHasBeenDeleted</code> hook</li>
+            <li>If set, the delete is not re-relayed, preventing infinite delete loops</li>
+            <li>Flag is cleared after deletion completes</li>
+        </ul>
+
+        <!-- Section 6: NATS Transport Security -->
+        <h2>NATS Transport Security</h2>
+
+        <h3>TLS Configuration</h3>
+        <ul>
+            <li>Minimum TLS 1.2 enforced (<code>tls.VersionTLS12</code>)</li>
+            <li>Optional mutual TLS: client certificate + key pair</li>
+            <li>Optional CA certificate for server verification</li>
+            <li>Both <code>client_cert</code> and <code>client_key</code> must be provided together (validated)</li>
+        </ul>
+
+        <h3>Authentication Methods</h3>
+        <table>
+            <thead>
+                <tr><th>Method</th><th>Configuration</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><code>none</code></td><td>No additional fields</td><td>No NATS authentication</td></tr>
+                <tr><td><code>token</code></td><td><code>token</code> field</td><td>NATS token-based auth</td></tr>
+                <tr><td><code>credentials</code></td><td><code>username</code> + <code>password</code></td><td>Username/password auth</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Connection Resilience</h3>
+        <ul>
+            <li>Persistent connections with unlimited reconnects (<code>natsMaxReconnects = -1</code>)</li>
+            <li>2-second reconnect wait</li>
+            <li>Disconnect/reconnect event logging</li>
+        </ul>
+
+        <h3>Recommendations by Deployment Sensitivity</h3>
+        <table>
+            <thead>
+                <tr><th>Deployment</th><th>TLS</th><th>Auth</th><th>Mutual TLS</th><th>Dedicated NATS</th><th>NATS ACLs</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Development</td>
+                    <td>Optional</td>
+                    <td>Optional</td>
+                    <td>No</td>
+                    <td>No</td>
+                    <td>No</td>
+                </tr>
+                <tr>
+                    <td>Production (standard)</td>
+                    <td>Required</td>
+                    <td>Token or credentials</td>
+                    <td>Recommended</td>
+                    <td>Recommended</td>
+                    <td>Recommended</td>
+                </tr>
+                <tr>
+                    <td>CDS (classified)</td>
+                    <td>Required</td>
+                    <td>Credentials</td>
+                    <td>Required</td>
+                    <td>Required</td>
+                    <td>Required</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Section 7: Inbound Connection Acceptance Flow -->
+        <h2>Inbound Connection Acceptance Flow</h2>
+
+        <p>
+            The prompt-based acceptance workflow prevents unauthorized inbound relay. No messages flow
+            until an admin explicitly accepts the connection at both the team and channel level.
+        </p>
+
+        <div class="diagram-box">
+<pre>Inbound message arrives
+        |
+        v
+  Team linked? ----No----&gt; Post Accept/Block prompt to #town-square
+        |                         |
+       Yes              Admin clicks Accept
+        |                         |
+        v                         v
+  Channel linked? --No--&gt; Post Accept/Block prompt to channel
+        |                         |
+       Yes              Admin clicks Accept
+        |                         |
+        v                         v
+  Resolve user, create post      Link channel, process message</pre>
+        </div>
+
+        <ol>
+            <li>Inbound message arrives for an unlinked team</li>
+            <li><code>handleUnlinkedInbound()</code> posts interactive prompt to <code>#town-square</code> with Accept/Block buttons</li>
+            <li>Team Admin or System Admin clicks Accept (calls <code>POST /api/v1/prompt/accept</code>)</li>
+            <li>Handler verifies <code>isTeamAdminOrSystemAdmin()</code> permission</li>
+            <li>Connection is linked to team, prompt deleted</li>
+            <li>Same flow repeats at channel level</li>
+            <li>Blocked prompts can be cleared with <code>/crossguard reset-prompt</code></li>
+        </ol>
+
+        <!-- Section 8: Deployment Recommendations for CDS -->
+        <h2>Deployment Recommendations for CDS Environments</h2>
+
+        <div class="alert alert-warning">
+            <p class="alert-title">Hardened Configuration Checklist</p>
+            <p>
+                The following settings are recommended for Cross Guard deployments in classified or
+                sensitive environments.
+            </p>
+        </div>
+
+        <ol class="steps">
+            <li>
+                <strong>Enable <code>RestrictToSystemAdmins</code></strong>: Lock all connection
+                management to System Admins.
+            </li>
+            <li>
+                <strong>Disable <code>UsernameLookup</code></strong>: Force all inbound messages
+                through sync users to prevent impersonation.
+            </li>
+            <li>
+                <strong>Enable TLS with mutual authentication</strong>: Use client certificates on
+                all NATS connections.
+            </li>
+            <li>
+                <strong>Dedicated NATS server</strong>: Do not share the NATS server with other
+                applications.
+            </li>
+            <li>
+                <strong>NATS ACLs</strong>: Restrict publish/subscribe permissions per subject
+                per client.
+            </li>
+            <li>
+                <strong>Separate subjects per direction</strong>: Use different NATS subjects for
+                each relay direction (e.g., <code>crossguard.a-to-b</code> and
+                <code>crossguard.b-to-a</code>) to prevent echo.
+            </li>
+            <li>
+                <strong>Network segmentation</strong>: Place NATS server in a controlled network
+                segment between the two Mattermost instances.
+            </li>
+            <li>
+                <strong>Monitor plugin logs</strong>: Watch for "Relay semaphore full",
+                "Unknown inbound message type", and failed resolve warnings as indicators of
+                anomalous activity.
+            </li>
+            <li>
+                <strong>Review sync users periodically</strong>: Audit users with
+                <code>Position="crossguard-sync"</code> to detect unexpected user creation.
+            </li>
+            <li>
+                <strong>Use <code>crossguard.</code> subject prefix enforcement</strong>: All
+                subjects must start with <code>crossguard.</code> (validated in
+                <code>configuration.go</code>), preventing accidental subscription to unrelated
+                NATS traffic.
+            </li>
+        </ol>
+
+        <!-- Section 9: Threat Summary Matrix -->
+        <h2>Threat Summary Matrix</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Threat</th>
+                    <th>Category</th>
+                    <th>Severity</th>
+                    <th>Mitigated?</th>
+                    <th>Control</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><a href="#t-spoof-1">T-SPOOF-1</a></td>
+                    <td>Username impersonation</td>
+                    <td>Spoofing</td>
+                    <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
+                    <td>Partial</td>
+                    <td>Disable <code>UsernameLookup</code> + NATS network/ACL restrictions</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-spoof-2">T-SPOOF-2</a></td>
+                    <td>NATS message injection</td>
+                    <td>Spoofing</td>
+                    <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
+                    <td>Partial</td>
+                    <td>TLS + NATS auth + network/ACL restrictions</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-tamp-1">T-TAMP-1</a></td>
+                    <td>Unauthorized edit propagation</td>
+                    <td>Tampering</td>
+                    <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
+                    <td>Partial</td>
+                    <td>Connection-scoped mapping</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-tamp-2">T-TAMP-2</a></td>
+                    <td>Unauthorized delete propagation</td>
+                    <td>Tampering</td>
+                    <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
+                    <td>Partial</td>
+                    <td>Connection-scoped mapping</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-tamp-3">T-TAMP-3</a></td>
+                    <td>Post mapping overwrite</td>
+                    <td>Tampering</td>
+                    <td><span class="permission-tag permission-member">LOW</span></td>
+                    <td>By design</td>
+                    <td>Random 26-char IDs</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-repud-1">T-REPUD-1</a></td>
+                    <td>No audit trail</td>
+                    <td>Repudiation</td>
+                    <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
+                    <td>Partial</td>
+                    <td>Plugin logs + bot announcements</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-info-1">T-INFO-1</a></td>
+                    <td>NATS sees cleartext</td>
+                    <td>Info Disclosure</td>
+                    <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
+                    <td>Partial</td>
+                    <td>Dedicated NATS + mTLS + network/ACL restrictions</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-info-2">T-INFO-2</a></td>
+                    <td>Topology leakage</td>
+                    <td>Info Disclosure</td>
+                    <td><span class="permission-tag permission-member">LOW</span></td>
+                    <td>Partial</td>
+                    <td>Dedicated subjects + ACLs</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-info-3">T-INFO-3</a></td>
+                    <td>Status data to members</td>
+                    <td>Info Disclosure</td>
+                    <td><span class="permission-tag permission-member">LOW</span></td>
+                    <td>By design</td>
+                    <td>Credentials redacted</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-info-4">T-INFO-4</a></td>
+                    <td>Config credentials</td>
+                    <td>Info Disclosure</td>
+                    <td><span class="permission-tag permission-member">LOW</span></td>
+                    <td>By design</td>
+                    <td>System Admin only</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-dos-1">T-DOS-1</a></td>
+                    <td>Inbound message flood</td>
+                    <td>DoS</td>
+                    <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
+                    <td>Partial</td>
+                    <td>Semaphore (50) + NATS rate limiting</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-dos-2">T-DOS-2</a></td>
+                    <td>Outbound retry amplification</td>
+                    <td>DoS</td>
+                    <td><span class="permission-tag permission-member">LOW</span></td>
+                    <td>By design</td>
+                    <td>3 retries, context cancellation</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-priv-1">T-PRIV-1</a></td>
+                    <td>Non-admin connection mgmt</td>
+                    <td>Privilege</td>
+                    <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
+                    <td>Config option</td>
+                    <td>Enable <code>RestrictToSystemAdmins</code></td>
+                </tr>
+                <tr>
+                    <td><a href="#t-priv-2">T-PRIV-2</a></td>
+                    <td>Sync user auto-membership</td>
+                    <td>Privilege</td>
+                    <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
+                    <td>By design</td>
+                    <td>Limited to linked channels</td>
+                </tr>
+            </tbody>
+        </table>
+    </main>
+</div>
+</body>
+</html>

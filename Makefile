@@ -888,6 +888,15 @@ security-gate:
 	@echo "Security gate passed."
 
 # ====================================================================================
+# PDF Generation
+# ====================================================================================
+
+## Generate PDF documentation from help HTML pages
+.PHONY: generate-pdfs
+generate-pdfs: webapp/node_modules
+	cd webapp && NODE_PATH=node_modules node ../scripts/generate-pdfs.js
+
+# ====================================================================================
 # Help
 # ====================================================================================
 

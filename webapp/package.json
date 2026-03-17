@@ -45,6 +45,7 @@
     "eslint-plugin-react": "7.37.5",
     "eslint-plugin-react-hooks": "5.2.0",
     "file-loader": "6.2.0",
+    "pdf-lib": "1.17.1",
     "react-dom": "18.2.0",
     "sass": "1.97.3",
     "sass-loader": "16.0.7",

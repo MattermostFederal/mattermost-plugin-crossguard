@@ -5,11 +5,12 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
 // isChannelRelayEnabled checks if a channel's relay is active and returns
 // the channel, team, and the team's linked connection names.
-func (p *Plugin) isChannelRelayEnabled(channelID string) (*mmModel.Channel, *mmModel.Team, []string) {
+func (p *Plugin) isChannelRelayEnabled(channelID string) (*mmModel.Channel, *mmModel.Team, []store.TeamConnection) {
 	channelConns, err := p.kvstore.GetChannelConnections(channelID)
 	if err != nil {
 		p.API.LogError("Failed to check channel connections", "channel_id", channelID, "error", err.Error())
@@ -43,7 +44,7 @@ func (p *Plugin) isChannelRelayEnabled(channelID string) (*mmModel.Channel, *mmM
 	return channel, team, channelConns
 }
 
-func (p *Plugin) relayToOutbound(data []byte, connNames []string, logContext string) {
+func (p *Plugin) relayToOutbound(data []byte, connNames []store.TeamConnection, logContext string) {
 	select {
 	case p.relaySem <- struct{}{}:
 	default:

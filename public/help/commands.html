@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slash Command Reference - Cross Guard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="layout">
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <h2>Cross Guard</h2>
+            <span class="version">Plugin Documentation</span>
+        </div>
+        <nav>
+            <span class="nav-section">Documentation</span>
+            <a href="help.html">Overview</a>
+            <a href="commands.html" class="active">Slash Commands</a>
+            <a href="admin.html">Admin Configuration</a>
+            <a href="api.html">REST API</a>
+            <a href="threatmodel.html">Threat Model</a>
+            <a href="whitepaper.html">Whitepaper</a>
+        </nav>
+    </aside>
+
+    <main class="content">
+        <div class="breadcrumb">
+            <a href="help.html">Docs</a>
+            <span class="separator">/</span>
+            Slash Commands
+        </div>
+
+        <h1>Slash Command Reference</h1>
+        <p class="tagline">All commands for managing Cross Guard relay connections</p>
+
+        <!-- Overview -->
+        <h2>Overview</h2>
+        <ul>
+            <li>All commands use the trigger <code>/crossguard</code></li>
+            <li>Autocomplete is enabled (hints appear as you type)</li>
+            <li>Commands return ephemeral responses (only visible to the user who ran them)</li>
+            <li>When multiple connections exist and no name is specified, an interactive selection dialog appears</li>
+        </ul>
+
+        <!-- Quick Reference -->
+        <h2>Quick Reference</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Command</th>
+                    <th>Description</th>
+                    <th>Permission</th>
+                    <th>Arguments</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>init-team [name]</code></td>
+                    <td>Link connection to team</td>
+                    <td><span class="permission-tag permission-teamadmin">Team Admin+</span></td>
+                    <td>Optional connection name</td>
+                </tr>
+                <tr>
+                    <td><code>init-channel [name]</code></td>
+                    <td>Link connection to channel</td>
+                    <td><span class="permission-tag permission-channeladmin">Channel Admin+</span></td>
+                    <td>Optional connection name</td>
+                </tr>
+                <tr>
+                    <td><code>teardown-team [name]</code></td>
+                    <td>Unlink connection from team</td>
+                    <td><span class="permission-tag permission-teamadmin">Team Admin+</span></td>
+                    <td>Optional connection name</td>
+                </tr>
+                <tr>
+                    <td><code>teardown-channel [name]</code></td>
+                    <td>Unlink connection from channel</td>
+                    <td><span class="permission-tag permission-channeladmin">Channel Admin+</span></td>
+                    <td>Optional connection name</td>
+                </tr>
+                <tr>
+                    <td><code>reset-prompt &lt;name&gt;</code></td>
+                    <td>Clear team connection prompt</td>
+                    <td><span class="permission-tag permission-teamadmin">Team Admin+</span></td>
+                    <td>Required connection name</td>
+                </tr>
+                <tr>
+                    <td><code>reset-channel-prompt &lt;name&gt;</code></td>
+                    <td>Clear channel connection prompt</td>
+                    <td><span class="permission-tag permission-teamadmin">Team Admin+</span></td>
+                    <td>Required connection name</td>
+                </tr>
+                <tr>
+                    <td><code>rewrite-team [name] [team]</code></td>
+                    <td>Set/clear team name rewrite</td>
+                    <td><span class="permission-tag permission-teamadmin">Team Admin+</span></td>
+                    <td>See details</td>
+                </tr>
+                <tr>
+                    <td><code>status</code></td>
+                    <td>Show relay status</td>
+                    <td><span class="permission-tag permission-member">Any Member</span></td>
+                    <td>None</td>
+                </tr>
+                <tr>
+                    <td><code>help</code></td>
+                    <td>Show help</td>
+                    <td><span class="permission-tag permission-member">Any Member</span></td>
+                    <td>None</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- init-team -->
+        <h2 id="init-team">/crossguard init-team [connection-name]</h2>
+
+        <p>
+            Link a NATS connection to the current team, enabling cross-domain relay for this team.
+        </p>
+
+        <table class="field-table">
+            <tbody>
+                <tr><td>Permission</td><td>Team Admin or System Admin (blocked by <code>RestrictToSystemAdmins</code>)</td></tr>
+                <tr><td>Arguments</td><td><code>connection-name</code> (optional). The display key of the connection (e.g., <code>outbound:relay-to-b</code>).</td></tr>
+            </tbody>
+        </table>
+
+        <h4>Behavior</h4>
+        <ul>
+            <li>If omitted and exactly one connection exists in config, auto-selects it</li>
+            <li>If omitted and multiple connections exist, opens an interactive selection dialog with all configured connections</li>
+            <li>If specified but not found, returns error listing available connections</li>
+            <li>If connection already linked to this team, returns "already linked" message</li>
+            <li>On first connection linked to team, adds team to initialized teams list</li>
+            <li>Posts announcement in <code>#town-square</code>: "Cross Guard connection <code>outbound:relay-to-b</code> linked to this team by @username"</li>
+        </ul>
+
+        <h4>Examples</h4>
+<pre><code>/crossguard init-team
+/crossguard init-team outbound:relay-to-b</code></pre>
+
+        <h4>Error Cases</h4>
+        <ul>
+            <li><code>No NATS connections configured. Add connections in the System Console first.</code></li>
+            <li><code>Connection not found: xyz. Available connections: outbound:relay-to-b, inbound:relay-from-a</code></li>
+        </ul>
+
+        <!-- init-channel -->
+        <h2 id="init-channel">/crossguard init-channel [connection-name]</h2>
+
+        <p>
+            Link a NATS connection to the current channel. The team must be initialized first with
+            the same connection.
+        </p>
+
+        <table class="field-table">
+            <tbody>
+                <tr><td>Permission</td><td>Channel Admin, Team Admin, or System Admin</td></tr>
+                <tr><td>Arguments</td><td><code>connection-name</code> (optional, same auto-select/dialog behavior as init-team)</td></tr>
+            </tbody>
+        </table>
+
+        <h4>Behavior</h4>
+        <ul>
+            <li>Validates team is initialized with this connection first. If the team has the connection but the channel doesn't, it auto-initializes the team.</li>
+            <li>If connection not linked at team level, returns: <code>Connection X is not linked to this team. Run /crossguard init-team first.</code></li>
+            <li>Adds link emoji prefix to channel header (visible indicator)</li>
+            <li>Publishes WebSocket event <code>channel_connections_updated</code> to update UI indicators</li>
+            <li>Posts announcement in the channel</li>
+        </ul>
+
+        <h4>Examples</h4>
+<pre><code>/crossguard init-channel
+/crossguard init-channel outbound:relay-to-b</code></pre>
+
+        <!-- teardown-team -->
+        <h2 id="teardown-team">/crossguard teardown-team [connection-name]</h2>
+
+        <p>Unlink a NATS connection from the current team.</p>
+
+        <table class="field-table">
+            <tbody>
+                <tr><td>Permission</td><td>Team Admin or System Admin</td></tr>
+                <tr><td>Arguments</td><td><code>connection-name</code> (optional). If omitted and multiple connections linked, opens dialog. If one linked, auto-selects.</td></tr>
+            </tbody>
+        </table>
+
+        <h4>Behavior</h4>
+        <ul>
+            <li>If no connections linked: <code>No connections are linked to this team.</code></li>
+            <li>If this was the last connection, removes team from initialized teams list</li>
+            <li>Posts announcement in <code>#town-square</code></li>
+        </ul>
+
+        <div class="alert alert-warning">
+            <p class="alert-title">Warning</p>
+            <p>
+                This command does NOT automatically teardown channel connections. Channels that still
+                have this connection linked become orphaned. Run <code>/crossguard teardown-channel</code>
+                in affected channels first.
+            </p>
+        </div>
+
+        <h4>Example</h4>
+<pre><code>/crossguard teardown-team outbound:relay-to-b</code></pre>
+
+        <!-- teardown-channel -->
+        <h2 id="teardown-channel">/crossguard teardown-channel [connection-name]</h2>
+
+        <p>Unlink a NATS connection from the current channel.</p>
+
+        <table class="field-table">
+            <tbody>
+                <tr><td>Permission</td><td>Channel Admin, Team Admin, or System Admin</td></tr>
+                <tr><td>Arguments</td><td><code>connection-name</code> (optional, same auto-select/dialog behavior)</td></tr>
+            </tbody>
+        </table>
+
+        <h4>Behavior</h4>
+        <ul>
+            <li>If no connections linked: <code>No connections are linked to this channel.</code></li>
+            <li>If this was the last connection on the channel, removes link emoji prefix from channel header</li>
+            <li>Publishes WebSocket event to update UI indicators</li>
+            <li>Posts announcement: "All relays for this channel are now inactive."</li>
+        </ul>
+
+        <!-- reset-prompt -->
+        <h2 id="reset-prompt">/crossguard reset-prompt &lt;connection-name&gt;</h2>
+
+        <p>
+            Clear a blocked or pending inbound connection prompt for the current team. After clearing,
+            a new prompt will appear on the next inbound message.
+        </p>
+
+        <table class="field-table">
+            <tbody>
+                <tr><td>Permission</td><td>Team Admin or System Admin</td></tr>
+                <tr><td>Arguments</td><td><code>connection-name</code> (required)</td></tr>
+            </tbody>
+        </table>
+
+        <h4>Behavior</h4>
+        <ul>
+            <li>Looks up prompt in KV store for this team + connection name</li>
+            <li>If no prompt found: <code>No prompt found for connection X on this team.</code></li>
+            <li>Deletes the prompt entry, allowing the system to create a fresh prompt on the next inbound message</li>
+        </ul>
+
+        <h4>Use Case</h4>
+        <p>An admin accidentally blocked an inbound connection and wants to re-evaluate it.</p>
+
+        <h4>Example</h4>
+<pre><code>/crossguard reset-prompt relay-from-a</code></pre>
+
+        <!-- reset-channel-prompt -->
+        <h2 id="reset-channel-prompt">/crossguard reset-channel-prompt &lt;connection-name&gt;</h2>
+
+        <p>
+            Clear a blocked or pending inbound connection prompt for the current channel. Same behavior
+            as <code>reset-prompt</code> but operates on channel-level prompts.
+        </p>
+
+        <table class="field-table">
+            <tbody>
+                <tr><td>Permission</td><td>Team Admin or System Admin</td></tr>
+                <tr><td>Arguments</td><td><code>connection-name</code> (required)</td></tr>
+            </tbody>
+        </table>
+
+        <h4>Example</h4>
+<pre><code>/crossguard reset-channel-prompt relay-from-a</code></pre>
+
+        <!-- rewrite-team -->
+        <h2 id="rewrite-team">/crossguard rewrite-team [connection-name] [remote-team-name]</h2>
+
+        <p>
+            Set or clear a remote team name rewrite for an inbound connection. When set, inbound
+            messages with the specified remote team name are routed to this team instead of requiring
+            a matching local team name.
+        </p>
+
+        <table class="field-table">
+            <tbody>
+                <tr><td>Permission</td><td>Team Admin or System Admin</td></tr>
+                <tr><td>Arguments</td><td>
+                    <code>connection-name</code> (required if multiple inbound connections linked, optional if exactly one).<br>
+                    <code>remote-team-name</code> (optional; omit to clear the rewrite).
+                </td></tr>
+            </tbody>
+        </table>
+
+        <h4>Behavior</h4>
+        <ul>
+            <li>Only works with inbound connections. If no inbound connections linked: <code>No inbound connections are linked to this team.</code></li>
+            <li>Sets a rewrite index in the KV store: <code>connection-name + remote-team-name -&gt; local team ID</code></li>
+            <li>Returns HTTP 409 (Conflict) if the rewrite index already exists for another team</li>
+            <li>Posts audit message in <code>#town-square</code> showing who made the change</li>
+            <li>When clearing: removes the rewrite index entry and clears <code>RemoteTeamName</code> from the team connection metadata</li>
+        </ul>
+
+        <h4>Examples</h4>
+<pre><code>/crossguard rewrite-team relay-from-a remote-team-alpha
+/crossguard rewrite-team relay-from-a</code></pre>
+
+        <!-- status -->
+        <h2 id="status">/crossguard status</h2>
+
+        <p>Show Cross Guard initialization status for the current team and channel.</p>
+
+        <table class="field-table">
+            <tbody>
+                <tr><td>Permission</td><td>Any team member</td></tr>
+                <tr><td>Arguments</td><td>None</td></tr>
+            </tbody>
+        </table>
+
+        <h4>Output Varies by Role</h4>
+        <ul>
+            <li>
+                <strong>Regular users / Team Admins:</strong> Current channel status (relay enabled yes/no),
+                current team status (initialized yes/no), team connections list, channel connections list.
+            </li>
+            <li>
+                <strong>System Admins:</strong> Global overview with all initialized teams (table with display
+                name, team ID, team name, linked connections), all configured NATS connections (table with name,
+                direction, address, auth type, subject), plus current channel status. Warnings shown if
+                connection configuration cannot be parsed.
+            </li>
+        </ul>
+
+        <!-- help -->
+        <h2 id="help">/crossguard help</h2>
+
+        <p>Show inline help for all commands. No arguments or special permissions required.</p>
+
+        <!-- Connection Selection Dialog -->
+        <h2>Connection Selection Dialog</h2>
+
+        <p>
+            When a command needs a connection name and multiple connections are available, an interactive
+            dialog opens automatically.
+        </p>
+
+        <ul>
+            <li>Dialog title varies: "Link Connection to Team", "Unlink Connection from Team", etc.</li>
+            <li>Dropdown shows all available connections in <code>direction:name</code> format</li>
+            <li>Dialog submits to <code>/plugins/crossguard/api/v1/dialog/select-connection</code></li>
+            <li>State encodes the action and target: <code>init-team:{teamID}</code>, <code>init-channel:{channelID}</code>, etc.</li>
+        </ul>
+    </main>
+</div>
+</body>
+</html>

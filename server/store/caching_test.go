@@ -12,39 +12,42 @@ import (
 )
 
 type mockKVStore struct {
-	getTeamConnectionsFn       func(string) ([]string, error)
-	setTeamConnectionsFn       func(string, []string) error
+	getTeamConnectionsFn       func(string) ([]TeamConnection, error)
+	setTeamConnectionsFn       func(string, []TeamConnection) error
 	deleteTeamConnectionsFn    func(string) error
 	isTeamInitializedFn        func(string) (bool, error)
-	addTeamConnectionFn        func(string, string) error
-	removeTeamConnectionFn     func(string, string) error
+	addTeamConnectionFn        func(string, TeamConnection) error
+	removeTeamConnectionFn     func(string, TeamConnection) error
 	getInitializedTeamIDsFn    func() ([]string, error)
 	addInitializedTeamIDFn     func(string) error
 	removeInitializedTeamIDFn  func(string) error
-	getChannelConnectionsFn    func(string) ([]string, error)
-	setChannelConnectionsFn    func(string, []string) error
+	getChannelConnectionsFn    func(string) ([]TeamConnection, error)
+	setChannelConnectionsFn    func(string, []TeamConnection) error
 	deleteChannelConnectionsFn func(string) error
 	isChannelInitializedFn     func(string) (bool, error)
-	addChannelConnectionFn     func(string, string) error
-	removeChannelConnectionFn  func(string, string) error
+	addChannelConnectionFn     func(string, TeamConnection) error
+	removeChannelConnectionFn  func(string, TeamConnection) error
 	setPostMappingFn           func(string, string, string) error
 	getPostMappingFn           func(string, string) (string, error)
 	deletePostMappingFn        func(string, string) error
 	setDeletingFlagFn          func(string) error
 	isDeletingFlagSetFn        func(string) (bool, error)
 	clearDeletingFlagFn        func(string) error
+	getTeamRewriteIndexFn      func(string, string) (string, error)
+	setTeamRewriteIndexFn      func(string, string, string) error
+	deleteTeamRewriteIndexFn   func(string, string) error
 }
 
-func (m *mockKVStore) GetTeamConnections(teamID string) ([]string, error) {
+func (m *mockKVStore) GetTeamConnections(teamID string) ([]TeamConnection, error) {
 	if m.getTeamConnectionsFn != nil {
 		return m.getTeamConnectionsFn(teamID)
 	}
-	return []string{}, nil
+	return []TeamConnection{}, nil
 }
 
-func (m *mockKVStore) SetTeamConnections(teamID string, connNames []string) error {
+func (m *mockKVStore) SetTeamConnections(teamID string, conns []TeamConnection) error {
 	if m.setTeamConnectionsFn != nil {
-		return m.setTeamConnectionsFn(teamID, connNames)
+		return m.setTeamConnectionsFn(teamID, conns)
 	}
 	return nil
 }
@@ -63,16 +66,16 @@ func (m *mockKVStore) IsTeamInitialized(teamID string) (bool, error) {
 	return false, nil
 }
 
-func (m *mockKVStore) AddTeamConnection(teamID, connName string) error {
+func (m *mockKVStore) AddTeamConnection(teamID string, conn TeamConnection) error {
 	if m.addTeamConnectionFn != nil {
-		return m.addTeamConnectionFn(teamID, connName)
+		return m.addTeamConnectionFn(teamID, conn)
 	}
 	return nil
 }
 
-func (m *mockKVStore) RemoveTeamConnection(teamID, connName string) error {
+func (m *mockKVStore) RemoveTeamConnection(teamID string, conn TeamConnection) error {
 	if m.removeTeamConnectionFn != nil {
-		return m.removeTeamConnectionFn(teamID, connName)
+		return m.removeTeamConnectionFn(teamID, conn)
 	}
 	return nil
 }
@@ -98,16 +101,16 @@ func (m *mockKVStore) RemoveInitializedTeamID(teamID string) error {
 	return nil
 }
 
-func (m *mockKVStore) GetChannelConnections(channelID string) ([]string, error) {
+func (m *mockKVStore) GetChannelConnections(channelID string) ([]TeamConnection, error) {
 	if m.getChannelConnectionsFn != nil {
 		return m.getChannelConnectionsFn(channelID)
 	}
-	return []string{}, nil
+	return []TeamConnection{}, nil
 }
 
-func (m *mockKVStore) SetChannelConnections(channelID string, connNames []string) error {
+func (m *mockKVStore) SetChannelConnections(channelID string, conns []TeamConnection) error {
 	if m.setChannelConnectionsFn != nil {
-		return m.setChannelConnectionsFn(channelID, connNames)
+		return m.setChannelConnectionsFn(channelID, conns)
 	}
 	return nil
 }
@@ -126,16 +129,16 @@ func (m *mockKVStore) IsChannelInitialized(channelID string) (bool, error) {
 	return false, nil
 }
 
-func (m *mockKVStore) AddChannelConnection(channelID, connName string) error {
+func (m *mockKVStore) AddChannelConnection(channelID string, conn TeamConnection) error {
 	if m.addChannelConnectionFn != nil {
-		return m.addChannelConnectionFn(channelID, connName)
+		return m.addChannelConnectionFn(channelID, conn)
 	}
 	return nil
 }
 
-func (m *mockKVStore) RemoveChannelConnection(channelID, connName string) error {
+func (m *mockKVStore) RemoveChannelConnection(channelID string, conn TeamConnection) error {
 	if m.removeChannelConnectionFn != nil {
-		return m.removeChannelConnectionFn(channelID, connName)
+		return m.removeChannelConnectionFn(channelID, conn)
 	}
 	return nil
 }
@@ -182,6 +185,59 @@ func (m *mockKVStore) ClearDeletingFlag(postID string) error {
 	return nil
 }
 
+func (m *mockKVStore) GetConnectionPrompt(teamID, connName string) (*ConnectionPrompt, error) {
+	return nil, nil
+}
+
+func (m *mockKVStore) SetConnectionPrompt(teamID, connName string, prompt *ConnectionPrompt) error {
+	return nil
+}
+
+func (m *mockKVStore) DeleteConnectionPrompt(teamID, connName string) error {
+	return nil
+}
+
+func (m *mockKVStore) CreateConnectionPrompt(teamID, connName string, prompt *ConnectionPrompt) (bool, error) {
+	return true, nil
+}
+
+func (m *mockKVStore) GetChannelConnectionPrompt(channelID, connName string) (*ConnectionPrompt, error) {
+	return nil, nil
+}
+
+func (m *mockKVStore) SetChannelConnectionPrompt(channelID, connName string, prompt *ConnectionPrompt) error {
+	return nil
+}
+
+func (m *mockKVStore) DeleteChannelConnectionPrompt(channelID, connName string) error {
+	return nil
+}
+
+func (m *mockKVStore) CreateChannelConnectionPrompt(channelID, connName string, prompt *ConnectionPrompt) (bool, error) {
+	return true, nil
+}
+
+func (m *mockKVStore) GetTeamRewriteIndex(connName, remoteTeamName string) (string, error) {
+	if m.getTeamRewriteIndexFn != nil {
+		return m.getTeamRewriteIndexFn(connName, remoteTeamName)
+	}
+	return "", nil
+}
+
+func (m *mockKVStore) SetTeamRewriteIndex(connName, remoteTeamName, localTeamID string) error {
+	if m.setTeamRewriteIndexFn != nil {
+		return m.setTeamRewriteIndexFn(connName, remoteTeamName, localTeamID)
+	}
+	return nil
+}
+
+func (m *mockKVStore) DeleteTeamRewriteIndex(connName, remoteTeamName string) error {
+	if m.deleteTeamRewriteIndexFn != nil {
+		return m.deleteTeamRewriteIndexFn(connName, remoteTeamName)
+	}
+	return nil
+}
+
 func newTestCaching(inner *mockKVStore) (*CachingKVStore, *plugintest.API) {
 	api := &plugintest.API{}
 	api.On("PublishPluginClusterEvent", mock.Anything, mock.Anything).Return(nil)
@@ -193,30 +249,30 @@ func newTestCaching(inner *mockKVStore) (*CachingKVStore, *plugintest.API) {
 func TestGetTeamConnections_CacheHitMiss(t *testing.T) {
 	calls := 0
 	inner := &mockKVStore{
-		getTeamConnectionsFn: func(teamID string) ([]string, error) {
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
 			calls++
-			return []string{"outbound:a"}, nil
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
 	val, err := c.GetTeamConnections("team1")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"outbound:a"}, val)
+	assert.Equal(t, []TeamConnection{{Direction: "outbound", Connection: "a"}}, val)
 	assert.Equal(t, 1, calls)
 
 	val2, err := c.GetTeamConnections("team1")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"outbound:a"}, val2)
+	assert.Equal(t, []TeamConnection{{Direction: "outbound", Connection: "a"}}, val2)
 	assert.Equal(t, 1, calls)
 }
 
 func TestGetTeamConnections_CachesEmpty(t *testing.T) {
 	calls := 0
 	inner := &mockKVStore{
-		getTeamConnectionsFn: func(teamID string) ([]string, error) {
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
 			calls++
-			return []string{}, nil
+			return []TeamConnection{}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
@@ -234,7 +290,7 @@ func TestGetTeamConnections_CachesEmpty(t *testing.T) {
 func TestGetTeamConnections_ErrorNotCached(t *testing.T) {
 	calls := 0
 	inner := &mockKVStore{
-		getTeamConnectionsFn: func(teamID string) ([]string, error) {
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
 			calls++
 			return nil, fmt.Errorf("kv store unavailable")
 		},
@@ -252,11 +308,11 @@ func TestGetTeamConnections_ErrorNotCached(t *testing.T) {
 func TestAddTeamConnection_InvalidatesCache(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getTeamConnectionsFn: func(teamID string) ([]string, error) {
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
 			getCalls++
-			return []string{"outbound:a"}, nil
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
 		},
-		addTeamConnectionFn: func(teamID, connName string) error {
+		addTeamConnectionFn: func(teamID string, conn TeamConnection) error {
 			return nil
 		},
 	}
@@ -266,7 +322,7 @@ func TestAddTeamConnection_InvalidatesCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.AddTeamConnection("team1", "inbound:a")
+	err = c.AddTeamConnection("team1", TeamConnection{Direction: "inbound", Connection: "a"})
 	require.NoError(t, err)
 
 	_, err = c.GetTeamConnections("team1")
@@ -277,11 +333,11 @@ func TestAddTeamConnection_InvalidatesCache(t *testing.T) {
 func TestAddTeamConnection_ErrorDoesNotInvalidate(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getTeamConnectionsFn: func(teamID string) ([]string, error) {
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
 			getCalls++
-			return []string{}, nil
+			return []TeamConnection{}, nil
 		},
-		addTeamConnectionFn: func(teamID, connName string) error {
+		addTeamConnectionFn: func(teamID string, conn TeamConnection) error {
 			return fmt.Errorf("write failed")
 		},
 	}
@@ -291,7 +347,7 @@ func TestAddTeamConnection_ErrorDoesNotInvalidate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.AddTeamConnection("team1", "outbound:a")
+	err = c.AddTeamConnection("team1", TeamConnection{Direction: "outbound", Connection: "a"})
 	require.Error(t, err)
 
 	_, err = c.GetTeamConnections("team1")
@@ -301,7 +357,7 @@ func TestAddTeamConnection_ErrorDoesNotInvalidate(t *testing.T) {
 
 func TestAddTeamConnection_PublishesClusterEvent(t *testing.T) {
 	inner := &mockKVStore{
-		addTeamConnectionFn: func(teamID, connName string) error { return nil },
+		addTeamConnectionFn: func(teamID string, conn TeamConnection) error { return nil },
 	}
 	api := &plugintest.API{}
 	api.On("PublishPluginClusterEvent", model.PluginClusterEvent{
@@ -313,7 +369,7 @@ func TestAddTeamConnection_PublishesClusterEvent(t *testing.T) {
 
 	c := NewCachingKVStore(inner, api)
 
-	err := c.AddTeamConnection("team1", "outbound:a")
+	err := c.AddTeamConnection("team1", TeamConnection{Direction: "outbound", Connection: "a"})
 	require.NoError(t, err)
 
 	api.AssertExpectations(t)
@@ -321,8 +377,8 @@ func TestAddTeamConnection_PublishesClusterEvent(t *testing.T) {
 
 func TestHandleClusterEvent_InvalidatesTeamInit(t *testing.T) {
 	inner := &mockKVStore{
-		getTeamConnectionsFn: func(teamID string) ([]string, error) {
-			return []string{"outbound:a"}, nil
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
@@ -464,9 +520,9 @@ func TestHandleClusterEvent_InvalidatesInitTeams(t *testing.T) {
 func TestDeleteTeamConnections_InvalidatesCache(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getTeamConnectionsFn: func(teamID string) ([]string, error) {
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
 			getCalls++
-			return []string{"outbound:a"}, nil
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
 		},
 		deleteTeamConnectionsFn: func(teamID string) error {
 			return nil
@@ -489,11 +545,11 @@ func TestDeleteTeamConnections_InvalidatesCache(t *testing.T) {
 func TestRemoveTeamConnection_InvalidatesCache(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getTeamConnectionsFn: func(teamID string) ([]string, error) {
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
 			getCalls++
-			return []string{"outbound:a"}, nil
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
 		},
-		removeTeamConnectionFn: func(teamID, connName string) error {
+		removeTeamConnectionFn: func(teamID string, conn TeamConnection) error {
 			return nil
 		},
 	}
@@ -503,7 +559,7 @@ func TestRemoveTeamConnection_InvalidatesCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.RemoveTeamConnection("team1", "outbound:a")
+	err = c.RemoveTeamConnection("team1", TeamConnection{Direction: "outbound", Connection: "a"})
 	require.NoError(t, err)
 
 	_, err = c.GetTeamConnections("team1")
@@ -539,30 +595,30 @@ func TestRemoveInitializedTeamID_InvalidatesCache(t *testing.T) {
 func TestGetChannelConnections_CacheHitMiss(t *testing.T) {
 	calls := 0
 	inner := &mockKVStore{
-		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+		getChannelConnectionsFn: func(channelID string) ([]TeamConnection, error) {
 			calls++
-			return []string{"outbound:a"}, nil
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
 
 	val, err := c.GetChannelConnections("chan1")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"outbound:a"}, val)
+	assert.Equal(t, []TeamConnection{{Direction: "outbound", Connection: "a"}}, val)
 	assert.Equal(t, 1, calls)
 
 	val2, err := c.GetChannelConnections("chan1")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"outbound:a"}, val2)
+	assert.Equal(t, []TeamConnection{{Direction: "outbound", Connection: "a"}}, val2)
 	assert.Equal(t, 1, calls)
 }
 
 func TestGetChannelConnections_CachesEmpty(t *testing.T) {
 	calls := 0
 	inner := &mockKVStore{
-		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+		getChannelConnectionsFn: func(channelID string) ([]TeamConnection, error) {
 			calls++
-			return []string{}, nil
+			return []TeamConnection{}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
@@ -580,7 +636,7 @@ func TestGetChannelConnections_CachesEmpty(t *testing.T) {
 func TestGetChannelConnections_ErrorNotCached(t *testing.T) {
 	calls := 0
 	inner := &mockKVStore{
-		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+		getChannelConnectionsFn: func(channelID string) ([]TeamConnection, error) {
 			calls++
 			return nil, fmt.Errorf("kv store unavailable")
 		},
@@ -598,11 +654,11 @@ func TestGetChannelConnections_ErrorNotCached(t *testing.T) {
 func TestAddChannelConnection_InvalidatesCache(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+		getChannelConnectionsFn: func(channelID string) ([]TeamConnection, error) {
 			getCalls++
-			return []string{"outbound:a"}, nil
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
 		},
-		addChannelConnectionFn: func(channelID, connName string) error {
+		addChannelConnectionFn: func(channelID string, conn TeamConnection) error {
 			return nil
 		},
 	}
@@ -612,7 +668,7 @@ func TestAddChannelConnection_InvalidatesCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.AddChannelConnection("chan1", "inbound:a")
+	err = c.AddChannelConnection("chan1", TeamConnection{Direction: "inbound", Connection: "a"})
 	require.NoError(t, err)
 
 	_, err = c.GetChannelConnections("chan1")
@@ -623,11 +679,11 @@ func TestAddChannelConnection_InvalidatesCache(t *testing.T) {
 func TestAddChannelConnection_ErrorDoesNotInvalidate(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+		getChannelConnectionsFn: func(channelID string) ([]TeamConnection, error) {
 			getCalls++
-			return []string{}, nil
+			return []TeamConnection{}, nil
 		},
-		addChannelConnectionFn: func(channelID, connName string) error {
+		addChannelConnectionFn: func(channelID string, conn TeamConnection) error {
 			return fmt.Errorf("write failed")
 		},
 	}
@@ -637,7 +693,7 @@ func TestAddChannelConnection_ErrorDoesNotInvalidate(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.AddChannelConnection("chan1", "outbound:a")
+	err = c.AddChannelConnection("chan1", TeamConnection{Direction: "outbound", Connection: "a"})
 	require.Error(t, err)
 
 	_, err = c.GetChannelConnections("chan1")
@@ -647,7 +703,7 @@ func TestAddChannelConnection_ErrorDoesNotInvalidate(t *testing.T) {
 
 func TestAddChannelConnection_PublishesClusterEvent(t *testing.T) {
 	inner := &mockKVStore{
-		addChannelConnectionFn: func(channelID, connName string) error { return nil },
+		addChannelConnectionFn: func(channelID string, conn TeamConnection) error { return nil },
 	}
 	api := &plugintest.API{}
 	api.On("PublishPluginClusterEvent", model.PluginClusterEvent{
@@ -659,7 +715,7 @@ func TestAddChannelConnection_PublishesClusterEvent(t *testing.T) {
 
 	c := NewCachingKVStore(inner, api)
 
-	err := c.AddChannelConnection("chan1", "outbound:a")
+	err := c.AddChannelConnection("chan1", TeamConnection{Direction: "outbound", Connection: "a"})
 	require.NoError(t, err)
 
 	api.AssertExpectations(t)
@@ -668,11 +724,11 @@ func TestAddChannelConnection_PublishesClusterEvent(t *testing.T) {
 func TestSetChannelConnections_InvalidatesCache(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+		getChannelConnectionsFn: func(channelID string) ([]TeamConnection, error) {
 			getCalls++
-			return []string{"outbound:a"}, nil
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
 		},
-		setChannelConnectionsFn: func(channelID string, connNames []string) error {
+		setChannelConnectionsFn: func(channelID string, conns []TeamConnection) error {
 			return nil
 		},
 	}
@@ -682,7 +738,10 @@ func TestSetChannelConnections_InvalidatesCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.SetChannelConnections("chan1", []string{"outbound:a", "inbound:a"})
+	err = c.SetChannelConnections("chan1", []TeamConnection{
+		{Direction: "outbound", Connection: "a"},
+		{Direction: "inbound", Connection: "a"},
+	})
 	require.NoError(t, err)
 
 	_, err = c.GetChannelConnections("chan1")
@@ -693,9 +752,9 @@ func TestSetChannelConnections_InvalidatesCache(t *testing.T) {
 func TestDeleteChannelConnections_InvalidatesCache(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+		getChannelConnectionsFn: func(channelID string) ([]TeamConnection, error) {
 			getCalls++
-			return []string{"outbound:a"}, nil
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
 		},
 		deleteChannelConnectionsFn: func(channelID string) error {
 			return nil
@@ -718,11 +777,11 @@ func TestDeleteChannelConnections_InvalidatesCache(t *testing.T) {
 func TestRemoveChannelConnection_InvalidatesCache(t *testing.T) {
 	getCalls := 0
 	inner := &mockKVStore{
-		getChannelConnectionsFn: func(channelID string) ([]string, error) {
+		getChannelConnectionsFn: func(channelID string) ([]TeamConnection, error) {
 			getCalls++
-			return []string{"outbound:a"}, nil
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
 		},
-		removeChannelConnectionFn: func(channelID, connName string) error {
+		removeChannelConnectionFn: func(channelID string, conn TeamConnection) error {
 			return nil
 		},
 	}
@@ -732,7 +791,7 @@ func TestRemoveChannelConnection_InvalidatesCache(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, getCalls)
 
-	err = c.RemoveChannelConnection("chan1", "outbound:a")
+	err = c.RemoveChannelConnection("chan1", TeamConnection{Direction: "outbound", Connection: "a"})
 	require.NoError(t, err)
 
 	_, err = c.GetChannelConnections("chan1")
@@ -742,8 +801,8 @@ func TestRemoveChannelConnection_InvalidatesCache(t *testing.T) {
 
 func TestHandleClusterEvent_InvalidatesChannelInit(t *testing.T) {
 	inner := &mockKVStore{
-		getChannelConnectionsFn: func(channelID string) ([]string, error) {
-			return []string{"outbound:a"}, nil
+		getChannelConnectionsFn: func(channelID string) ([]TeamConnection, error) {
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
 		},
 	}
 	c, _ := newTestCaching(inner)
@@ -756,4 +815,76 @@ func TestHandleClusterEvent_InvalidatesChannelInit(t *testing.T) {
 		Data: []byte("chan1"),
 	})
 	assert.Equal(t, 0, c.channelInitCache.Len())
+}
+
+func TestGetTeamRewriteIndex_CachesNegativeLookup(t *testing.T) {
+	calls := 0
+	inner := &mockKVStore{
+		getTeamRewriteIndexFn: func(connName, remoteTeamName string) (string, error) {
+			calls++
+			return "", nil
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	val, err := c.GetTeamRewriteIndex("loopback", "unknown-team")
+	require.NoError(t, err)
+	assert.Equal(t, "", val)
+	assert.Equal(t, 1, calls)
+
+	val, err = c.GetTeamRewriteIndex("loopback", "unknown-team")
+	require.NoError(t, err)
+	assert.Equal(t, "", val)
+	assert.Equal(t, 1, calls, "second call should hit cache, not inner store")
+}
+
+func TestGetTeamRewriteIndex_CacheHitMiss(t *testing.T) {
+	calls := 0
+	inner := &mockKVStore{
+		getTeamRewriteIndexFn: func(connName, remoteTeamName string) (string, error) {
+			calls++
+			return "team-123", nil
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	val, err := c.GetTeamRewriteIndex("loopback", "remote-team")
+	require.NoError(t, err)
+	assert.Equal(t, "team-123", val)
+	assert.Equal(t, 1, calls)
+
+	val, err = c.GetTeamRewriteIndex("loopback", "remote-team")
+	require.NoError(t, err)
+	assert.Equal(t, "team-123", val)
+	assert.Equal(t, 1, calls)
+}
+
+func TestSetTeamRewriteIndex_InvalidatesNegativeCache(t *testing.T) {
+	lookupCalls := 0
+	inner := &mockKVStore{
+		getTeamRewriteIndexFn: func(connName, remoteTeamName string) (string, error) {
+			lookupCalls++
+			if lookupCalls == 1 {
+				return "", nil
+			}
+			return "team-123", nil
+		},
+		setTeamRewriteIndexFn: func(connName, remoteTeamName, localTeamID string) error {
+			return nil
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	val, err := c.GetTeamRewriteIndex("loopback", "remote-team")
+	require.NoError(t, err)
+	assert.Equal(t, "", val)
+	assert.Equal(t, 1, lookupCalls)
+
+	err = c.SetTeamRewriteIndex("loopback", "remote-team", "team-123")
+	require.NoError(t, err)
+
+	val, err = c.GetTeamRewriteIndex("loopback", "remote-team")
+	require.NoError(t, err)
+	assert.Equal(t, "team-123", val)
+	assert.Equal(t, 2, lookupCalls, "should re-fetch after invalidation")
 }

@@ -31,11 +31,11 @@ The dev environment runs two Mattermost servers (A and B) with a shared NATS bus
 
 After `make docker-setup`:
 
-- **Server A (CGA)**: http://cga.test:8075
+- **Server A (Low)**: http://low.test:8075
   - Admin: `admin / password`
   - User: `usera / password`
   - Team: Test A
-- **Server B (CGB)**: http://cgb.test:8076
+- **Server B (High)**: http://high.test:8076
   - Admin: `admin / password`
   - User: `userb / password`
   - Team: Test B
@@ -61,7 +61,7 @@ Typical workflow: `init-team` first, then `init-channel` on each channel you wan
 
 | Command | Description |
 |---------|-------------|
-| `make hosts-setup` | Add `cga.test` and `cgb.test` to /etc/hosts (requires sudo) |
+| `make hosts-setup` | Add `low.test` and `high.test` to /etc/hosts (requires sudo) |
 | `make docker-setup` | First-time setup: start containers, create users and teams |
 | `make deploy` | Build and deploy plugin to both Docker servers |
 | `make dist` | Build plugin bundle only |

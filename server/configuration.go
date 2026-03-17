@@ -35,13 +35,18 @@ type NATSConnection struct {
 }
 
 type configuration struct {
-	InboundConnections  string `json:"InboundConnections"`
-	OutboundConnections string `json:"OutboundConnections"`
-	UsernameLookup      *bool  `json:"UsernameLookup"`
+	InboundConnections     string `json:"InboundConnections"`
+	OutboundConnections    string `json:"OutboundConnections"`
+	UsernameLookup         *bool  `json:"UsernameLookup"`
+	RestrictToSystemAdmins *bool  `json:"RestrictToSystemAdmins"`
 }
 
 func (c *configuration) isUsernameLookupEnabled() bool {
 	return c.UsernameLookup == nil || *c.UsernameLookup
+}
+
+func (c *configuration) isRestrictedToSystemAdmins() bool {
+	return c.RestrictToSystemAdmins != nil && *c.RestrictToSystemAdmins
 }
 
 func parseConnections(raw string) ([]NATSConnection, error) {

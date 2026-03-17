@@ -15,7 +15,7 @@
         "bundle_path": "webapp/dist/main.js"
     },
     "settings_schema": {
-        "header": "",
+        "header": "Cross-domain message relay for Mattermost Federal. [View full documentation](/plugins/crossguard/public/help/help.html).",
         "footer": "",
         "settings": [],
         "sections": [
@@ -47,6 +47,13 @@
                         "type": "bool",
                         "default": true,
                         "help_text": "When enabled, inbound messages will be posted as the matching local user if a user with the same username exists. When disabled, a synthetic relay user is always created."
+                    },
+                    {
+                        "key": "RestrictToSystemAdmins",
+                        "display_name": "Restrict Connection Management to System Admins",
+                        "type": "bool",
+                        "default": false,
+                        "help_text": "When enabled, only system admins can link or unlink connections to teams and channels. When disabled, team admins can manage team connections and channel admins can manage channel connections."
                     }
                 ]
             }

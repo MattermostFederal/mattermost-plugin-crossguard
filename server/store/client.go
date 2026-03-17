@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"slices"
 
 	"github.com/mattermost/mattermost/server/public/pluginapi"
@@ -9,38 +10,44 @@ import (
 
 // Client wraps the Mattermost pluginapi KV store.
 type Client struct {
-	client              *pluginapi.Client
-	teamInitPrefix      string
-	channelInitPrefix   string
-	initializedTeamsKey string
+	client               *pluginapi.Client
+	teamInitPrefix       string
+	channelInitPrefix    string
+	initializedTeamsKey  string
+	connPromptPrefix     string
+	chanConnPromptPrefix string
+	rewriteIndexPrefix   string
 }
 
 // NewKVStore creates a new KV store client.
 func NewKVStore(client *pluginapi.Client, pluginID string) KVStore {
 	return Client{
-		client:              client,
-		teamInitPrefix:      pluginID + "-teaminit-",
-		channelInitPrefix:   pluginID + "-channelinit-",
-		initializedTeamsKey: pluginID + "-initialized-teams",
+		client:               client,
+		teamInitPrefix:       pluginID + "-teaminit-",
+		channelInitPrefix:    pluginID + "-channelinit-",
+		initializedTeamsKey:  pluginID + "-initialized-teams",
+		connPromptPrefix:     pluginID + "-connprompt-",
+		chanConnPromptPrefix: pluginID + "-chanprompt-",
+		rewriteIndexPrefix:   pluginID + "-rwi-",
 	}
 }
 
-// GetTeamConnections returns the list of connection names linked to a team.
-func (kv Client) GetTeamConnections(teamID string) ([]string, error) {
-	var connNames []string
-	err := kv.client.KV.Get(kv.teamInitPrefix+teamID, &connNames)
+// GetTeamConnections returns the list of connections linked to a team.
+func (kv Client) GetTeamConnections(teamID string) ([]TeamConnection, error) {
+	var conns []TeamConnection
+	err := kv.client.KV.Get(kv.teamInitPrefix+teamID, &conns)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get team connections")
 	}
-	if connNames == nil {
-		return []string{}, nil
+	if conns == nil {
+		return []TeamConnection{}, nil
 	}
-	return connNames, nil
+	return conns, nil
 }
 
-// SetTeamConnections stores the full list of connection names for a team.
-func (kv Client) SetTeamConnections(teamID string, connNames []string) error {
-	_, err := kv.client.KV.Set(kv.teamInitPrefix+teamID, connNames)
+// SetTeamConnections stores the full list of connections for a team.
+func (kv Client) SetTeamConnections(teamID string, conns []TeamConnection) error {
+	_, err := kv.client.KV.Set(kv.teamInitPrefix+teamID, conns)
 	if err != nil {
 		return errors.Wrap(err, "failed to set team connections")
 	}
@@ -64,28 +71,50 @@ func (kv Client) IsTeamInitialized(teamID string) (bool, error) {
 	return len(conns) > 0, nil
 }
 
-// AddTeamConnection atomically adds a connection name to a team's connection list.
-func (kv Client) AddTeamConnection(teamID, connName string) error {
-	return kv.casModifyStringList(kv.teamInitPrefix+teamID, func(names []string) ([]string, bool) {
-		if slices.Contains(names, connName) {
-			return names, false
+// AddTeamConnection atomically adds a connection to a team's connection list.
+func (kv Client) AddTeamConnection(teamID string, conn TeamConnection) error {
+	return kv.casModifyConnectionList(kv.teamInitPrefix+teamID, func(conns []TeamConnection) ([]TeamConnection, bool) {
+		for _, existing := range conns {
+			if existing.Matches(conn) {
+				return conns, false
+			}
 		}
-		return append(names, connName), true
+		return append(conns, conn), true
 	})
 }
 
-// RemoveTeamConnection atomically removes a connection name from a team's connection list.
-func (kv Client) RemoveTeamConnection(teamID, connName string) error {
-	return kv.casModifyStringList(kv.teamInitPrefix+teamID, func(names []string) ([]string, bool) {
-		idx := slices.Index(names, connName)
-		if idx < 0 {
-			return names, false
+// RemoveTeamConnection atomically removes a connection from a team's connection list.
+// It also cleans up the reverse index if the removed connection had a RemoteTeamName.
+func (kv Client) RemoveTeamConnection(teamID string, conn TeamConnection) error {
+	var removedConn *TeamConnection
+	err := kv.casModifyConnectionList(kv.teamInitPrefix+teamID, func(conns []TeamConnection) ([]TeamConnection, bool) {
+		idx := -1
+		for i, existing := range conns {
+			if existing.Matches(conn) {
+				idx = i
+				removedConn = &TeamConnection{
+					Direction:      existing.Direction,
+					Connection:     existing.Connection,
+					RemoteTeamName: existing.RemoteTeamName,
+				}
+				break
+			}
 		}
-		result := make([]string, 0, len(names)-1)
-		result = append(result, names[:idx]...)
-		result = append(result, names[idx+1:]...)
+		if idx < 0 {
+			return conns, false
+		}
+		result := make([]TeamConnection, 0, len(conns)-1)
+		result = append(result, conns[:idx]...)
+		result = append(result, conns[idx+1:]...)
 		return result, true
 	})
+	if err != nil {
+		return err
+	}
+	if removedConn != nil && removedConn.RemoteTeamName != "" {
+		_ = kv.DeleteTeamRewriteIndex(removedConn.Connection, removedConn.RemoteTeamName)
+	}
+	return nil
 }
 
 // GetInitializedTeamIDs returns the list of team IDs that have been initialized.
@@ -125,22 +154,22 @@ func (kv Client) RemoveInitializedTeamID(teamID string) error {
 	})
 }
 
-// GetChannelConnections returns the list of connection names linked to a channel.
-func (kv Client) GetChannelConnections(channelID string) ([]string, error) {
-	var connNames []string
-	err := kv.client.KV.Get(kv.channelInitPrefix+channelID, &connNames)
+// GetChannelConnections returns the list of connections linked to a channel.
+func (kv Client) GetChannelConnections(channelID string) ([]TeamConnection, error) {
+	var conns []TeamConnection
+	err := kv.client.KV.Get(kv.channelInitPrefix+channelID, &conns)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get channel connections")
 	}
-	if connNames == nil {
-		return []string{}, nil
+	if conns == nil {
+		return []TeamConnection{}, nil
 	}
-	return connNames, nil
+	return conns, nil
 }
 
-// SetChannelConnections stores the full list of connection names for a channel.
-func (kv Client) SetChannelConnections(channelID string, connNames []string) error {
-	_, err := kv.client.KV.Set(kv.channelInitPrefix+channelID, connNames)
+// SetChannelConnections stores the full list of connections for a channel.
+func (kv Client) SetChannelConnections(channelID string, conns []TeamConnection) error {
+	_, err := kv.client.KV.Set(kv.channelInitPrefix+channelID, conns)
 	if err != nil {
 		return errors.Wrap(err, "failed to set channel connections")
 	}
@@ -164,26 +193,34 @@ func (kv Client) IsChannelInitialized(channelID string) (bool, error) {
 	return len(conns) > 0, nil
 }
 
-// AddChannelConnection atomically adds a connection name to a channel's connection list.
-func (kv Client) AddChannelConnection(channelID, connName string) error {
-	return kv.casModifyStringList(kv.channelInitPrefix+channelID, func(names []string) ([]string, bool) {
-		if slices.Contains(names, connName) {
-			return names, false
+// AddChannelConnection atomically adds a connection to a channel's connection list.
+func (kv Client) AddChannelConnection(channelID string, conn TeamConnection) error {
+	return kv.casModifyConnectionList(kv.channelInitPrefix+channelID, func(conns []TeamConnection) ([]TeamConnection, bool) {
+		for _, existing := range conns {
+			if existing.Matches(conn) {
+				return conns, false
+			}
 		}
-		return append(names, connName), true
+		return append(conns, conn), true
 	})
 }
 
-// RemoveChannelConnection atomically removes a connection name from a channel's connection list.
-func (kv Client) RemoveChannelConnection(channelID, connName string) error {
-	return kv.casModifyStringList(kv.channelInitPrefix+channelID, func(names []string) ([]string, bool) {
-		idx := slices.Index(names, connName)
-		if idx < 0 {
-			return names, false
+// RemoveChannelConnection atomically removes a connection from a channel's connection list.
+func (kv Client) RemoveChannelConnection(channelID string, conn TeamConnection) error {
+	return kv.casModifyConnectionList(kv.channelInitPrefix+channelID, func(conns []TeamConnection) ([]TeamConnection, bool) {
+		idx := -1
+		for i, existing := range conns {
+			if existing.Matches(conn) {
+				idx = i
+				break
+			}
 		}
-		result := make([]string, 0, len(names)-1)
-		result = append(result, names[:idx]...)
-		result = append(result, names[idx+1:]...)
+		if idx < 0 {
+			return conns, false
+		}
+		result := make([]TeamConnection, 0, len(conns)-1)
+		result = append(result, conns[:idx]...)
+		result = append(result, conns[idx+1:]...)
 		return result, true
 	})
 }
@@ -251,6 +288,126 @@ func (kv Client) ClearDeletingFlag(postID string) error {
 	return nil
 }
 
+// GetConnectionPrompt retrieves the connection prompt state for a team+connection.
+func (kv Client) GetConnectionPrompt(teamID, connName string) (*ConnectionPrompt, error) {
+	var prompt ConnectionPrompt
+	err := kv.client.KV.Get(kv.connPromptPrefix+teamID+"-"+connName, &prompt)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get connection prompt")
+	}
+	if prompt.State == "" {
+		return nil, nil
+	}
+	return &prompt, nil
+}
+
+// SetConnectionPrompt stores the connection prompt state for a team+connection.
+func (kv Client) SetConnectionPrompt(teamID, connName string, prompt *ConnectionPrompt) error {
+	_, err := kv.client.KV.Set(kv.connPromptPrefix+teamID+"-"+connName, prompt)
+	if err != nil {
+		return errors.Wrap(err, "failed to set connection prompt")
+	}
+	return nil
+}
+
+// DeleteConnectionPrompt removes the connection prompt state for a team+connection.
+func (kv Client) DeleteConnectionPrompt(teamID, connName string) error {
+	if err := kv.client.KV.Delete(kv.connPromptPrefix + teamID + "-" + connName); err != nil {
+		return errors.Wrap(err, "failed to delete connection prompt")
+	}
+	return nil
+}
+
+// CreateConnectionPrompt atomically creates a connection prompt only if none exists.
+// Returns true if created, false if a prompt already exists for this team+connection.
+func (kv Client) CreateConnectionPrompt(teamID, connName string, prompt *ConnectionPrompt) (bool, error) {
+	saved, err := kv.client.KV.Set(kv.connPromptPrefix+teamID+"-"+connName, prompt, pluginapi.SetAtomic(nil))
+	if err != nil {
+		return false, errors.Wrap(err, "failed to create connection prompt")
+	}
+	return saved, nil
+}
+
+// GetChannelConnectionPrompt retrieves the connection prompt state for a channel+connection.
+func (kv Client) GetChannelConnectionPrompt(channelID, connName string) (*ConnectionPrompt, error) {
+	var prompt ConnectionPrompt
+	err := kv.client.KV.Get(kv.chanConnPromptPrefix+channelID+"-"+connName, &prompt)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get channel connection prompt")
+	}
+	if prompt.State == "" {
+		return nil, nil
+	}
+	return &prompt, nil
+}
+
+// SetChannelConnectionPrompt stores the connection prompt state for a channel+connection.
+func (kv Client) SetChannelConnectionPrompt(channelID, connName string, prompt *ConnectionPrompt) error {
+	_, err := kv.client.KV.Set(kv.chanConnPromptPrefix+channelID+"-"+connName, prompt)
+	if err != nil {
+		return errors.Wrap(err, "failed to set channel connection prompt")
+	}
+	return nil
+}
+
+// DeleteChannelConnectionPrompt removes the connection prompt state for a channel+connection.
+func (kv Client) DeleteChannelConnectionPrompt(channelID, connName string) error {
+	if err := kv.client.KV.Delete(kv.chanConnPromptPrefix + channelID + "-" + connName); err != nil {
+		return errors.Wrap(err, "failed to delete channel connection prompt")
+	}
+	return nil
+}
+
+// CreateChannelConnectionPrompt atomically creates a channel connection prompt only if none exists.
+// Returns true if created, false if a prompt already exists for this channel+connection.
+func (kv Client) CreateChannelConnectionPrompt(channelID, connName string, prompt *ConnectionPrompt) (bool, error) {
+	saved, err := kv.client.KV.Set(kv.chanConnPromptPrefix+channelID+"-"+connName, prompt, pluginapi.SetAtomic(nil))
+	if err != nil {
+		return false, errors.Wrap(err, "failed to create channel connection prompt")
+	}
+	return saved, nil
+}
+
+func rewriteIndexKey(prefix, connName, remoteTeamName string) string {
+	return prefix + connName + "::" + remoteTeamName
+}
+
+// GetTeamRewriteIndex returns the local team ID mapped to a (connName, remoteTeamName) pair.
+func (kv Client) GetTeamRewriteIndex(connName, remoteTeamName string) (string, error) {
+	var localTeamID string
+	err := kv.client.KV.Get(rewriteIndexKey(kv.rewriteIndexPrefix, connName, remoteTeamName), &localTeamID)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to get rewrite index")
+	}
+	return localTeamID, nil
+}
+
+// SetTeamRewriteIndex maps a (connName, remoteTeamName) pair to a local team ID.
+// Returns an error if the mapping already exists for a different team.
+func (kv Client) SetTeamRewriteIndex(connName, remoteTeamName, localTeamID string) error {
+	existing, err := kv.GetTeamRewriteIndex(connName, remoteTeamName)
+	if err != nil {
+		return err
+	}
+	if existing != "" && existing != localTeamID {
+		return fmt.Errorf("remote team name %q on connection %q is already mapped to team %s; clear that rewrite first", remoteTeamName, connName, existing)
+	}
+
+	_, err = kv.client.KV.Set(rewriteIndexKey(kv.rewriteIndexPrefix, connName, remoteTeamName), localTeamID)
+	if err != nil {
+		return errors.Wrap(err, "failed to set rewrite index")
+	}
+	return nil
+}
+
+// DeleteTeamRewriteIndex removes a (connName, remoteTeamName) reverse index entry.
+func (kv Client) DeleteTeamRewriteIndex(connName, remoteTeamName string) error {
+	if err := kv.client.KV.Delete(rewriteIndexKey(kv.rewriteIndexPrefix, connName, remoteTeamName)); err != nil {
+		return errors.Wrap(err, "failed to delete rewrite index")
+	}
+	return nil
+}
+
 // casModifyStringList atomically modifies a string list stored in KV.
 // The modify function receives the current list and returns the new list and
 // whether a change was made. If no change, the function returns nil immediately.
@@ -282,4 +439,35 @@ func (kv Client) casModifyStringList(key string, modify func([]string) ([]string
 		}
 	}
 	return errors.New("failed to modify list after max retries")
+}
+
+// casModifyConnectionList atomically modifies a TeamConnection list stored in KV.
+func (kv Client) casModifyConnectionList(key string, modify func([]TeamConnection) ([]TeamConnection, bool)) error {
+	const maxRetries = 5
+	for range maxRetries {
+		var items []TeamConnection
+		if err := kv.client.KV.Get(key, &items); err != nil {
+			return errors.Wrap(err, "failed to read connection list for CAS")
+		}
+
+		newItems, changed := modify(items)
+		if !changed {
+			return nil
+		}
+
+		var saved bool
+		var err error
+		if items == nil {
+			saved, err = kv.client.KV.Set(key, newItems, pluginapi.SetAtomic(nil))
+		} else {
+			saved, err = kv.client.KV.Set(key, newItems, pluginapi.SetAtomic(items))
+		}
+		if err != nil {
+			return errors.Wrap(err, "failed to CAS connection list")
+		}
+		if saved {
+			return nil
+		}
+	}
+	return errors.New("failed to modify connection list after max retries")
 }

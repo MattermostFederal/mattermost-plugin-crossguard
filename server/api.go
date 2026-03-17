@@ -10,6 +10,8 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/nats-io/nats.go"
+
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
 const maxRequestBodySize = 5 << 20 // 5 MB
@@ -22,9 +24,16 @@ func (p *Plugin) initAPI() {
 	router.HandleFunc("/api/v1/channels/{channel_id}/init", p.handleInitChannel).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/channels/{channel_id}/teardown", p.handleTeardownChannel).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/dialog/select-connection", p.handleDialogSelectConnection).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/prompt/accept", p.handlePromptAccept).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/prompt/block", p.handlePromptBlock).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/prompt/channel/accept", p.handleChannelPromptAccept).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/prompt/channel/block", p.handleChannelPromptBlock).Methods(http.MethodPost)
 	router.HandleFunc("/api/v1/status", p.handleGlobalStatus).Methods(http.MethodGet)
 	router.HandleFunc("/api/v1/teams/{team_id}/status", p.handleTeamStatus).Methods(http.MethodGet)
 	router.HandleFunc("/api/v1/channels/{channel_id}/status", p.handleChannelStatus).Methods(http.MethodGet)
+	router.HandleFunc("/api/v1/channels/connections", p.handleBulkChannelConnections).Methods(http.MethodGet)
+	router.HandleFunc("/api/v1/teams/{team_id}/rewrite", p.handleSetTeamRewrite).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/teams/{team_id}/rewrite", p.handleDeleteTeamRewrite).Methods(http.MethodDelete)
 	p.router = router
 }
 
@@ -216,7 +225,7 @@ func (p *Plugin) handleInitTeam(w http.ResponseWriter, r *http.Request) {
 	if resolveErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":       resolveErr,
-			"connections": allConns,
+			"connections": connectionDisplayNames(allConns),
 		})
 		return
 	}
@@ -231,7 +240,7 @@ func (p *Plugin) handleInitTeam(w http.ResponseWriter, r *http.Request) {
 		"status":          "ok",
 		"team_id":         team.Id,
 		"team_name":       team.Name,
-		"connection_name": connName,
+		"connection_name": connKey(connName),
 	})
 }
 
@@ -258,11 +267,18 @@ func (p *Plugin) handleInitChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	connName, allConns, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), p.getAllConnectionNames())
+	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
+	if err != nil {
+		p.API.LogError("Failed to get team connections", "team_id", channel.TeamId, "error", err.Error())
+		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
+		return
+	}
+
+	connName, _, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), teamConns)
 	if resolveErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":       resolveErr,
-			"connections": allConns,
+			"connections": connectionDisplayNames(teamConns),
 		})
 		return
 	}
@@ -277,7 +293,7 @@ func (p *Plugin) handleInitChannel(w http.ResponseWriter, r *http.Request) {
 		"status":          "ok",
 		"channel_id":      ch.Id,
 		"channel_name":    ch.Name,
-		"connection_name": connName,
+		"connection_name": connKey(connName),
 	})
 }
 
@@ -304,17 +320,18 @@ func (p *Plugin) handleTeardownChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
+	chanConns, err := p.kvstore.GetChannelConnections(channelID)
 	if err != nil {
-		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
+		p.API.LogError("Failed to get channel connections", "channel_id", channelID, "error", err.Error())
+		writeJSONError(w, "failed to check channel connections", http.StatusInternalServerError)
 		return
 	}
 
-	connName, _, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), teamConns)
+	connName, _, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), chanConns)
 	if resolveErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":       resolveErr,
-			"connections": teamConns,
+			"connections": connectionDisplayNames(chanConns),
 		})
 		return
 	}
@@ -329,7 +346,7 @@ func (p *Plugin) handleTeardownChannel(w http.ResponseWriter, r *http.Request) {
 		"status":          "ok",
 		"channel_id":      ch.Id,
 		"channel_name":    ch.Name,
-		"connection_name": connName,
+		"connection_name": connKey(connName),
 	})
 }
 
@@ -350,11 +367,18 @@ func (p *Plugin) handleTeardownTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	connName, allConns, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), p.getAllConnectionNames())
+	teamConns, err := p.kvstore.GetTeamConnections(teamID)
+	if err != nil {
+		p.API.LogError("Failed to get team connections", "team_id", teamID, "error", err.Error())
+		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
+		return
+	}
+
+	connName, _, resolveErr := p.resolveConnectionName(r.URL.Query().Get("connection_name"), teamConns)
 	if resolveErr != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error":       resolveErr,
-			"connections": allConns,
+			"connections": connectionDisplayNames(teamConns),
 		})
 		return
 	}
@@ -369,7 +393,7 @@ func (p *Plugin) handleTeardownTeam(w http.ResponseWriter, r *http.Request) {
 		"status":          "ok",
 		"team_id":         team.Id,
 		"team_name":       team.Name,
-		"connection_name": connName,
+		"connection_name": connKey(connName),
 	})
 }
 
@@ -417,13 +441,15 @@ func (p *Plugin) handleDialogSelectConnection(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	connName, _ := req.Submission["connection_name"].(string)
-	if connName == "" {
+	connNameStr, _ := req.Submission["connection_name"].(string)
+	if connNameStr == "" {
 		writeJSON(w, http.StatusOK, model.SubmitDialogResponse{
 			Errors: map[string]string{"connection_name": "Please select a connection."},
 		})
 		return
 	}
+
+	connName := parseConnKey(connNameStr)
 
 	parts := strings.SplitN(req.State, ":", 2)
 	if len(parts) != 2 {
@@ -432,7 +458,13 @@ func (p *Plugin) handleDialogSelectConnection(w http.ResponseWriter, r *http.Req
 	}
 	action, targetID := parts[0], parts[1]
 
+	if !model.IsValidId(targetID) {
+		writeJSONError(w, "invalid target ID in dialog state", http.StatusBadRequest)
+		return
+	}
+
 	var responseText string
+	displayName := connKey(connName)
 
 	switch action {
 	case actionInitTeam, actionTeardownTeam:
@@ -446,16 +478,16 @@ func (p *Plugin) handleDialogSelectConnection(w http.ResponseWriter, r *http.Req
 			case svcErr != nil:
 				responseText = svcErr.Message
 			case alreadyLinked:
-				responseText = fmt.Sprintf("Connection `%s` is already linked to this team. (team ID: %s, team name: %s)", connName, team.Id, team.Name)
+				responseText = fmt.Sprintf("Connection `%s` is already linked to this team. (team ID: %s, team name: %s)", displayName, team.Id, team.Name)
 			default:
-				responseText = fmt.Sprintf("Connection `%s` linked to this team successfully.", connName)
+				responseText = fmt.Sprintf("Connection `%s` linked to this team successfully.", displayName)
 			}
 		} else {
 			_, svcErr := p.teardownTeamForCrossGuard(user, targetID, connName)
 			if svcErr != nil {
 				responseText = svcErr.Message
 			} else {
-				responseText = fmt.Sprintf("Connection `%s` unlinked from this team successfully.", connName)
+				responseText = fmt.Sprintf("Connection `%s` unlinked from this team successfully.", displayName)
 			}
 		}
 
@@ -475,16 +507,16 @@ func (p *Plugin) handleDialogSelectConnection(w http.ResponseWriter, r *http.Req
 			case svcErr != nil:
 				responseText = svcErr.Message
 			case alreadyLinked:
-				responseText = fmt.Sprintf("Connection `%s` is already linked to this channel. (channel ID: %s, channel name: %s)", connName, ch.Id, ch.Name)
+				responseText = fmt.Sprintf("Connection `%s` is already linked to this channel. (channel ID: %s, channel name: %s)", displayName, ch.Id, ch.Name)
 			default:
-				responseText = fmt.Sprintf("Connection `%s` linked to this channel successfully.", connName)
+				responseText = fmt.Sprintf("Connection `%s` linked to this channel successfully.", displayName)
 			}
 		} else {
 			_, svcErr := p.teardownChannelForCrossGuard(user, targetID, connName)
 			if svcErr != nil {
 				responseText = svcErr.Message
 			} else {
-				responseText = fmt.Sprintf("Connection `%s` unlinked from this channel successfully.", connName)
+				responseText = fmt.Sprintf("Connection `%s` unlinked from this channel successfully.", displayName)
 			}
 		}
 
@@ -554,4 +586,177 @@ func (p *Plugin) handleChannelStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+const maxBulkChannelIDs = 2048
+
+func (p *Plugin) handleBulkChannelConnections(w http.ResponseWriter, r *http.Request) {
+	user := p.getAuthenticatedUser(w, r)
+	if user == nil {
+		return
+	}
+
+	idsParam := strings.TrimSpace(r.URL.Query().Get("ids"))
+	if idsParam == "" {
+		writeJSONError(w, "ids query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	ids := strings.Split(idsParam, ",")
+	if len(ids) > maxBulkChannelIDs {
+		writeJSONError(w, fmt.Sprintf("too many channel IDs (max %d)", maxBulkChannelIDs), http.StatusBadRequest)
+		return
+	}
+
+	result := make(map[string]string)
+
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if !model.IsValidId(id) {
+			continue
+		}
+
+		member, appErr := p.API.GetChannelMember(id, user.Id)
+		if appErr != nil || member == nil {
+			continue
+		}
+
+		conns, err := p.kvstore.GetChannelConnections(id)
+		if err != nil {
+			p.API.LogWarn("Failed to get channel connections for bulk lookup", "channel_id", id, "error", err.Error())
+			continue
+		}
+
+		if len(conns) > 0 {
+			keys := make([]string, len(conns))
+			for i, tc := range conns {
+				keys[i] = connKey(tc)
+			}
+			result[id] = strings.Join(keys, ",")
+		}
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// parseConnKey parses a display key like "outbound:high" back into a TeamConnection.
+func parseConnKey(key string) store.TeamConnection {
+	parts := strings.SplitN(key, ":", 2)
+	if len(parts) != 2 {
+		return store.TeamConnection{Connection: key}
+	}
+	return store.TeamConnection{Direction: parts[0], Connection: parts[1]}
+}
+
+func (p *Plugin) handleSetTeamRewrite(w http.ResponseWriter, r *http.Request) {
+	user := p.getAuthenticatedUser(w, r)
+	if user == nil {
+		return
+	}
+	teamID := mux.Vars(r)["team_id"]
+	if !model.IsValidId(teamID) {
+		writeJSONError(w, "invalid team_id", http.StatusBadRequest)
+		return
+	}
+	if !p.isTeamAdminOrSystemAdmin(user.Id, teamID) {
+		writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
+	var req struct {
+		Connection     string `json:"connection"`
+		RemoteTeamName string `json:"remote_team_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Connection == "" || req.RemoteTeamName == "" {
+		writeJSONError(w, "connection and remote_team_name are required", http.StatusBadRequest)
+		return
+	}
+	conns, err := p.kvstore.GetTeamConnections(teamID)
+	if err != nil {
+		writeJSONError(w, "failed to get team connections", http.StatusInternalServerError)
+		return
+	}
+	var target *store.TeamConnection
+	for i, tc := range conns {
+		if tc.Direction == "inbound" && tc.Connection == req.Connection {
+			target = &conns[i]
+			break
+		}
+	}
+	if target == nil {
+		writeJSONError(w, "inbound connection not found or not linked to this team", http.StatusBadRequest)
+		return
+	}
+	if err := p.kvstore.SetTeamRewriteIndex(req.Connection, req.RemoteTeamName, teamID); err != nil {
+		writeJSONError(w, err.Error(), http.StatusConflict)
+		return
+	}
+	target.RemoteTeamName = req.RemoteTeamName
+	if err := p.kvstore.SetTeamConnections(teamID, conns); err != nil {
+		writeJSONError(w, "failed to update team connections", http.StatusInternalServerError)
+		return
+	}
+	p.API.LogInfo("Team rewrite set", "team_id", teamID, "connection", req.Connection, "remote_team_name", req.RemoteTeamName, "user", user.Username)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":           "ok",
+		"team_id":          teamID,
+		"connection":       req.Connection,
+		"remote_team_name": req.RemoteTeamName,
+	})
+}
+
+func (p *Plugin) handleDeleteTeamRewrite(w http.ResponseWriter, r *http.Request) {
+	user := p.getAuthenticatedUser(w, r)
+	if user == nil {
+		return
+	}
+	teamID := mux.Vars(r)["team_id"]
+	if !model.IsValidId(teamID) {
+		writeJSONError(w, "invalid team_id", http.StatusBadRequest)
+		return
+	}
+	if !p.isTeamAdminOrSystemAdmin(user.Id, teamID) {
+		writeJSONError(w, "insufficient permissions", http.StatusForbidden)
+		return
+	}
+	connParam := r.URL.Query().Get("connection")
+	if connParam == "" {
+		writeJSONError(w, "connection query parameter is required", http.StatusBadRequest)
+		return
+	}
+	conns, err := p.kvstore.GetTeamConnections(teamID)
+	if err != nil {
+		writeJSONError(w, "failed to get team connections", http.StatusInternalServerError)
+		return
+	}
+	var target *store.TeamConnection
+	for i, tc := range conns {
+		if tc.Direction == "inbound" && tc.Connection == connParam {
+			target = &conns[i]
+			break
+		}
+	}
+	if target == nil {
+		writeJSONError(w, "inbound connection not found or not linked to this team", http.StatusBadRequest)
+		return
+	}
+	oldRemote := target.RemoteTeamName
+	target.RemoteTeamName = ""
+	if err := p.kvstore.SetTeamConnections(teamID, conns); err != nil {
+		writeJSONError(w, "failed to update team connections", http.StatusInternalServerError)
+		return
+	}
+	if oldRemote != "" {
+		_ = p.kvstore.DeleteTeamRewriteIndex(connParam, oldRemote)
+	}
+	p.API.LogInfo("Team rewrite cleared", "team_id", teamID, "connection", connParam, "user", user.Username)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":     "ok",
+		"team_id":    teamID,
+		"connection": connParam,
+	})
 }

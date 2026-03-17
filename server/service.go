@@ -2,9 +2,12 @@ package main
 
 import (
 	"fmt"
-	"slices"
+	"sort"
+	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
 // apiError represents a structured error with an HTTP status code.
@@ -19,18 +22,20 @@ func (e *apiError) Error() string {
 
 // TeamStatusResponse is the JSON response for a single team's initialization status.
 type TeamStatusResponse struct {
-	TeamID            string   `json:"team_id"`
-	TeamName          string   `json:"team_name"`
-	Initialized       bool     `json:"initialized"`
-	LinkedConnections []string `json:"linked_connections"`
+	TeamID            string                 `json:"team_id"`
+	TeamName          string                 `json:"team_name"`
+	TeamDisplayName   string                 `json:"team_display_name"`
+	Initialized       bool                   `json:"initialized"`
+	LinkedConnections []store.TeamConnection `json:"linked_connections"`
+	Connections       []ConnectionStatus     `json:"connections"`
 }
 
 // TeamStatusEntry represents one initialized team in the global status response.
 type TeamStatusEntry struct {
-	TeamID            string   `json:"team_id"`
-	TeamName          string   `json:"team_name"`
-	DisplayName       string   `json:"display_name"`
-	LinkedConnections []string `json:"linked_connections"`
+	TeamID            string                 `json:"team_id"`
+	TeamName          string                 `json:"team_name"`
+	DisplayName       string                 `json:"display_name"`
+	LinkedConnections []store.TeamConnection `json:"linked_connections"`
 }
 
 // RedactedNATSConnection exposes only safe fields from a NATS connection config.
@@ -49,10 +54,50 @@ type GlobalStatusResponse struct {
 	Warnings    []string                 `json:"warnings,omitempty"`
 }
 
+const (
+	crossguardHeaderPrefix = "\U0001F517 " // link emoji + space
+)
+
+// connKey returns a display key for a TeamConnection (e.g. "outbound:my-conn").
+func connKey(tc store.TeamConnection) string {
+	return tc.Direction + ":" + tc.Connection
+}
+
+// connectionDisplayNames formats a slice of TeamConnection as display strings.
+func connectionDisplayNames(conns []store.TeamConnection) []string {
+	names := make([]string, len(conns))
+	for i, tc := range conns {
+		names[i] = connKey(tc)
+	}
+	return names
+}
+
+func addCrossguardHeaderPrefix(header string) string {
+	if strings.HasPrefix(header, crossguardHeaderPrefix) {
+		return header
+	}
+	return crossguardHeaderPrefix + header
+}
+
+func removeCrossguardHeaderPrefix(header string) string {
+	return strings.TrimPrefix(header, crossguardHeaderPrefix)
+}
+
+func (p *Plugin) publishChannelConnectionUpdate(channelID string, connections []store.TeamConnection) {
+	keys := make([]string, len(connections))
+	for i, tc := range connections {
+		keys[i] = connKey(tc)
+	}
+	p.API.PublishWebSocketEvent("channel_connections_updated", map[string]any{
+		"channel_id":  channelID,
+		"connections": strings.Join(keys, ","),
+	}, &model.WebsocketBroadcast{ChannelId: channelID})
+}
+
 // initTeamForCrossGuard links a connection to a team. If the team was not
 // previously initialized, it also adds it to the initialized teams list and
 // posts an announcement. Returns (team, alreadyLinked, error).
-func (p *Plugin) initTeamForCrossGuard(user *model.User, teamID, connName string) (*model.Team, bool, *apiError) {
+func (p *Plugin) initTeamForCrossGuard(user *model.User, teamID string, conn store.TeamConnection) (*model.Team, bool, *apiError) {
 	team, appErr := p.API.GetTeam(teamID)
 	if appErr != nil {
 		return nil, false, &apiError{Message: "team not found", Status: 404}
@@ -64,12 +109,14 @@ func (p *Plugin) initTeamForCrossGuard(user *model.User, teamID, connName string
 		return nil, false, &apiError{Message: "failed to check team initialization state", Status: 500}
 	}
 
-	if slices.Contains(existing, connName) {
-		return team, true, nil
+	for _, tc := range existing {
+		if tc.Matches(conn) {
+			return team, true, nil
+		}
 	}
 
-	if addErr := p.kvstore.AddTeamConnection(teamID, connName); addErr != nil {
-		p.API.LogError("Failed to add team connection", "team_id", teamID, "conn", connName, "error", addErr.Error())
+	if addErr := p.kvstore.AddTeamConnection(teamID, conn); addErr != nil {
+		p.API.LogError("Failed to add team connection", "team_id", teamID, "conn", connKey(conn), "error", addErr.Error())
 		return nil, false, &apiError{Message: "failed to save team initialization state", Status: 500}
 	}
 
@@ -88,10 +135,11 @@ func (p *Plugin) initTeamForCrossGuard(user *model.User, teamID, connName string
 
 	channel, appErr := p.API.GetChannelByName(teamID, model.DefaultChannelName, false)
 	if appErr == nil {
+		displayName := connKey(conn)
 		post := &model.Post{
 			UserId:    p.botUserID,
 			ChannelId: channel.Id,
-			Message:   fmt.Sprintf("Cross Guard connection `%s` linked to this team by @%s. (team ID: %s, team name: %s)", connName, user.Username, team.Id, team.Name),
+			Message:   fmt.Sprintf("Cross Guard connection `%s` linked to this team by @%s. (team ID: %s, team name: %s)", displayName, user.Username, team.Id, team.Name),
 		}
 		if _, appErr := p.API.CreatePost(post); appErr != nil {
 			p.API.LogWarn("Failed to post initialization message", "error", appErr.Error())
@@ -114,11 +162,51 @@ func (p *Plugin) getTeamStatus(teamID string) (*TeamStatusResponse, *apiError) {
 		return nil, &apiError{Message: "failed to check team status", Status: 500}
 	}
 
+	allConns := p.getAllConnectionNames()
+	configSet := make(map[string]store.TeamConnection, len(allConns))
+	connSet := make(map[string]store.TeamConnection)
+	for _, tc := range allConns {
+		key := connKey(tc)
+		configSet[key] = tc
+		connSet[key] = tc
+	}
+	for _, tc := range conns {
+		key := connKey(tc)
+		connSet[key] = tc
+	}
+
+	relevantKeys := make([]string, 0, len(connSet))
+	for key := range connSet {
+		relevantKeys = append(relevantKeys, key)
+	}
+	sort.Strings(relevantKeys)
+
+	linkedSet := make(map[string]struct{}, len(conns))
+	for _, tc := range conns {
+		linkedSet[connKey(tc)] = struct{}{}
+	}
+
+	statuses := make([]ConnectionStatus, 0, len(relevantKeys))
+	for _, key := range relevantKeys {
+		tc := connSet[key]
+		_, inConfig := configSet[key]
+		_, isLinked := linkedSet[key]
+		statuses = append(statuses, ConnectionStatus{
+			Name:           tc.Connection,
+			Direction:      tc.Direction,
+			Linked:         isLinked,
+			Orphaned:       !inConfig,
+			RemoteTeamName: tc.RemoteTeamName,
+		})
+	}
+
 	return &TeamStatusResponse{
 		TeamID:            team.Id,
 		TeamName:          team.Name,
+		TeamDisplayName:   team.DisplayName,
 		Initialized:       len(conns) > 0,
 		LinkedConnections: conns,
+		Connections:       statuses,
 	}, nil
 }
 
@@ -177,24 +265,32 @@ func (p *Plugin) getGlobalStatus() (*GlobalStatusResponse, *apiError) {
 
 // ChannelStatusResponse is the JSON response for a channel's connection status.
 type ChannelStatusResponse struct {
-	ChannelID       string             `json:"channel_id"`
-	ChannelName     string             `json:"channel_name"`
-	TeamName        string             `json:"team_name"`
-	TeamConnections []ConnectionStatus `json:"team_connections"`
+	ChannelID          string             `json:"channel_id"`
+	ChannelName        string             `json:"channel_name"`
+	ChannelDisplayName string             `json:"channel_display_name"`
+	TeamName           string             `json:"team_name"`
+	TeamConnections    []ConnectionStatus `json:"team_connections"`
 }
 
-// ConnectionStatus represents a single connection and whether it is linked to the channel.
+// ConnectionStatus represents a single connection and whether it is linked.
 type ConnectionStatus struct {
-	Name   string `json:"name"`
-	Linked bool   `json:"linked"`
+	Name           string `json:"name"`
+	Direction      string `json:"direction"`
+	Linked         bool   `json:"linked"`
+	Orphaned       bool   `json:"orphaned,omitempty"`
+	RemoteTeamName string `json:"remote_team_name,omitempty"`
 }
 
-// getChannelStatus returns the connection status for a channel, showing all
-// configured connections and whether each is linked to this channel.
+// getChannelStatus returns the connection status for a channel, showing
+// team-linked connections and any orphaned channel connections.
 func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *apiError) {
 	channel, appErr := p.API.GetChannel(channelID)
 	if appErr != nil {
 		return nil, &apiError{Message: "channel not found", Status: 404}
+	}
+
+	if channel.Type == model.ChannelTypeDirect || channel.Type == model.ChannelTypeGroup {
+		return nil, &apiError{Message: "Cross Guard is not available for direct or group messages", Status: 400}
 	}
 
 	team, appErr := p.API.GetTeam(channel.TeamId)
@@ -208,27 +304,68 @@ func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *ap
 		return nil, &apiError{Message: "failed to get channel connections", Status: 500}
 	}
 
+	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
+	if err != nil {
+		p.API.LogError("Failed to get team connections", "team_id", channel.TeamId, "error", err.Error())
+		return nil, &apiError{Message: "failed to get team connections", Status: 500}
+	}
+
 	allConns := p.getAllConnectionNames()
-	statuses := make([]ConnectionStatus, 0, len(allConns))
-	for _, name := range allConns {
+	configSet := make(map[string]store.TeamConnection, len(allConns))
+	connSet := make(map[string]store.TeamConnection)
+	for _, tc := range allConns {
+		key := connKey(tc)
+		configSet[key] = tc
+	}
+	for _, tc := range teamConns {
+		key := connKey(tc)
+		connSet[key] = tc
+	}
+	for _, tc := range channelConns {
+		key := connKey(tc)
+		if _, exists := connSet[key]; !exists {
+			connSet[key] = tc
+		}
+	}
+
+	relevantKeys := make([]string, 0, len(connSet))
+	for key := range connSet {
+		relevantKeys = append(relevantKeys, key)
+	}
+	sort.Strings(relevantKeys)
+
+	channelLinkedSet := make(map[string]struct{}, len(channelConns))
+	for _, tc := range channelConns {
+		channelLinkedSet[connKey(tc)] = struct{}{}
+	}
+
+	statuses := make([]ConnectionStatus, 0, len(relevantKeys))
+	for _, key := range relevantKeys {
+		tc := connSet[key]
+		_, inConfig := configSet[key]
+		_, isLinked := channelLinkedSet[key]
 		statuses = append(statuses, ConnectionStatus{
-			Name:   name,
-			Linked: slices.Contains(channelConns, name),
+			Name:           tc.Connection,
+			Direction:      tc.Direction,
+			Linked:         isLinked,
+			Orphaned:       !inConfig,
+			RemoteTeamName: tc.RemoteTeamName,
 		})
 	}
 
 	return &ChannelStatusResponse{
-		ChannelID:       channel.Id,
-		ChannelName:     channel.Name,
-		TeamName:        team.DisplayName,
-		TeamConnections: statuses,
+		ChannelID:          channel.Id,
+		ChannelName:        channel.Name,
+		ChannelDisplayName: channel.DisplayName,
+		TeamName:           team.DisplayName,
+		TeamConnections:    statuses,
 	}, nil
 }
 
 // initChannelForCrossGuard links a connection to a channel. If the channel did
 // not previously have any connections, it also marks the channel as shared and
 // posts an announcement. Returns (channel, alreadyLinked, error).
-func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID, connName string) (*model.Channel, bool, *apiError) {
+func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID string, conn store.TeamConnection) (*model.Channel, bool, *apiError) {
 	channel, appErr := p.API.GetChannel(channelID)
 	if appErr != nil {
 		return nil, false, &apiError{Message: "channel not found", Status: 404}
@@ -240,8 +377,15 @@ func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID, connName 
 		return nil, false, &apiError{Message: "failed to check team initialization state", Status: 500}
 	}
 
-	if !slices.Contains(teamConns, connName) {
-		if _, _, svcErr := p.initTeamForCrossGuard(user, channel.TeamId, connName); svcErr != nil {
+	teamHasConn := false
+	for _, tc := range teamConns {
+		if tc.Matches(conn) {
+			teamHasConn = true
+			break
+		}
+	}
+	if !teamHasConn {
+		if _, _, svcErr := p.initTeamForCrossGuard(user, channel.TeamId, conn); svcErr != nil {
 			return nil, false, svcErr
 		}
 	}
@@ -252,12 +396,14 @@ func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID, connName 
 		return nil, false, &apiError{Message: "failed to check channel connection state", Status: 500}
 	}
 
-	if slices.Contains(existing, connName) {
-		return channel, true, nil
+	for _, tc := range existing {
+		if tc.Matches(conn) {
+			return channel, true, nil
+		}
 	}
 
-	if addErr := p.kvstore.AddChannelConnection(channelID, connName); addErr != nil {
-		p.API.LogError("Failed to add channel connection", "channel_id", channelID, "conn", connName, "error", addErr.Error())
+	if addErr := p.kvstore.AddChannelConnection(channelID, conn); addErr != nil {
+		p.API.LogError("Failed to add channel connection", "channel_id", channelID, "conn", connKey(conn), "error", addErr.Error())
 		return nil, false, &apiError{Message: "failed to save channel connection state", Status: 500}
 	}
 
@@ -267,17 +413,21 @@ func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID, connName 
 		return nil, false, &apiError{Message: "failed to save channel connection state", Status: 500}
 	}
 
-	if len(updated) == 1 {
-		channel.Shared = model.NewPointer(true)
-		if _, appErr := p.API.UpdateChannel(channel); appErr != nil {
-			p.API.LogWarn("Failed to mark channel as shared", "error", appErr.Error())
+	p.publishChannelConnectionUpdate(channelID, updated)
+
+	freshChannel, appErr := p.API.GetChannel(channelID)
+	if appErr == nil {
+		freshChannel.Header = addCrossguardHeaderPrefix(freshChannel.Header)
+		if _, appErr := p.API.UpdateChannel(freshChannel); appErr != nil {
+			p.API.LogWarn("Failed to update channel header with CrossGuard prefix", "channel_id", channelID, "error", appErr.Error())
 		}
 	}
 
+	displayName := connKey(conn)
 	post := &model.Post{
 		UserId:    p.botUserID,
 		ChannelId: channel.Id,
-		Message:   fmt.Sprintf("Cross Guard connection `%s` linked to this channel by @%s. (channel ID: %s, channel name: %s)", connName, user.Username, channel.Id, channel.Name),
+		Message:   fmt.Sprintf("Cross Guard connection `%s` linked to this channel by @%s. (channel ID: %s, channel name: %s)", displayName, user.Username, channel.Id, channel.Name),
 	}
 	if _, appErr := p.API.CreatePost(post); appErr != nil {
 		p.API.LogWarn("Failed to post channel init message", "error", appErr.Error())
@@ -289,7 +439,7 @@ func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID, connName 
 // teardownChannelForCrossGuard unlinks a connection from a channel. If it was
 // the last connection, the channel connections are deleted and the channel is
 // unmarked as shared.
-func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID, connName string) (*model.Channel, *apiError) {
+func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID string, conn store.TeamConnection) (*model.Channel, *apiError) {
 	channel, appErr := p.API.GetChannel(channelID)
 	if appErr != nil {
 		return nil, &apiError{Message: "channel not found", Status: 404}
@@ -305,12 +455,19 @@ func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID, connN
 		return channel, nil
 	}
 
-	if !slices.Contains(existing, connName) {
-		return nil, &apiError{Message: fmt.Sprintf("connection %q is not linked to this channel", connName), Status: 400}
+	found := false
+	for _, tc := range existing {
+		if tc.Matches(conn) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, &apiError{Message: fmt.Sprintf("connection %q is not linked to this channel", connKey(conn)), Status: 400}
 	}
 
-	if removeErr := p.kvstore.RemoveChannelConnection(channelID, connName); removeErr != nil {
-		p.API.LogError("Failed to remove channel connection", "channel_id", channelID, "conn", connName, "error", removeErr.Error())
+	if removeErr := p.kvstore.RemoveChannelConnection(channelID, conn); removeErr != nil {
+		p.API.LogError("Failed to remove channel connection", "channel_id", channelID, "conn", connKey(conn), "error", removeErr.Error())
 		return nil, &apiError{Message: "failed to remove channel connection", Status: 500}
 	}
 
@@ -326,13 +483,21 @@ func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID, connN
 			return nil, &apiError{Message: "failed to remove channel connections", Status: 500}
 		}
 
-		channel.Shared = model.NewPointer(false)
-		if _, appErr := p.API.UpdateChannel(channel); appErr != nil {
-			p.API.LogWarn("Failed to unmark channel as shared", "error", appErr.Error())
+		freshChannel, fErr := p.API.GetChannel(channelID)
+		if fErr == nil {
+			freshChannel.Header = removeCrossguardHeaderPrefix(freshChannel.Header)
+			if _, appErr := p.API.UpdateChannel(freshChannel); appErr != nil {
+				p.API.LogWarn("Failed to remove CrossGuard prefix from channel header", "channel_id", channelID, "error", appErr.Error())
+			}
 		}
+
+		p.publishChannelConnectionUpdate(channelID, nil)
+	} else {
+		p.publishChannelConnectionUpdate(channelID, updated)
 	}
 
-	msg := fmt.Sprintf("Cross Guard connection `%s` unlinked from this channel by @%s.", connName, user.Username)
+	displayName := connKey(conn)
+	msg := fmt.Sprintf("Cross Guard connection `%s` unlinked from this channel by @%s.", displayName, user.Username)
 	if len(updated) == 0 {
 		msg += " All relays for this channel are now inactive."
 	}
@@ -350,7 +515,7 @@ func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID, connN
 
 // teardownTeamForCrossGuard unlinks a connection from a team. If it was the
 // last connection, the team is removed from the initialized list.
-func (p *Plugin) teardownTeamForCrossGuard(user *model.User, teamID, connName string) (*model.Team, *apiError) {
+func (p *Plugin) teardownTeamForCrossGuard(user *model.User, teamID string, conn store.TeamConnection) (*model.Team, *apiError) {
 	team, appErr := p.API.GetTeam(teamID)
 	if appErr != nil {
 		return nil, &apiError{Message: "team not found", Status: 404}
@@ -366,12 +531,19 @@ func (p *Plugin) teardownTeamForCrossGuard(user *model.User, teamID, connName st
 		return team, nil
 	}
 
-	if !slices.Contains(existing, connName) {
-		return nil, &apiError{Message: fmt.Sprintf("connection %q is not linked to this team", connName), Status: 400}
+	found := false
+	for _, tc := range existing {
+		if tc.Matches(conn) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, &apiError{Message: fmt.Sprintf("connection %q is not linked to this team", connKey(conn)), Status: 400}
 	}
 
-	if removeErr := p.kvstore.RemoveTeamConnection(teamID, connName); removeErr != nil {
-		p.API.LogError("Failed to remove team connection", "team_id", teamID, "conn", connName, "error", removeErr.Error())
+	if removeErr := p.kvstore.RemoveTeamConnection(teamID, conn); removeErr != nil {
+		p.API.LogError("Failed to remove team connection", "team_id", teamID, "conn", connKey(conn), "error", removeErr.Error())
 		return nil, &apiError{Message: "failed to remove team connection", Status: 500}
 	}
 
@@ -390,7 +562,8 @@ func (p *Plugin) teardownTeamForCrossGuard(user *model.User, teamID, connName st
 
 	channel, appErr := p.API.GetChannelByName(teamID, model.DefaultChannelName, false)
 	if appErr == nil {
-		msg := fmt.Sprintf("Cross Guard connection `%s` unlinked from this team by @%s.", connName, user.Username)
+		displayName := connKey(conn)
+		msg := fmt.Sprintf("Cross Guard connection `%s` unlinked from this team by @%s.", displayName, user.Username)
 		if len(updated) == 0 {
 			msg += " All channel relays in this team are now inactive."
 		}
@@ -407,72 +580,53 @@ func (p *Plugin) teardownTeamForCrossGuard(user *model.User, teamID, connName st
 	return team, nil
 }
 
-// getAllConnectionNames returns all direction-prefixed connection names from config.
-func (p *Plugin) getAllConnectionNames() []string {
+// getAllConnectionNames returns all connections from config as TeamConnection structs.
+func (p *Plugin) getAllConnectionNames() []store.TeamConnection {
 	cfg := p.getConfiguration()
 	outbound, outErr := cfg.GetOutboundConnections()
 	inbound, inErr := cfg.GetInboundConnections()
 
-	var names []string
+	var conns []store.TeamConnection
 	if outErr != nil {
 		p.API.LogWarn("Failed to parse outbound connections", "error", outErr.Error())
 	} else {
 		for _, conn := range outbound {
-			names = append(names, "outbound:"+conn.Name)
+			conns = append(conns, store.TeamConnection{Direction: "outbound", Connection: conn.Name})
 		}
 	}
 	if inErr != nil {
 		p.API.LogWarn("Failed to parse inbound connections", "error", inErr.Error())
 	} else {
 		for _, conn := range inbound {
-			names = append(names, "inbound:"+conn.Name)
+			conns = append(conns, store.TeamConnection{Direction: "inbound", Connection: conn.Name})
 		}
 	}
-	return names
+	return conns
 }
 
 // resolveConnectionName resolves the connection name from the given name and available list.
 // If connName is empty and there is exactly one connection, it auto-selects it.
-// Returns (resolved name, available list, error message). A non-empty error message
+// Returns (resolved connection, available list, error message). A non-empty error message
 // means the caller should report it to the user.
-func (p *Plugin) resolveConnectionName(connName string, available []string) (string, []string, string) {
+func (p *Plugin) resolveConnectionName(connName string, available []store.TeamConnection) (store.TeamConnection, []store.TeamConnection, string) {
 	if len(available) == 0 {
-		return "", nil, "no NATS connections configured"
+		return store.TeamConnection{}, nil, "no NATS connections configured"
 	}
 
 	if connName == "" {
 		if len(available) == 1 {
 			return available[0], available, ""
 		}
-		return "", available, "multiple connections available, specify connection_name"
+		return store.TeamConnection{}, available, "multiple connections available, specify connection_name"
 	}
 
-	if !slices.Contains(available, connName) {
-		return "", available, fmt.Sprintf("connection not found: %s", connName)
-	}
-
-	return connName, available, ""
-}
-
-// resolveLinkedConnectionName resolves the connection name from the linked list.
-// If connName is empty and there is exactly one linked connection, it auto-selects it.
-func resolveLinkedConnectionName(connName string, linked []string) (string, string) {
-	if len(linked) == 0 {
-		return "", "no connections linked"
-	}
-
-	if connName == "" {
-		if len(linked) == 1 {
-			return linked[0], ""
+	for _, tc := range available {
+		if connKey(tc) == connName {
+			return tc, available, ""
 		}
-		return "", "multiple connections linked, specify connection_name"
 	}
 
-	if !slices.Contains(linked, connName) {
-		return "", fmt.Sprintf("connection %q is not linked", connName)
-	}
-
-	return connName, ""
+	return store.TeamConnection{}, available, fmt.Sprintf("connection not found: %s", connName)
 }
 
 // redactConnections strips sensitive fields from NATS connections for the status response.

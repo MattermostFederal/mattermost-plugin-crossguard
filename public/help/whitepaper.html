@@ -1,0 +1,1750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CDS Whitepaper - Cross Guard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="layout">
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <h2>Cross Guard</h2>
+            <span class="version">Plugin Documentation</span>
+        </div>
+        <nav>
+            <span class="nav-section">Documentation</span>
+            <a href="help.html">Overview</a>
+            <a href="commands.html">Slash Commands</a>
+            <a href="admin.html">Admin Configuration</a>
+            <a href="api.html">REST API</a>
+            <a href="threatmodel.html">Threat Model</a>
+            <a href="whitepaper.html" class="active">Whitepaper</a>
+        </nav>
+    </aside>
+
+    <main class="content">
+        <div class="breadcrumb">
+            <a href="help.html">Docs</a>
+            <span class="separator">/</span>
+            Whitepaper
+        </div>
+
+        <h1>Mattermost Cross Guard CDS Whitepaper</h1>
+        <p class="tagline">Architecture, deployment, and security analysis for cross-domain message relay</p>
+
+        <!-- Section 1: Executive Summary -->
+        <h2>1. Executive Summary</h2>
+        <p>
+            Cross Guard is a Mattermost plugin that bridges isolated Mattermost instances across security
+            domain boundaries using NATS as a lightweight, high-performance message bus. It is designed
+            for environments where servers cannot share databases, APIs, or network access, including
+            air-gapped networks, multi-classification deployments, and multi-tenant architectures.
+        </p>
+        <p>
+            The plugin relays posts, edits, deletes, and reactions bidirectionally while keeping each
+            Mattermost server fully independent. No database synchronization, no direct API calls between
+            servers, and no shared authentication. Each server maintains its own users, teams, channels,
+            and data store. Cross Guard operates purely at the message level, publishing serialized
+            envelopes to NATS subjects and consuming them on the other side.
+        </p>
+        <p>
+            Administrative controls enforce explicit opt-in at both the team and channel level. No
+            messages flow until an administrator deliberately links a connection to a team and then to
+            specific channels within that team. Inbound connections require interactive acceptance via
+            admin prompts before any data crosses the boundary.
+        </p>
+        <p>
+            Transport security supports TLS 1.2+, mutual certificate authentication (mTLS), NATS
+            authentication (token or credentials), NATS ACLs for subject-level access control, and
+            configurable permission lockdown via the <code>RestrictToSystemAdmins</code> setting.
+        </p>
+        <p>
+            This whitepaper provides a comprehensive technical analysis of Cross Guard's architecture,
+            message lifecycle, security model, and deployment topologies for audiences evaluating the
+            plugin for cross-domain use.
+        </p>
+
+        <!-- Section 2: The Cross Domain Problem -->
+        <h2>2. The Cross Domain Problem</h2>
+
+        <h3>What is a Cross Domain Solution?</h3>
+        <p>
+            A Cross Domain Solution (CDS) is a system that enables controlled information transfer
+            between two or more security domains that operate at different classification levels or
+            under different administrative authorities. In government and defense contexts, these
+            domains are often separated by policy, regulation, or physical network segmentation.
+            A CDS must provide a controlled, auditable, and secure pathway for information to cross
+            these boundaries without violating the isolation guarantees of either domain.
+        </p>
+        <p>
+            Traditional CDS approaches include hardware guards (dedicated appliances that inspect and
+            filter data at the network boundary), data diodes (one-way physical connections that
+            enforce unidirectional flow), and protocol breaks (systems that terminate one protocol
+            and re-originate data in another, preventing direct network connectivity).
+        </p>
+        <p>
+            These approaches work well for file transfers, email, and structured data exchange.
+            However, they were not designed for real-time collaborative messaging. Modern collaboration
+            tools like Mattermost operate within a single domain: users on Domain A cannot see or
+            interact with messages on Domain B. There is no native mechanism for bridging conversations
+            across isolated instances.
+        </p>
+
+        <h3>Why Existing Federation Approaches Fall Short</h3>
+        <p>
+            Several approaches exist for connecting separate Mattermost instances, but each has
+            fundamental limitations for cross-domain use:
+        </p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Approach</th>
+                    <th>Mechanism</th>
+                    <th>Why It Fails for CDS</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Shared Database</strong></td>
+                    <td>Multiple Mattermost instances read/write from the same database</td>
+                    <td>Requires direct network access between domains to the database server. Violates network isolation. The database becomes a single point of compromise spanning both domains.</td>
+                </tr>
+                <tr>
+                    <td><strong>Direct API Federation</strong></td>
+                    <td>Servers call each other's REST APIs to synchronize data</td>
+                    <td>Requires bidirectional HTTP connectivity between servers. Violates network segmentation policies. Exposes the full Mattermost API surface across the domain boundary.</td>
+                </tr>
+                <tr>
+                    <td><strong>Email Bridges</strong></td>
+                    <td>Messages forwarded as emails between instances</td>
+                    <td>Loses real-time conversation flow. No edit or delete synchronization. No reaction support. Latency measured in minutes, not milliseconds. Conversations become disjointed threads.</td>
+                </tr>
+                <tr>
+                    <td><strong>Webhook Relays</strong></td>
+                    <td>Outgoing webhooks trigger incoming webhooks on the other server</td>
+                    <td>Requires direct HTTP connectivity (same problem as API federation). Point-to-point, fragile, no built-in resilience or reconnection. No standardized authentication beyond shared secrets.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>What Cross Guard Provides</h3>
+        <p>
+            Cross Guard takes a fundamentally different approach. Rather than synchronizing databases,
+            proxying APIs, or bridging protocols, it operates as a message-level relay with a decoupled
+            pub/sub architecture:
+        </p>
+        <ul>
+            <li><strong>Message-level relay, not database sync:</strong> Only individual post events (create, edit, delete, react) cross the boundary. No bulk data transfer, no schema coupling, no shared state.</li>
+            <li><strong>Asynchronous, decoupled architecture via pub/sub:</strong> The two Mattermost servers never communicate directly. A NATS message bus sits between them. Publishers and subscribers interact only with NATS, not with each other.</li>
+            <li><strong>Full server independence:</strong> Each server maintains its own users, teams, channels, database, authentication, and administration. Cross Guard adds relay capability without modifying any of these.</li>
+            <li><strong>Opt-in at every level:</strong> Relay is not automatic. Administrators must explicitly link connections to teams, then to individual channels. Inbound connections require interactive acceptance before any messages flow.</li>
+            <li><strong>Minimal data crossing the boundary:</strong> Only text content and routing metadata transit the NATS bus. File attachments, user metadata, channel properties, post properties, and interactive message elements are intentionally excluded.</li>
+        </ul>
+
+        <!-- Section 3: Why NATS as the Transport Layer -->
+        <h2>3. Why NATS as the Transport Layer</h2>
+
+        <h3>What is NATS?</h3>
+        <p>
+            <a href="https://nats.io">NATS</a> is a lightweight, high-performance messaging system
+            written in Go. It provides core pub/sub semantics: publishers send messages to named
+            subjects, and subscribers receive messages from those subjects. NATS is designed for
+            cloud-native, distributed systems and is used in production by organizations ranging
+            from startups to government agencies.
+        </p>
+        <p>
+            In its core mode (which Cross Guard uses), NATS is fire-and-forget: messages are
+            delivered to connected subscribers in real time, with no message persistence or replay.
+            This maps directly to Cross Guard's relay model, where messages are relayed as they
+            occur and not queued for later delivery.
+        </p>
+
+        <h3>Why NATS Fits the CDS Model</h3>
+
+        <h4>1. Decoupled Architecture</h4>
+        <p>
+            Publishers and subscribers never communicate directly. The NATS server mediates all
+            traffic. Neither the publisher nor the subscriber needs to know the other's network
+            address, identity, or even existence. This maps directly to CDS architecture where
+            the transport sits between domains and neither domain has direct access to the other.
+        </p>
+
+        <h4>2. Subject-Based Routing</h4>
+        <p>
+            Messages are published to named subjects (e.g., <code>crossguard.relay.a-to-b</code>).
+            Subscribers filter by subject. This provides natural channel isolation: different
+            relay directions use different subjects, and NATS ACLs can restrict which clients
+            can publish or subscribe to which subjects. No routing configuration is needed beyond
+            subject names.
+        </p>
+
+        <h4>3. Lightweight Protocol</h4>
+        <p>
+            NATS uses a text-based protocol with minimal overhead. A typical Cross Guard message
+            envelope is a few hundred bytes of JSON. NATS adds negligible framing. The result is
+            sub-millisecond publish latency, which is critical for real-time messaging where users
+            expect near-instant delivery.
+        </p>
+
+        <h4>4. TLS and Authentication</h4>
+        <p>
+            NATS has native support for TLS 1.2+, token authentication, username/password
+            authentication, and client certificate authentication (mTLS). These map directly to
+            CDS transport security requirements. No additional proxy or TLS terminator is needed.
+        </p>
+
+        <h4>5. Network Placement Flexibility</h4>
+        <p>
+            A NATS server can be deployed in a DMZ, an enclave, a guard network, or any controlled
+            network segment between domains. The Mattermost servers only need to reach the NATS
+            server; they never need to reach each other. This is the key architectural property
+            that enables CDS deployment.
+        </p>
+
+        <h4>6. Resilience</h4>
+        <p>
+            NATS clients have built-in reconnection with configurable retry behavior. Cross Guard
+            configures unlimited reconnects with a 2-second wait, so temporary network interruptions
+            (maintenance windows, transient failures) self-heal without manual intervention.
+            Disconnect and reconnect events are logged for operational visibility.
+        </p>
+
+        <h4>7. ACL Support</h4>
+        <p>
+            NATS server authorization rules can restrict which clients can publish or subscribe to
+            which subjects. In a CDS deployment, this means the NATS administrator can enforce
+            that Server A can only publish to <code>crossguard.a-to-b</code> and only subscribe to
+            <code>crossguard.b-to-a</code>, and vice versa. This provides transport-level access
+            control independent of the plugin's own authorization.
+        </p>
+
+        <h3>How Cross Guard Uses NATS</h3>
+        <p>
+            Each Cross Guard connection (inbound or outbound) maps to exactly one NATS subject.
+            Outbound connections publish serialized message envelopes to their configured subject.
+            Inbound connections subscribe to their configured subject and dispatch received messages
+            to type-specific handlers.
+        </p>
+        <p>
+            The subject prefix <code>crossguard.</code> is enforced by configuration validation.
+            All subjects must start with this prefix, which prevents accidental cross-contamination
+            with other NATS traffic if the NATS server is shared (though a dedicated NATS server
+            is recommended for CDS deployments).
+        </p>
+        <p>
+            Separate subjects per direction (e.g., <code>crossguard.a-to-b</code> and
+            <code>crossguard.b-to-a</code>) prevent echo loops at the transport level. Even if
+            the plugin's application-level loop prevention were to fail, messages published on one
+            subject are not received on a different subject.
+        </p>
+
+        <h3>NATS Deployment Topologies for CDS</h3>
+
+        <div class="diagram-box">
+<pre>Topology 1: Shared Network (Development)
+
+  Server A          NATS Server          Server B
+  [Plugin] --------&gt; [  :4222  ] &lt;-------- [Plugin]
+     Same network, no segmentation
+
+
+Topology 2: DMZ Placement (Production)
+
+  Domain A           DMZ / Enclave         Domain B
+  +-----------+     +-------------+     +-----------+
+  | Server A  |     | NATS Server |     | Server B  |
+  | [Plugin]  |----&gt;| [:4222]     |&lt;----| [Plugin]  |
+  +-----------+     +-------------+     +-----------+
+       Firewall allows only NATS (port 4222) between segments
+
+
+Topology 3: Guard Network (Classified)
+
+  Classification A    Guard Appliance     Classification B
+  +-----------+     +------------------+     +-----------+
+  | Server A  |     | NATS on          |     | Server B  |
+  | [Plugin]  |----&gt;| dedicated guard  |&lt;----| [Plugin]  |
+  +-----------+     | hardware/enclave |     +-----------+
+                    +------------------+
+     Dedicated hardware, strict firewall rules, physical separation</pre>
+        </div>
+
+        <!-- Section 4: System Architecture -->
+        <h2>4. System Architecture</h2>
+
+        <h3>Component Overview</h3>
+
+        <div class="diagram-box">
+<pre>Mattermost Server A                                    Mattermost Server B
++----------------------------------------------+     +----------------------------------------------+
+|                                              |     |                                              |
+|  [Users] --&gt; [Posts] --&gt; [Plugin Hooks]       |     |  [Plugin Inbound Handler] --&gt; [Posts] --&gt; UI  |
+|                              |               |     |           |                                  |
+|                    [Outbound Engine]          |     |  [Team/Channel Resolution]                   |
+|                         |                    |     |           |                                  |
+|              [NATS Publisher]                 |     |  [User Sync Engine]                          |
+|                    |                         |     |           |                                  |
+|           [TLS + Auth]                       |     |      [TLS + Auth]                            |
++-----------|----------------------------------+     +-----------|----------------------------------+
+            |                                                   |
+            v                                                   ^
+      +-----|---------------------------------------------------|-----+
+      |                        NATS Server                            |
+      |  Subject: crossguard.a-to-b  --&gt;  Subject: crossguard.a-to-b |
+      +---------------------------------------------------------------+</pre>
+        </div>
+
+        <h3>Plugin Internal Architecture</h3>
+        <p>
+            The Cross Guard plugin is implemented as a single Go binary that runs inside the
+            Mattermost server process. Its internal architecture consists of the following
+            components:
+        </p>
+        <ul>
+            <li>
+                <strong><code>Plugin</code> struct:</strong> The central struct that holds the bot
+                user ID, KV store reference, NATS connection pools, relay semaphore, wait group for
+                goroutine lifecycle tracking, and a context for graceful shutdown.
+            </li>
+            <li>
+                <strong>Outbound pool:</strong> A slice of <code>outboundConn</code> structs, each
+                holding a persistent NATS connection and its configured subject. Protected by a
+                <code>sync.RWMutex</code> to allow concurrent reads (publishing) with exclusive
+                writes (reconnection on config change).
+            </li>
+            <li>
+                <strong>Inbound pool:</strong> A slice of <code>inboundConn</code> structs, each
+                holding a persistent NATS connection and an active subscription. Protected by a
+                <code>sync.RWMutex</code> with the same read/write concurrency model.
+            </li>
+            <li>
+                <strong>Relay semaphore:</strong> A buffered channel of capacity 50, shared by
+                both inbound and outbound relay operations. Controls the maximum number of
+                concurrent relay goroutines to prevent unbounded resource consumption under high
+                message volume.
+            </li>
+            <li>
+                <strong>KV store:</strong> Mattermost's built-in plugin key-value store, used
+                for all persistent state (team/channel linkage, post mappings, prompt state,
+                rewrite indexes). An optional caching layer wraps the KV store with 15-minute TTL
+                and cluster-aware invalidation.
+            </li>
+        </ul>
+
+        <h3>Plugin Lifecycle</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Event</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>OnActivate</strong></td>
+                    <td>Creates bot user, initializes KV store and caching layer, registers the <code>/crossguard</code> slash command, initializes HTTP router for REST API and interactive prompts, creates context for shutdown signaling, spawns relay semaphore, connects all configured outbound and inbound NATS connections.</td>
+                </tr>
+                <tr>
+                    <td><strong>OnConfigurationChange</strong></td>
+                    <td>Validates new configuration, closes existing NATS connections, opens new connections with updated settings. Live reconnection with no plugin restart required.</td>
+                </tr>
+                <tr>
+                    <td><strong>OnDeactivate</strong></td>
+                    <td>Cancels context (signals all goroutines to stop), closes inbound subscriptions (stops new message delivery), waits for all in-flight relay goroutines via WaitGroup, closes outbound connections.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Section 5: Message Relay Lifecycle (Outbound) -->
+        <h2>5. Message Relay Lifecycle (Outbound)</h2>
+        <p>
+            This section traces the complete path of a message from the moment a user posts in a
+            channel on Server A to the moment it is published to NATS.
+        </p>
+
+        <h3>Step 1: Post Lifecycle Hook Fires</h3>
+        <p>
+            Mattermost's plugin API provides lifecycle hooks that fire after post events. Cross Guard
+            implements five hooks in <code>hooks.go</code>:
+        </p>
+        <ul>
+            <li><code>MessageHasBeenPosted()</code> for new posts</li>
+            <li><code>MessageHasBeenUpdated()</code> for edits</li>
+            <li><code>MessageHasBeenDeleted()</code> for deletes</li>
+            <li><code>ReactionHasBeenAdded()</code> for new reactions</li>
+            <li><code>ReactionHasBeenRemoved()</code> for reaction removals</li>
+        </ul>
+        <p>
+            Each hook receives the relevant post or reaction object from Mattermost and begins the
+            relay evaluation pipeline.
+        </p>
+
+        <h3>Step 2: Filtering (What Does NOT Get Relayed)</h3>
+        <p>
+            Before any relay occurs, the hook applies a series of filters to determine whether the
+            event should be relayed. Events that match any filter are silently skipped:
+        </p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Filter</th>
+                    <th>Check</th>
+                    <th>Purpose</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>System messages</td>
+                    <td><code>post.IsSystemMessage()</code> returns true</td>
+                    <td>Prevents system-generated messages (join/leave, header change, etc.) from relaying</td>
+                </tr>
+                <tr>
+                    <td>Bot posts</td>
+                    <td><code>post.UserId == p.botUserID</code></td>
+                    <td>Prevents bot announcements (init, teardown, prompts) from relaying</td>
+                </tr>
+                <tr>
+                    <td>Already-relayed posts</td>
+                    <td><code>post.GetProp("crossguard_relayed") != nil</code></td>
+                    <td>Primary loop prevention: stops inbound posts from being re-relayed outbound</td>
+                </tr>
+                <tr>
+                    <td>Sync user reactions</td>
+                    <td><code>user.Position == "crossguard-sync"</code></td>
+                    <td>Prevents reactions added by sync users from being relayed back</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Step 3: Channel and Team Validation</h3>
+        <p>
+            The <code>isChannelRelayEnabled()</code> function checks whether the channel and its
+            parent team are linked to any outbound connections:
+        </p>
+        <ol>
+            <li>Look up the channel's linked connections from the KV store (key: <code>crossguard-channelinit-{channelID}</code>)</li>
+            <li>Look up the team's linked connections from the KV store (key: <code>crossguard-teaminit-{teamID}</code>)</li>
+            <li>Return the intersection: only connections that are linked at both the team and channel level</li>
+        </ol>
+        <p>
+            If no connections match, the message is not relayed. This ensures that both team-level
+            and channel-level opt-in are required.
+        </p>
+
+        <h3>Step 4: Envelope Construction</h3>
+        <p>
+            The hook fetches source metadata (user, channel, team) via the Plugin API and builds
+            a type-specific payload:
+        </p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Message Type</th>
+                    <th>Payload Fields</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>crossguard_post</code> / <code>crossguard_update</code></td>
+                    <td><code>post_id</code>, <code>root_id</code>, <code>channel_name</code>, <code>team_name</code>, <code>username</code>, <code>message</code>, <code>create_at</code></td>
+                </tr>
+                <tr>
+                    <td><code>crossguard_delete</code></td>
+                    <td><code>post_id</code>, <code>channel_name</code>, <code>team_name</code></td>
+                </tr>
+                <tr>
+                    <td><code>crossguard_reaction_add</code> / <code>crossguard_reaction_remove</code></td>
+                    <td><code>post_id</code>, <code>channel_name</code>, <code>team_name</code>, <code>username</code>, <code>emoji_name</code></td>
+                </tr>
+            </tbody>
+        </table>
+        <p>
+            The payload is wrapped in a <code>model.Message</code> envelope with a type constant
+            and an RFC 3339 UTC timestamp, then serialized to JSON bytes.
+        </p>
+
+        <h3>Step 5: Semaphore Acquisition and Async Dispatch</h3>
+        <p>
+            The relay operation is dispatched asynchronously to avoid blocking the Mattermost
+            post lifecycle:
+        </p>
+        <ol>
+            <li>Non-blocking attempt to acquire a slot from the relay semaphore (buffered channel of capacity 50)</li>
+            <li>If the semaphore is full (50 concurrent relays already in progress): drop the message and log a warning. This is a deliberate design choice to prevent unbounded goroutine spawning.</li>
+            <li>If a slot is acquired: increment the WaitGroup counter and spawn a goroutine for the publish operation</li>
+        </ol>
+
+        <h3>Step 6: Publish to NATS</h3>
+        <p>
+            Inside the goroutine, for each outbound connection whose name matches a linked
+            connection from Step 3:
+        </p>
+        <ol>
+            <li>Check connection state: <code>IsConnected()</code> or <code>IsReconnecting()</code>. If neither, skip with a warning log.</li>
+            <li>Publish the JSON bytes to the connection's configured subject</li>
+            <li>Flush to confirm delivery to the NATS server</li>
+            <li>On failure: retry up to 3 times with exponential backoff (500ms, 1s, 2s, capped at 5s)</li>
+            <li>On retry exhaustion: log an error and drop the message (no queuing)</li>
+            <li>Context cancellation is respected during backoff waits for graceful shutdown</li>
+        </ol>
+        <p>
+            After publishing (or dropping), the semaphore slot is released and the WaitGroup
+            counter is decremented.
+        </p>
+
+        <!-- Section 6: Message Relay Lifecycle (Inbound) -->
+        <h2>6. Message Relay Lifecycle (Inbound)</h2>
+        <p>
+            This section traces the complete path of a message from the moment it arrives on a
+            NATS subject to the moment it appears as a local post on Server B.
+        </p>
+
+        <h3>Step 1: NATS Subscription Callback Fires</h3>
+        <p>
+            The <code>handleInboundMessage()</code> closure receives a <code>nats.Msg</code> from
+            the subscribed subject. Like outbound, it performs a non-blocking semaphore acquisition
+            from the same 50-slot pool. If the semaphore is full, the message is dropped with a
+            warning log. If a slot is acquired, a goroutine is spawned.
+        </p>
+
+        <h3>Step 2: Envelope Deserialization</h3>
+        <p>
+            <code>model.UnmarshalMessage(msg.Data)</code> decodes the outer envelope. The handler
+            dispatches by <code>envelope.Type</code>:
+        </p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Type</th>
+                    <th>Handler</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td><code>crossguard_post</code></td><td><code>handleInboundPost()</code></td></tr>
+                <tr><td><code>crossguard_update</code></td><td><code>handleInboundUpdate()</code></td></tr>
+                <tr><td><code>crossguard_delete</code></td><td><code>handleInboundDelete()</code></td></tr>
+                <tr><td><code>crossguard_reaction_add</code></td><td><code>handleInboundReaction(add=true)</code></td></tr>
+                <tr><td><code>crossguard_reaction_remove</code></td><td><code>handleInboundReaction(add=false)</code></td></tr>
+                <tr><td><code>crossguard_test</code></td><td>Log and discard (connection testing)</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Step 3: Team and Channel Resolution</h3>
+        <p>
+            The <code>resolveTeamAndChannel()</code> function maps the remote team and channel
+            names to local entities:
+        </p>
+        <ol>
+            <li>
+                <strong>Check rewrite index first:</strong> <code>GetTeamRewriteIndex(connName, remoteTeamName)</code>
+                looks up KV key <code>crossguard-rwi-{connName}::{remoteTeamName}</code>. If a rewrite rule exists,
+                use the local team ID from the index.
+            </li>
+            <li>
+                <strong>If no rewrite:</strong> <code>GetTeamByName(teamName)</code> assumes the remote and local
+                team names match.
+            </li>
+            <li>
+                <strong>Verify team linkage:</strong> Check KV store (<code>crossguard-teaminit-{teamID}</code>)
+                to confirm this team is linked to the inbound connection.
+            </li>
+            <li>
+                <strong>If not linked:</strong> Trigger <code>handleUnlinkedInbound()</code>, which posts an
+                Accept/Block prompt to <code>#town-square</code>. The message is dropped (it will not be retried).
+            </li>
+            <li>
+                <strong>Resolve channel:</strong> <code>GetChannelByName(teamID, channelName)</code> to find the
+                local channel.
+            </li>
+            <li>
+                <strong>Verify channel linkage:</strong> Check KV store for channel-level connection linkage.
+            </li>
+            <li>
+                <strong>If channel not linked:</strong> Trigger <code>handleUnlinkedInboundChannel()</code>, which
+                posts a prompt in the channel itself. The message is dropped.
+            </li>
+        </ol>
+
+        <h3>Step 4: User Resolution</h3>
+        <p>
+            The <code>resolveInboundUser()</code> function determines which local user will be
+            the author of the relayed post. This is governed by the <code>UsernameLookup</code>
+            setting:
+        </p>
+        <ul>
+            <li>
+                <strong>If UsernameLookup enabled (default):</strong> Call <code>GetUserByUsername(username)</code>.
+                If a matching local user is found and their <code>Position</code> is not <code>"crossguard-sync"</code>,
+                use the real local user. Messages appear as if that user posted them.
+            </li>
+            <li>
+                <strong>If not found or lookup disabled:</strong> Create or fetch a synthetic "sync user" with:
+                <ul>
+                    <li>Username: <code>{remoteUsername}.{connName}</code> (truncated to 64 characters)</li>
+                    <li>Email: <code>crossguard.synthetic_user.{randomID}@crossguard.local</code></li>
+                    <li>Position: <code>crossguard-sync</code></li>
+                    <li>FirstName: remote username</li>
+                    <li>LastName: <code>(via {connName})</code></li>
+                    <li>Props: <code>CrossguardRemoteUsername: {originalUsername}</code></li>
+                </ul>
+            </li>
+            <li>
+                <strong>Race-safe creation:</strong> Uses atomic create with retry on conflict. If two
+                messages arrive simultaneously for the same unknown user, only one sync user is created.
+            </li>
+        </ul>
+        <p>
+            After user resolution, <code>ensureMembership()</code> adds the user to the target team
+            and channel if they are not already a member.
+        </p>
+
+        <h3>Step 5: Post Creation (New Posts)</h3>
+        <ol>
+            <li>Build a <code>mmModel.Post</code> with the resolved user ID, channel ID, and message text</li>
+            <li>If threaded (<code>RootID</code> present in envelope): look up the local root post via post mapping to preserve thread structure</li>
+            <li>Set <code>post.AddProp("crossguard_relayed", true)</code> to prevent re-relay (primary loop prevention)</li>
+            <li>Call <code>p.API.CreatePost(post)</code> to create the post locally</li>
+            <li>Store the mapping: <code>SetPostMapping(connName, remotePostID, localPostID)</code> for future edits/deletes</li>
+        </ol>
+
+        <h3>Step 5 (alt): Post Update</h3>
+        <ol>
+            <li>Look up local post ID via <code>GetPostMapping(connName, remotePostID)</code></li>
+            <li>If no mapping exists: log a warning and skip (the original post may not have been relayed, e.g., if the channel was linked after the original was posted)</li>
+            <li>Fetch the local post, replace the <code>Message</code> field, call <code>UpdatePost()</code></li>
+        </ol>
+
+        <h3>Step 5 (alt): Post Delete</h3>
+        <ol>
+            <li>Look up local post ID via post mapping</li>
+            <li>Set <code>SetDeletingFlag(localPostID)</code> in KV store (prevents the <code>MessageHasBeenDeleted</code> hook from re-relaying this delete)</li>
+            <li>Call <code>DeletePost(localPostID)</code></li>
+            <li>Clear <code>ClearDeletingFlag(localPostID)</code></li>
+            <li>Delete the post mapping entry</li>
+        </ol>
+
+        <h3>Step 5 (alt): Reaction Add/Remove</h3>
+        <ol>
+            <li>Look up local post ID via post mapping</li>
+            <li>Resolve user (same logic as for posts)</li>
+            <li>Call <code>AddReaction()</code> or <code>RemoveReaction()</code> with the local user ID and post ID</li>
+        </ol>
+
+        <!-- Section 7: Data Boundary Control -->
+        <h2>7. Data Boundary Control</h2>
+        <p>
+            Understanding exactly what data crosses the domain boundary is critical for CDS
+            evaluation. This section documents every field in the NATS envelope, its source,
+            whether it is user-controlled, and how it is used on the receiving side.
+        </p>
+
+        <h3>Data That Crosses the Boundary (NATS Envelope)</h3>
+
+        <h4>Outer Envelope</h4>
+        <table>
+            <thead>
+                <tr>
+                    <th>Field</th>
+                    <th>Content</th>
+                    <th>User-Controlled?</th>
+                    <th>Used For</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>type</code></td>
+                    <td>Message type constant (e.g., <code>crossguard_post</code>)</td>
+                    <td>No (set by plugin code)</td>
+                    <td>Handler dispatch</td>
+                </tr>
+                <tr>
+                    <td><code>timestamp</code></td>
+                    <td>RFC 3339 UTC timestamp</td>
+                    <td>No (set by plugin code)</td>
+                    <td>Logging only</td>
+                </tr>
+                <tr>
+                    <td><code>json</code></td>
+                    <td>Serialized inner payload</td>
+                    <td>Contains user-controlled fields (see below)</td>
+                    <td>Deserialized by type-specific handler</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h4>PostMessage Payload Fields</h4>
+        <table>
+            <thead>
+                <tr>
+                    <th>Field</th>
+                    <th>Source</th>
+                    <th>User-Controlled?</th>
+                    <th>Used On Receive</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>post_id</code></td>
+                    <td><code>post.Id</code> (26-char Mattermost ID)</td>
+                    <td>No</td>
+                    <td>Post mapping key for edits/deletes</td>
+                </tr>
+                <tr>
+                    <td><code>root_id</code></td>
+                    <td><code>post.RootId</code></td>
+                    <td>No</td>
+                    <td>Thread parent resolution via post mapping</td>
+                </tr>
+                <tr>
+                    <td><code>channel_id</code></td>
+                    <td><code>post.ChannelId</code></td>
+                    <td>No</td>
+                    <td>Not used directly (name-based routing)</td>
+                </tr>
+                <tr>
+                    <td><code>channel_name</code></td>
+                    <td><code>channel.Name</code></td>
+                    <td>Indirectly (admin-set)</td>
+                    <td>Routing: <code>GetChannelByName()</code></td>
+                </tr>
+                <tr>
+                    <td><code>team_id</code></td>
+                    <td><code>channel.TeamId</code></td>
+                    <td>No</td>
+                    <td>Not used directly</td>
+                </tr>
+                <tr>
+                    <td><code>team_name</code></td>
+                    <td><code>team.Name</code></td>
+                    <td>Indirectly (admin-set)</td>
+                    <td>Routing: <code>GetTeamByName()</code> or rewrite lookup</td>
+                </tr>
+                <tr>
+                    <td><code>user_id</code></td>
+                    <td><code>post.UserId</code></td>
+                    <td>No</td>
+                    <td>Not used on receive</td>
+                </tr>
+                <tr>
+                    <td><code>username</code></td>
+                    <td><code>user.Username</code></td>
+                    <td>Yes (users choose usernames)</td>
+                    <td>User resolution: <code>resolveInboundUser()</code></td>
+                </tr>
+                <tr>
+                    <td><code>message</code></td>
+                    <td><code>post.Message</code></td>
+                    <td><strong>Yes</strong> (full post content)</td>
+                    <td>Post body text</td>
+                </tr>
+                <tr>
+                    <td><code>create_at</code></td>
+                    <td><code>post.CreateAt</code></td>
+                    <td>No</td>
+                    <td>Not used on receive</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h4>DeleteMessage Payload Fields</h4>
+        <p>
+            Contains <code>post_id</code>, <code>channel_id</code>, <code>channel_name</code>,
+            <code>team_id</code>, <code>team_name</code>. No user-controlled content beyond the
+            admin-set team and channel names.
+        </p>
+
+        <h4>ReactionMessage Payload Fields</h4>
+        <p>
+            Contains <code>post_id</code>, <code>channel_id</code>, <code>channel_name</code>,
+            <code>team_id</code>, <code>team_name</code>, <code>user_id</code>,
+            <code>username</code> (user-controlled), and <code>emoji_name</code>
+            (user-selected from Mattermost's emoji set).
+        </p>
+
+        <h3>Data Intentionally Excluded</h3>
+        <div class="alert alert-tip">
+            <p class="alert-title">Minimal data boundary</p>
+            <p>
+                Cross Guard intentionally excludes the following from the relay envelope. This
+                minimizes the attack surface and prevents accidental data spillage.
+            </p>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Excluded Data</th>
+                    <th>Why Excluded</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>File attachments (<code>post.FileIds</code>)</td>
+                    <td>File transfer requires separate controlled mechanisms in classified environments. Files may contain embedded metadata or classified content that requires different handling than text.</td>
+                </tr>
+                <tr>
+                    <td>Post properties (<code>post.Props</code>)</td>
+                    <td>Props may contain plugin-specific data from other plugins (webhooks, integrations, custom metadata). Relaying them could leak internal system information.</td>
+                </tr>
+                <tr>
+                    <td>User metadata (email, profile image, custom fields, roles, auth data)</td>
+                    <td>User profiles may contain PII, classification markings, or organizational data that should not cross domain boundaries.</td>
+                </tr>
+                <tr>
+                    <td>Channel metadata (purpose, header, type)</td>
+                    <td>Channel headers may contain sensitive operational information. Public/private distinction is not meaningful across domains.</td>
+                </tr>
+                <tr>
+                    <td>Hashtags, pinned status, edit history</td>
+                    <td>Operational metadata that adds attack surface without proportional value.</td>
+                </tr>
+                <tr>
+                    <td>Interactive message elements (buttons, menus)</td>
+                    <td>Interactive elements contain callback URLs and action IDs that reference the source server's internal state. Relaying them would create non-functional UI elements or potential SSRF vectors.</td>
+                </tr>
+                <tr>
+                    <td>File previews, embedded links, Open Graph data</td>
+                    <td>Preview data may contain fetched content from the source domain's network, which should not be exposed to the receiving domain.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Section 8: User Identity Across Domains -->
+        <h2>8. User Identity Across Domains</h2>
+        <p>
+            Cross Guard supports two identity models for how inbound messages are attributed to
+            local users. The choice between them is a security/usability tradeoff controlled by
+            the <code>UsernameLookup</code> plugin setting.
+        </p>
+
+        <h3>Model 1: Username Lookup (Default, UsernameLookup=true)</h3>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Behavior</td><td>Inbound messages are posted as the matching local user if a user with the same username exists on the receiving server.</td></tr>
+                <tr><td>Advantage</td><td>Seamless user experience. Messages appear to come from the "right" person. No visual distinction between local and relayed posts.</td></tr>
+                <tr><td>Risk</td><td>If Remote Domain A has a user "jsmith" and Local Domain B also has "jsmith", messages from Remote jsmith appear as if Local jsmith wrote them. This is username impersonation if the two accounts belong to different people.</td></tr>
+                <tr><td>Appropriate When</td><td>The same identity provider (LDAP, Active Directory, SSO) provisions users on both servers, so a username match implies the same person.</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Model 2: Sync Users (UsernameLookup=false, or No Match Found)</h3>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Behavior</td><td>A synthetic "sync user" is created with a munged username (e.g., <code>alice.relay-from-a</code>). All inbound messages from that remote user are posted under this sync user.</td></tr>
+                <tr><td>Sync User Properties</td><td><code>Position="crossguard-sync"</code>, <code>LastName="(via connName)"</code>, <code>Props.CrossguardRemoteUsername=original</code></td></tr>
+                <tr><td>Advantage</td><td>Clear visual distinction between local and relayed users. No impersonation risk. The webapp UserPopover component shows "Relayed from: alice (via relay-from-a)" when hovering over the sync user.</td></tr>
+                <tr><td>Appropriate When</td><td>Usernames do not match across domains, or when impersonation risk is unacceptable (recommended for CDS deployments).</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Hybrid Behavior</h3>
+        <p>
+            When username lookup is enabled, resolution is per-message. If a matching local user
+            exists, that user is used. If no match is found, a sync user is created for that
+            specific remote username. This means messages in the same channel may appear from a
+            mix of real local users and sync users, depending on which remote usernames have
+            local matches.
+        </p>
+
+        <!-- Section 9: Connection Management and Administrative Workflows -->
+        <h2>9. Connection Management and Administrative Workflows</h2>
+
+        <h3>Connection Configuration (System Console)</h3>
+        <p>
+            NATS connections are configured in the Mattermost System Console under
+            <strong>Plugins &gt; Cross Guard</strong>. Inbound and outbound connections are
+            configured as JSON arrays, with each connection specifying:
+        </p>
+        <ul>
+            <li><strong>name:</strong> Unique identifier, lowercase alphanumeric with hyphens (e.g., <code>relay-to-server-b</code>)</li>
+            <li><strong>address:</strong> NATS server address (e.g., <code>nats://nats:4222</code>)</li>
+            <li><strong>subject:</strong> NATS subject to publish/subscribe (must start with <code>crossguard.</code>)</li>
+            <li><strong>TLS settings:</strong> <code>tls_enabled</code>, <code>client_cert</code>, <code>client_key</code>, <code>ca_cert</code></li>
+            <li><strong>Auth settings:</strong> <code>auth_type</code> (<code>none</code>, <code>token</code>, or <code>credentials</code>), plus type-specific fields</li>
+        </ul>
+        <p>
+            Configuration changes trigger live reconnection. The plugin closes existing NATS
+            connections and opens new ones with the updated settings. No plugin restart is required.
+        </p>
+
+        <h3>Team Initialization Workflow</h3>
+        <ol class="steps">
+            <li>
+                <strong>Admin runs <code>/crossguard init-team [connection-name]</code></strong>
+                in the team to be linked. If only one connection exists, it is auto-selected.
+                If multiple exist, an interactive dialog with a dropdown is presented.
+            </li>
+            <li>
+                <strong>Connection linked to team:</strong> The connection is stored in the KV store
+                using an atomic compare-and-set (CAS) operation to prevent race conditions.
+            </li>
+            <li>
+                <strong>Announcement posted:</strong> The bot posts in <code>#town-square</code>:
+                "Cross Guard connection outbound:relay-to-b linked to this team by @admin."
+            </li>
+            <li>
+                <strong>Global tracking updated:</strong> The team ID is added to the global
+                initialized teams list for status reporting.
+            </li>
+        </ol>
+
+        <h3>Channel Initialization Workflow</h3>
+        <ol class="steps">
+            <li>
+                <strong>Admin runs <code>/crossguard init-channel [connection-name]</code></strong>
+                in the channel. The parent team must already be initialized with this connection
+                (if the team has the connection but the channel does not, the team is auto-initialized).
+            </li>
+            <li>
+                <strong>Connection linked to channel:</strong> Stored in KV store via CAS operation.
+            </li>
+            <li>
+                <strong>Visual indicator added:</strong> Channel header is updated with a link emoji
+                prefix for visual indication of relay status.
+            </li>
+            <li>
+                <strong>WebSocket event published:</strong> The webapp receives a notification to
+                update channel indicators in real time.
+            </li>
+            <li>
+                <strong>Announcement posted:</strong> Bot posts a confirmation in the channel.
+            </li>
+        </ol>
+
+        <h3>Inbound Acceptance Workflow</h3>
+        <p>
+            When the first inbound message arrives for an unlinked team or channel, the plugin
+            does not silently create the link. Instead, it presents an interactive prompt to
+            administrators:
+        </p>
+        <ol>
+            <li>Bot posts an interactive message with Accept and Block buttons to <code>#town-square</code> (for team-level) or the target channel (for channel-level)</li>
+            <li>Only one prompt is created per team-connection pair (idempotent via KV store check)</li>
+            <li>A Team Admin or System Admin clicks Accept: the connection is auto-linked, and the prompt is replaced with a success message</li>
+            <li>If Block is clicked: the prompt state is set to "blocked" and no messages flow until <code>/crossguard reset-prompt</code> clears it</li>
+            <li>The same flow repeats at the channel level once the team is accepted</li>
+        </ol>
+
+        <h3>Team Name Rewriting</h3>
+        <p>
+            For environments where the remote and local team names differ (common in multi-domain
+            deployments where each domain has its own naming conventions):
+        </p>
+        <ul>
+            <li><code>/crossguard rewrite-team [connection] [remote-team-name]</code> creates a mapping from the remote team name to the local team where the command is run</li>
+            <li>Stored as a reverse index in KV: <code>crossguard-rwi-{connName}::{remoteTeamName}</code> maps to the local team ID</li>
+            <li>Conflict detection: the same remote team name cannot map to two different local teams (returns HTTP 409)</li>
+            <li>Audit trail: bot posts in <code>#town-square</code> showing who set or cleared the rewrite</li>
+        </ul>
+
+        <h3>Teardown Workflow</h3>
+        <ul>
+            <li><code>/crossguard teardown-channel</code> and <code>/crossguard teardown-team</code> unlink connections</li>
+            <li>Removes the link emoji from the channel header</li>
+            <li>Posts a farewell announcement</li>
+            <li>Does not cascade: <code>teardown-team</code> does not automatically teardown channels within the team</li>
+        </ul>
+
+        <!-- Section 10: Loop Prevention Architecture -->
+        <h2>10. Loop Prevention Architecture</h2>
+
+        <h3>The Loop Problem</h3>
+        <p>
+            Relay loops are the most critical failure mode for any message relay system. Without
+            prevention, the following cycle occurs:
+        </p>
+        <ol>
+            <li>Server A user posts a message</li>
+            <li>Cross Guard on Server A relays the message to Server B via NATS</li>
+            <li>Cross Guard on Server B creates the post locally via the Plugin API</li>
+            <li>This triggers Server B's <code>MessageHasBeenPosted</code> hook</li>
+            <li>Without prevention: Server B would relay the message back to Server A via NATS</li>
+            <li>Server A receives it, creates it locally, triggering its own hook</li>
+            <li>Infinite loop: messages multiply exponentially</li>
+        </ol>
+        <p>
+            Cross Guard uses four independent mechanisms to prevent this, following a defense-in-depth
+            approach where no single mechanism is solely responsible.
+        </p>
+
+        <h3>Mechanism 1: crossguard_relayed Post Property (Primary)</h3>
+        <ul>
+            <li>Every inbound post is created with <code>post.AddProp("crossguard_relayed", true)</code></li>
+            <li>Every outbound hook checks <code>post.GetProp("crossguard_relayed") != nil</code> and skips if present</li>
+            <li>This is the main defense and handles all post types (create, edit, delete)</li>
+        </ul>
+
+        <h3>Mechanism 2: Bot User Filtering (Secondary)</h3>
+        <ul>
+            <li>All outbound hooks check <code>post.UserId == p.botUserID</code> and skip bot posts</li>
+            <li>Prevents bot announcements (init/teardown messages, interactive prompts) from being relayed</li>
+            <li>Also provides loop protection if a relayed post were somehow attributed to the bot user</li>
+        </ul>
+
+        <h3>Mechanism 3: Sync User Reaction Filtering (Tertiary)</h3>
+        <ul>
+            <li>Reaction hooks check <code>user.Position == "crossguard-sync"</code> and skip sync user reactions</li>
+            <li>When an inbound reaction is added by a sync user, the local reaction hook fires but is filtered out</li>
+            <li>Prevents reaction loops that would otherwise occur with sync users</li>
+        </ul>
+
+        <h3>Mechanism 4: Delete Flag (Delete-Specific)</h3>
+        <ul>
+            <li>Problem: inbound delete calls <code>DeletePost()</code>, which fires the <code>MessageHasBeenDeleted</code> hook</li>
+            <li>Solution: before deleting, set <code>SetDeletingFlag(localPostID)</code> in the KV store</li>
+            <li>The outbound delete hook checks <code>IsDeletingFlagSet(post.Id)</code> and skips if set</li>
+            <li>Flag is cleared after the delete completes</li>
+            <li>Prevents infinite delete-relay loops</li>
+        </ul>
+
+        <h3>Defense in Depth</h3>
+        <div class="alert alert-info">
+            <p class="alert-title">Multiple independent mechanisms</p>
+            <p>
+                These four mechanisms operate independently. Even if the <code>crossguard_relayed</code>
+                property were somehow lost (e.g., a Mattermost bug stripping props), bot user
+                filtering would catch bot-posted messages. Even if a race condition occurred in
+                the delete flag, the post property check would catch the re-relay attempt. No
+                single failure mode can cause a loop.
+            </p>
+        </div>
+
+        <!-- Section 11: NATS Transport Security Configuration -->
+        <h2>11. NATS Transport Security Configuration</h2>
+
+        <h3>TLS Configuration</h3>
+        <ul>
+            <li>Minimum TLS 1.2 enforced (hardcoded <code>tls.VersionTLS12</code> in the NATS connection options)</li>
+            <li>Connection fields: <code>tls_enabled</code> (boolean), <code>client_cert</code> (file path), <code>client_key</code> (file path), <code>ca_cert</code> (file path)</li>
+            <li>Client certificate and key must be provided together (validation enforced at configuration time)</li>
+            <li>CA certificate enables server certificate verification (the plugin verifies the NATS server's identity)</li>
+        </ul>
+
+        <h3>Authentication Options</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Method</th>
+                    <th>Configuration</th>
+                    <th>Description</th>
+                    <th>Suitable For</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>none</code></td>
+                    <td>No additional fields</td>
+                    <td>No NATS authentication. Anyone who can reach the NATS server can publish and subscribe.</td>
+                    <td>Development and testing only</td>
+                </tr>
+                <tr>
+                    <td><code>token</code></td>
+                    <td><code>token</code> field</td>
+                    <td>Bearer token sent on NATS connection. Shared secret between the plugin and the NATS server.</td>
+                    <td>Production environments with simple auth requirements</td>
+                </tr>
+                <tr>
+                    <td><code>credentials</code></td>
+                    <td><code>username</code> + <code>password</code> fields</td>
+                    <td>Username and password sent on NATS connection. Allows per-client identity on the NATS server.</td>
+                    <td>Production and CDS environments requiring per-client ACLs</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Connection Resilience</h3>
+        <ul>
+            <li>Persistent connections with unlimited reconnects (<code>MaxReconnects = -1</code>)</li>
+            <li>2-second reconnect wait between attempts</li>
+            <li>Disconnect and reconnect events logged at INFO level for operational visibility</li>
+            <li>Context-aware cancellation: reconnection attempts are abandoned during graceful plugin shutdown</li>
+        </ul>
+
+        <h3>Outbound Publish Reliability</h3>
+        <ul>
+            <li>3 retry attempts with exponential backoff (500ms, 1s, 2s)</li>
+            <li>Each publish followed by a flush call to confirm delivery to the NATS server</li>
+            <li>Messages are dropped (not queued) after retry exhaustion</li>
+            <li>Context cancellation is respected during backoff waits</li>
+        </ul>
+
+        <h3>Configuration Validation</h3>
+        <ul>
+            <li><strong>Connection names:</strong> lowercase alphanumeric with hyphens, unique across all connections (both inbound and outbound)</li>
+            <li><strong>Subject:</strong> must start with <code>crossguard.</code> prefix (prevents accidental subscription to unrelated NATS traffic)</li>
+            <li><strong>Auth type:</strong> must be <code>none</code>, <code>token</code>, or <code>credentials</code></li>
+            <li><strong>Conditional fields:</strong> token required for token auth, username and password required for credentials auth</li>
+        </ul>
+
+        <h3>Deployment Sensitivity Guide</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Level</th>
+                    <th>TLS</th>
+                    <th>Auth</th>
+                    <th>mTLS</th>
+                    <th>Dedicated NATS</th>
+                    <th>ACLs</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Development</strong></td>
+                    <td>Optional</td>
+                    <td>Optional</td>
+                    <td>No</td>
+                    <td>No</td>
+                    <td>No</td>
+                </tr>
+                <tr>
+                    <td><strong>Production</strong></td>
+                    <td>Required</td>
+                    <td>Token or credentials</td>
+                    <td>Recommended</td>
+                    <td>Recommended</td>
+                    <td>Recommended</td>
+                </tr>
+                <tr>
+                    <td><strong>CDS (classified)</strong></td>
+                    <td>Required</td>
+                    <td>Credentials</td>
+                    <td>Required</td>
+                    <td>Required</td>
+                    <td>Required</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Section 12: Deployment Topologies -->
+        <h2>12. Deployment Topologies</h2>
+        <p>
+            Cross Guard supports multiple deployment topologies depending on the number of servers,
+            the direction of message flow, and the network architecture between domains.
+        </p>
+
+        <h3>Topology 1: Unidirectional Relay (Low-to-High)</h3>
+        <div class="diagram-box">
+<pre>Server A (Low)                   NATS                    Server B (High)
++-------------------+     +----------------+     +-------------------+
+| Outbound: to-b    |----&gt;| Subject:       |----&gt;| Inbound: from-a   |
+|                   |     | crossguard.    |     |                   |
+|                   |     | a-to-b         |     |                   |
++-------------------+     +----------------+     +-------------------+
+
+Messages flow one direction only: Low --&gt; High</pre>
+        </div>
+        <ul>
+            <li>Server A has one outbound connection; Server B has one inbound connection</li>
+            <li>Same NATS subject configured on both sides</li>
+            <li>Messages flow from the low-side to the high-side only</li>
+            <li>Use case: low-side collaboration visible on high-side for monitoring or awareness</li>
+        </ul>
+
+        <h3>Topology 2: Bidirectional Relay</h3>
+        <div class="diagram-box">
+<pre>Server A                         NATS                         Server B
++-------------------+     +-------------------+     +-------------------+
+| Outbound: to-b    |----&gt;| crossguard.a-to-b |----&gt;| Inbound: from-a   |
+| Inbound: from-b   |&lt;----| crossguard.b-to-a |&lt;----| Outbound: to-a    |
++-------------------+     +-------------------+     +-------------------+
+
+Two subjects, two directions: full two-way conversation flow</pre>
+        </div>
+        <ul>
+            <li>Each server has one outbound and one inbound connection</li>
+            <li>Different NATS subjects per direction prevents echo at the transport level</li>
+            <li>Full two-way conversation flow between domains</li>
+            <li>Use case: collaborative communication between domains</li>
+        </ul>
+
+        <h3>Topology 3: Hub-and-Spoke (Multi-Server Broadcast)</h3>
+        <div class="diagram-box">
+<pre>                              NATS
+                        +----------------+
+Server A (Hub)          | Subject:       |          Server B
++-------------------+   | crossguard.    |   +-------------------+
+| Outbound: to-all  |--&gt;| hub-broadcast  |--&gt;| Inbound: from-hub |
++-------------------+   |                |   +-------------------+
+                        |                |
+                        |                |          Server C
+                        |                |   +-------------------+
+                        |                |--&gt;| Inbound: from-hub |
+                        |                |   +-------------------+
+                        |                |
+                        |                |          Server D
+                        |                |   +-------------------+
+                        |                |--&gt;| Inbound: from-hub |
+                        +----------------+   +-------------------+
+
+One publisher, multiple subscribers on the same subject</pre>
+        </div>
+        <ul>
+            <li>Server A publishes; Servers B, C, D subscribe to the same subject</li>
+            <li>NATS delivers to all subscribers automatically</li>
+            <li>Use case: broadcast from one domain to many receiving domains</li>
+        </ul>
+
+        <h3>Topology 4: Loopback (Same-Server Relay)</h3>
+        <div class="diagram-box">
+<pre>Server A
++----------------------------------------------+
+| Outbound: loopback  --&gt; NATS --&gt;  Inbound: loopback |
+|                                              |
+| Team "source-team"                           |
+|    Channel: #ops-updates                     |
+|         |                                    |
+|    Team Name Rewrite:                        |
+|    "source-team" --&gt; "dest-team" (local)     |
+|         |                                    |
+| Team "dest-team"                             |
+|    Channel: #ops-updates                     |
++----------------------------------------------+
+
+Both connections on the same server, team name rewrite routes between teams</pre>
+        </div>
+        <ul>
+            <li>Both outbound and inbound connections on the same server, same NATS subject</li>
+            <li>Requires team name rewrite to route messages from one team to another</li>
+            <li>Use case: internal relay between isolated project teams on the same server</li>
+        </ul>
+
+        <h3>Topology 5: Multi-Hop Relay</h3>
+        <div class="diagram-box">
+<pre>Server A              NATS 1              Server B              NATS 2              Server C
++-----------+     +----------+     +----------------+     +----------+     +-----------+
+| Outbound  |----&gt;| cg.a-b   |----&gt;| Inbound from-a |     |          |     |           |
+|           |     +----------+     | Outbound to-c  |----&gt;| cg.b-c   |----&gt;| Inbound   |
++-----------+                      +----------------+     +----------+     +-----------+
+
+Server B acts as a relay point. Each hop is independent.</pre>
+        </div>
+        <ul>
+            <li>Server B receives from A and re-relays to C</li>
+            <li>Each hop is an independent Cross Guard configuration with its own connections</li>
+            <li>Messages on Server B are full local posts (editable, deletable, visible to Server B users)</li>
+            <li>Use case: cascading classification levels (e.g., Unclassified to Secret to Top Secret)</li>
+        </ul>
+
+        <!-- Section 13: State Management and Persistence -->
+        <h2>13. State Management and Persistence</h2>
+        <p>
+            Cross Guard stores all persistent state in Mattermost's built-in plugin KV store.
+            No external database is required. All state is key-value pairs accessed via the
+            Plugin API.
+        </p>
+
+        <h3>KV Key Schema</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Key Pattern</th>
+                    <th>Value</th>
+                    <th>Purpose</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>crossguard-teaminit-{teamID}</code></td>
+                    <td><code>[]TeamConnection</code> (JSON array)</td>
+                    <td>Which connections are linked to this team</td>
+                </tr>
+                <tr>
+                    <td><code>crossguard-channelinit-{channelID}</code></td>
+                    <td><code>[]TeamConnection</code> (JSON array)</td>
+                    <td>Which connections are linked to this channel</td>
+                </tr>
+                <tr>
+                    <td><code>crossguard-initialized-teams</code></td>
+                    <td><code>[]string</code> (team IDs)</td>
+                    <td>Global list of initialized teams for status reporting</td>
+                </tr>
+                <tr>
+                    <td><code>pm-{connName}-{remotePostID}</code></td>
+                    <td><code>string</code> (local post ID)</td>
+                    <td>Maps remote post IDs to local post IDs for edits/deletes</td>
+                </tr>
+                <tr>
+                    <td><code>crossguard-deleting-{localPostID}</code></td>
+                    <td><code>true</code></td>
+                    <td>Flag set during inbound delete to prevent loop</td>
+                </tr>
+                <tr>
+                    <td><code>crossguard-connprompt-{teamID}-{connName}</code></td>
+                    <td><code>ConnectionPrompt</code> (JSON)</td>
+                    <td>Team-level inbound acceptance prompt state</td>
+                </tr>
+                <tr>
+                    <td><code>crossguard-chanprompt-{channelID}-{connName}</code></td>
+                    <td><code>ConnectionPrompt</code> (JSON)</td>
+                    <td>Channel-level inbound acceptance prompt state</td>
+                </tr>
+                <tr>
+                    <td><code>crossguard-rwi-{connName}::{remoteTeamName}</code></td>
+                    <td><code>string</code> (local team ID)</td>
+                    <td>Team name rewrite reverse index</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Caching Layer</h3>
+        <p>
+            An optional caching layer wraps the base KV store to reduce API calls for
+            frequently accessed data:
+        </p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Cache</th>
+                    <th>Size</th>
+                    <th>TTL</th>
+                    <th>Invalidation Event</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Team connections</td>
+                    <td>64 entries</td>
+                    <td>15 minutes</td>
+                    <td><code>cache_inv_teaminit</code></td>
+                </tr>
+                <tr>
+                    <td>Channel connections</td>
+                    <td>1024 entries</td>
+                    <td>15 minutes</td>
+                    <td><code>cache_inv_chaninit</code></td>
+                </tr>
+                <tr>
+                    <td>Initialized teams list</td>
+                    <td>1 entry</td>
+                    <td>15 minutes</td>
+                    <td><code>cache_inv_initteams</code></td>
+                </tr>
+                <tr>
+                    <td>Rewrite index</td>
+                    <td>256 entries</td>
+                    <td>15 minutes</td>
+                    <td><code>cache_inv_rwindex</code></td>
+                </tr>
+            </tbody>
+        </table>
+        <p>
+            The cache is cluster-aware: write operations publish invalidation events to all
+            cluster nodes via <code>PluginClusterEvent</code>. This ensures cache consistency
+            in multi-node Mattermost deployments.
+        </p>
+
+        <h3>CAS Operations</h3>
+        <p>
+            List modifications (adding or removing a team connection, channel connection, or
+            initialized team) use atomic compare-and-set (CAS) with 5 retries. This prevents
+            race conditions when multiple admin actions occur simultaneously. All modifications
+            have all-or-nothing semantics (no partial updates).
+        </p>
+
+        <!-- Section 14: Concurrency Model -->
+        <h2>14. Concurrency Model</h2>
+
+        <h3>Relay Semaphore</h3>
+        <p>
+            The relay semaphore is a buffered channel of capacity 50, shared by both inbound
+            and outbound relay operations. It provides backpressure to prevent unbounded goroutine
+            spawning under high message volume:
+        </p>
+        <ul>
+            <li>Non-blocking acquisition: if the semaphore is full, the message is dropped with a warning log rather than blocking</li>
+            <li>Each relay operation: acquire slot, spawn goroutine, process message, release slot</li>
+            <li>The drop-when-full policy ensures the Mattermost server process is never starved of resources by relay operations</li>
+        </ul>
+
+        <h3>Goroutine Lifecycle</h3>
+        <ul>
+            <li>All relay goroutines are tracked via a <code>sync.WaitGroup</code></li>
+            <li>Context cancellation signals shutdown to all goroutines</li>
+            <li>OnDeactivate sequence: cancel context, close inbound subscriptions, wait for all goroutines, close outbound connections</li>
+            <li>This ensures no orphaned goroutines remain after plugin deactivation</li>
+        </ul>
+
+        <h3>Connection Pool Protection</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Resource</th>
+                    <th>Lock Type</th>
+                    <th>Read Lock (Concurrent)</th>
+                    <th>Write Lock (Exclusive)</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Outbound connections</td>
+                    <td><code>sync.RWMutex</code></td>
+                    <td>Publishing messages</td>
+                    <td>Reconnection on config change</td>
+                </tr>
+                <tr>
+                    <td>Inbound connections</td>
+                    <td><code>sync.RWMutex</code></td>
+                    <td>Subscription access</td>
+                    <td>Reconnection on config change</td>
+                </tr>
+                <tr>
+                    <td>Configuration</td>
+                    <td><code>sync.RWMutex</code></td>
+                    <td>Reading current config</td>
+                    <td>Config update</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>NATS Client Concurrency</h3>
+        <p>
+            The NATS Go client is goroutine-safe for publish operations. Subscription callbacks
+            run in separate NATS-managed goroutines. Cross Guard wraps these callbacks with
+            semaphore control to limit the total number of concurrent relay operations across
+            both directions.
+        </p>
+
+        <!-- Section 15: Operational Monitoring and Troubleshooting -->
+        <h2>15. Operational Monitoring and Troubleshooting</h2>
+
+        <h3>Key Log Messages</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Level</th>
+                    <th>Message</th>
+                    <th>Meaning</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><span class="permission-tag permission-teamadmin">WARN</span></td>
+                    <td>"Relay semaphore full, dropping inbound message"</td>
+                    <td>Message volume exceeds processing capacity</td>
+                    <td>Check for message flood or consider scaling</td>
+                </tr>
+                <tr>
+                    <td><span class="permission-tag permission-teamadmin">WARN</span></td>
+                    <td>"Outbound NATS not connected, skipping"</td>
+                    <td>NATS connection is down</td>
+                    <td>Check NATS server health and network connectivity</td>
+                </tr>
+                <tr>
+                    <td><span class="permission-tag permission-teamadmin">WARN</span></td>
+                    <td>"Inbound update: no post mapping found"</td>
+                    <td>Edit/delete arrived for a post that was not previously relayed</td>
+                    <td>Expected if channel was linked after the original post</td>
+                </tr>
+                <tr>
+                    <td><span class="permission-tag permission-teamadmin">WARN</span></td>
+                    <td>"Unknown inbound message type"</td>
+                    <td>Unexpected envelope type received</td>
+                    <td>Investigate possible message injection or version mismatch</td>
+                </tr>
+                <tr>
+                    <td><span class="permission-tag permission-sysadmin">ERROR</span></td>
+                    <td>"Failed to publish to outbound NATS after retries"</td>
+                    <td>NATS unreachable after 3 retry attempts</td>
+                    <td>Check NATS server, network, TLS certificates</td>
+                </tr>
+                <tr>
+                    <td><span class="permission-tag permission-sysadmin">ERROR</span></td>
+                    <td>"Failed to create post"</td>
+                    <td>Mattermost API rejected the post creation</td>
+                    <td>Check post content, channel permissions, server health</td>
+                </tr>
+                <tr>
+                    <td><span class="permission-tag permission-channeladmin">INFO</span></td>
+                    <td>"Inbound NATS reconnected"</td>
+                    <td>NATS connection recovered after interruption</td>
+                    <td>Normal recovery, verify message flow resumed</td>
+                </tr>
+                <tr>
+                    <td><span class="permission-tag permission-channeladmin">INFO</span></td>
+                    <td>"Outbound NATS reconnected"</td>
+                    <td>NATS connection recovered after interruption</td>
+                    <td>Normal recovery, verify message flow resumed</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Status Commands</h3>
+        <ul>
+            <li><code>/crossguard status</code>: Shows team and channel linkage state. System Admins see a global overview across all teams and connections. Team members see their team/channel status.</li>
+        </ul>
+
+        <h3>REST API Status Endpoints</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Endpoint</th>
+                    <th>Permission</th>
+                    <th>Returns</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>GET /api/v1/status</code></td>
+                    <td>System Admin</td>
+                    <td>Global status with all teams, connections, and warnings</td>
+                </tr>
+                <tr>
+                    <td><code>GET /api/v1/teams/{id}/status</code></td>
+                    <td>Team member</td>
+                    <td>Team-specific status including orphaned connections</td>
+                </tr>
+                <tr>
+                    <td><code>GET /api/v1/channels/{id}/status</code></td>
+                    <td>Channel member</td>
+                    <td>Channel-specific status</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Connection Testing</h3>
+        <p>
+            <code>POST /api/v1/test-connection</code> (System Admin only) tests NATS connectivity
+            without affecting running connections:
+        </p>
+        <ul>
+            <li>Outbound test: publishes a test message and confirms the flush succeeds</li>
+            <li>Inbound test: subscribes to the subject and confirms the subscription is active</li>
+        </ul>
+
+        <h3>Sync User Audit</h3>
+        <p>
+            To audit synthetic relay users, query Mattermost users with
+            <code>Position="crossguard-sync"</code>. Each sync user's <code>LastName</code>
+            shows the connection name (e.g., <code>(via relay-from-a)</code>), and
+            <code>Props.CrossguardRemoteUsername</code> shows the original remote username.
+        </p>
+
+        <!-- Section 16: Comparison with Alternative Approaches -->
+        <h2>16. Comparison with Alternative Approaches</h2>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Capability</th>
+                    <th>Cross Guard + NATS</th>
+                    <th>Shared Database</th>
+                    <th>Direct API</th>
+                    <th>Email Bridge</th>
+                    <th>Webhook Relay</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Server independence</strong></td>
+                    <td>Full</td>
+                    <td>None (shared DB)</td>
+                    <td>Partial</td>
+                    <td>Full</td>
+                    <td>Full</td>
+                </tr>
+                <tr>
+                    <td><strong>Network isolation</strong></td>
+                    <td>Yes (NATS in DMZ)</td>
+                    <td>No (DB access)</td>
+                    <td>No (HTTP access)</td>
+                    <td>Yes</td>
+                    <td>No (HTTP access)</td>
+                </tr>
+                <tr>
+                    <td><strong>Real-time messaging</strong></td>
+                    <td>Yes (sub-ms latency)</td>
+                    <td>N/A</td>
+                    <td>Yes</td>
+                    <td>No (minutes)</td>
+                    <td>Yes</td>
+                </tr>
+                <tr>
+                    <td><strong>Edit/delete sync</strong></td>
+                    <td>Yes</td>
+                    <td>N/A</td>
+                    <td>Possible</td>
+                    <td>No</td>
+                    <td>Manual</td>
+                </tr>
+                <tr>
+                    <td><strong>Reaction sync</strong></td>
+                    <td>Yes</td>
+                    <td>N/A</td>
+                    <td>Possible</td>
+                    <td>No</td>
+                    <td>No</td>
+                </tr>
+                <tr>
+                    <td><strong>Thread support</strong></td>
+                    <td>Yes (root_id mapping)</td>
+                    <td>N/A</td>
+                    <td>Possible</td>
+                    <td>No</td>
+                    <td>No</td>
+                </tr>
+                <tr>
+                    <td><strong>Admin opt-in control</strong></td>
+                    <td>Team + channel level</td>
+                    <td>N/A</td>
+                    <td>N/A</td>
+                    <td>N/A</td>
+                    <td>Per-webhook</td>
+                </tr>
+                <tr>
+                    <td><strong>Transport security</strong></td>
+                    <td>TLS 1.2+, mTLS, ACLs</td>
+                    <td>DB TLS</td>
+                    <td>HTTPS</td>
+                    <td>SMTP TLS</td>
+                    <td>HTTPS</td>
+                </tr>
+                <tr>
+                    <td><strong>Message authentication</strong></td>
+                    <td>NATS auth (transport)</td>
+                    <td>DB auth</td>
+                    <td>API auth</td>
+                    <td>DKIM/SPF</td>
+                    <td>Shared secret</td>
+                </tr>
+                <tr>
+                    <td><strong>Resilience</strong></td>
+                    <td>Auto-reconnect</td>
+                    <td>DB failover</td>
+                    <td>Retry logic</td>
+                    <td>Store-and-forward</td>
+                    <td>Manual</td>
+                </tr>
+                <tr>
+                    <td><strong>Data minimization</strong></td>
+                    <td>Text only, no files</td>
+                    <td>Full DB access</td>
+                    <td>Full API access</td>
+                    <td>Full email</td>
+                    <td>Configurable</td>
+                </tr>
+                <tr>
+                    <td><strong>Audit trail</strong></td>
+                    <td>Plugin logs + post props</td>
+                    <td>DB audit log</td>
+                    <td>API logs</td>
+                    <td>Mail logs</td>
+                    <td>Webhook logs</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Section 17: CDS Deployment Checklist -->
+        <h2>17. CDS Deployment Checklist</h2>
+
+        <div class="alert alert-warning">
+            <p class="alert-title">Hardened Configuration</p>
+            <p>
+                The following checklist is recommended for Cross Guard deployments in classified
+                or sensitive environments. For a detailed STRIDE threat analysis of each risk,
+                see the <a href="threatmodel.html">Threat Model</a>.
+            </p>
+        </div>
+
+        <ol class="steps">
+            <li>
+                <strong>Enable <code>RestrictToSystemAdmins</code></strong>: Lock all connection
+                management commands to System Admins. Prevents Team Admins and Channel Admins
+                from enabling relay without organizational approval.
+            </li>
+            <li>
+                <strong>Disable <code>UsernameLookup</code></strong>: Force all inbound messages
+                through synthetic sync users. Eliminates impersonation risk
+                (<a href="threatmodel.html#t-spoof-1">T-SPOOF-1</a>).
+            </li>
+            <li>
+                <strong>Enable TLS with mutual certificate authentication</strong>: Configure
+                <code>tls_enabled</code>, <code>client_cert</code>, <code>client_key</code>,
+                and <code>ca_cert</code> on all NATS connections. Ensures both the plugin and
+                the NATS server verify each other's identity.
+            </li>
+            <li>
+                <strong>Deploy a dedicated NATS server</strong>: Do not share the NATS server
+                with other applications. Reduces the risk of message content exposure
+                (<a href="threatmodel.html#t-info-1">T-INFO-1</a>).
+            </li>
+            <li>
+                <strong>Configure NATS ACLs</strong>: Restrict publish and subscribe permissions
+                per subject per client. Ensure each plugin instance can only access the subjects
+                it is configured for.
+            </li>
+            <li>
+                <strong>Use separate subjects per relay direction</strong>: Configure different
+                NATS subjects for each direction (e.g., <code>crossguard.a-to-b</code> and
+                <code>crossguard.b-to-a</code>). Prevents transport-level echo.
+            </li>
+            <li>
+                <strong>Place NATS in a controlled network segment</strong>: Deploy the NATS
+                server in a DMZ, enclave, or guard network between the two domains. Firewall
+                rules should allow only NATS traffic (port 4222) between segments.
+            </li>
+            <li>
+                <strong>Monitor plugin logs</strong>: Watch for anomaly indicators: "Relay
+                semaphore full" (message flood), "Unknown inbound message type" (possible
+                injection), failed resolve warnings (misconfiguration or probing).
+            </li>
+            <li>
+                <strong>Audit sync users periodically</strong>: Query users with
+                <code>Position="crossguard-sync"</code> to detect unexpected user creation
+                that might indicate unauthorized relay activity.
+            </li>
+            <li>
+                <strong>Enforce <code>crossguard.</code> subject prefix</strong>: This is
+                validated in configuration. All NATS subjects must start with
+                <code>crossguard.</code> to prevent accidental subscription to unrelated
+                NATS traffic.
+            </li>
+            <li>
+                <strong>Document and review team name rewrite rules</strong>: Maintain an
+                inventory of all rewrite mappings. Rewrites change message routing and should
+                be reviewed as part of the security configuration.
+            </li>
+            <li>
+                <strong>Test connections regularly</strong>: Use the admin console test button
+                or the <code>POST /api/v1/test-connection</code> endpoint to verify NATS
+                connectivity without affecting running connections.
+            </li>
+            <li>
+                <strong>Review the Threat Model</strong>: The
+                <a href="threatmodel.html">Threat Model page</a> provides a detailed STRIDE
+                analysis of 14 identified threats with severity ratings, code paths, mitigations,
+                and residual risks.
+            </li>
+        </ol>
+
+        <!-- Section 18: References -->
+        <h2>18. References</h2>
+
+        <div class="nav-cards">
+            <a href="help.html" class="nav-card">
+                <h3>Overview</h3>
+                <p>Getting started, key concepts, permission model, and federation overview.</p>
+            </a>
+            <a href="commands.html" class="nav-card">
+                <h3>Slash Command Reference</h3>
+                <p>All 9 slash commands with arguments, permissions, and examples.</p>
+            </a>
+            <a href="admin.html" class="nav-card">
+                <h3>Admin Configuration Guide</h3>
+                <p>NATS connection setup, relay settings, and example configurations.</p>
+            </a>
+            <a href="api.html" class="nav-card">
+                <h3>REST API Reference</h3>
+                <p>All REST endpoints with request/response examples and authentication details.</p>
+            </a>
+            <a href="threatmodel.html" class="nav-card">
+                <h3>Threat Model</h3>
+                <p>STRIDE analysis, trust zones, 14 identified threats, and CDS deployment recommendations.</p>
+            </a>
+        </div>
+    </main>
+</div>
+</body>
+</html>

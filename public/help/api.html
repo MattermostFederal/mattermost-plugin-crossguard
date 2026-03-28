@@ -19,6 +19,7 @@
             <a href="commands.html">Slash Commands</a>
             <a href="admin.html">Admin Configuration</a>
             <a href="api.html" class="active">REST API</a>
+            <a href="nats-interface.html">NATS Interface</a>
             <a href="threatmodel.html">Threat Model</a>
             <a href="whitepaper.html">Whitepaper</a>
         </nav>
@@ -594,109 +595,16 @@
             </div>
         </div>
 
-        <!-- NATS Envelope Format -->
-        <h2>NATS Message Envelope Format</h2>
+        <!-- NATS Interface -->
+        <h2>NATS Message Interface</h2>
 
-        <p>Reference for developers integrating with Cross Guard's NATS messages.</p>
-
-        <h3>Envelope Structure</h3>
-<pre><code>{
-  "type": "crossguard_post",
-  "timestamp": "2026-03-16T12:00:00Z",
-  "json": "{\"post_id\":\"...\",\"channel_name\":\"town-square\",...}"
-}</code></pre>
-
-        <h3>Message Types</h3>
-
-        <table>
-            <thead>
-                <tr><th>Type Constant</th><th>Value</th><th>Payload</th><th>Description</th></tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td><code>MessageTypePost</code></td>
-                    <td><code>crossguard_post</code></td>
-                    <td>PostMessage</td>
-                    <td>New post</td>
-                </tr>
-                <tr>
-                    <td><code>MessageTypeUpdate</code></td>
-                    <td><code>crossguard_update</code></td>
-                    <td>PostMessage</td>
-                    <td>Post edited</td>
-                </tr>
-                <tr>
-                    <td><code>MessageTypeDelete</code></td>
-                    <td><code>crossguard_delete</code></td>
-                    <td>DeleteMessage</td>
-                    <td>Post deleted</td>
-                </tr>
-                <tr>
-                    <td><code>MessageTypeReactionAdd</code></td>
-                    <td><code>crossguard_reaction_add</code></td>
-                    <td>ReactionMessage</td>
-                    <td>Reaction added</td>
-                </tr>
-                <tr>
-                    <td><code>MessageTypeReactionRemove</code></td>
-                    <td><code>crossguard_reaction_remove</code></td>
-                    <td>ReactionMessage</td>
-                    <td>Reaction removed</td>
-                </tr>
-                <tr>
-                    <td><code>MessageTypeTest</code></td>
-                    <td><code>crossguard_test</code></td>
-                    <td>TestMessage</td>
-                    <td>Connection test</td>
-                </tr>
-            </tbody>
-        </table>
-
-        <h3>Payload Fields</h3>
-
-        <h4>PostMessage</h4>
-        <table>
-            <thead><tr><th>Field</th><th>Description</th></tr></thead>
-            <tbody>
-                <tr><td><code>post_id</code></td><td>Original post ID</td></tr>
-                <tr><td><code>root_id</code></td><td>Thread root ID (for replies)</td></tr>
-                <tr><td><code>channel_id</code></td><td>Source channel ID</td></tr>
-                <tr><td><code>channel_name</code></td><td>Source channel name</td></tr>
-                <tr><td><code>team_id</code></td><td>Source team ID</td></tr>
-                <tr><td><code>team_name</code></td><td>Source team name</td></tr>
-                <tr><td><code>user_id</code></td><td>Author user ID</td></tr>
-                <tr><td><code>username</code></td><td>Author username</td></tr>
-                <tr><td><code>message</code></td><td>Post content</td></tr>
-                <tr><td><code>create_at</code></td><td>Post creation timestamp</td></tr>
-            </tbody>
-        </table>
-
-        <h4>DeleteMessage</h4>
-        <table>
-            <thead><tr><th>Field</th><th>Description</th></tr></thead>
-            <tbody>
-                <tr><td><code>post_id</code></td><td>Deleted post ID</td></tr>
-                <tr><td><code>channel_id</code></td><td>Source channel ID</td></tr>
-                <tr><td><code>channel_name</code></td><td>Source channel name</td></tr>
-                <tr><td><code>team_id</code></td><td>Source team ID</td></tr>
-                <tr><td><code>team_name</code></td><td>Source team name</td></tr>
-            </tbody>
-        </table>
-
-        <h4>ReactionMessage</h4>
-        <table>
-            <thead><tr><th>Field</th><th>Description</th></tr></thead>
-            <tbody>
-                <tr><td><code>post_id</code></td><td>Target post ID</td></tr>
-                <tr><td><code>channel_id</code></td><td>Source channel ID</td></tr>
-                <tr><td><code>channel_name</code></td><td>Source channel name</td></tr>
-                <tr><td><code>team_id</code></td><td>Source team ID</td></tr>
-                <tr><td><code>team_name</code></td><td>Source team name</td></tr>
-                <tr><td><code>user_id</code></td><td>User who added/removed reaction</td></tr>
-                <tr><td><code>username</code></td><td>Username of the reactor</td></tr>
-                <tr><td><code>emoji_name</code></td><td>Emoji name (without colons)</td></tr>
-            </tbody>
-        </table>
+        <p>
+            Cross Guard uses NATS as its transport layer for relaying messages between Mattermost
+            instances. For the complete wire protocol reference, including all message envelope
+            schemas, payload definitions, connection configuration, data flow diagrams, and
+            full wire format examples, see the dedicated
+            <a href="nats-interface.html">NATS Interface Reference</a>.
+        </p>
     </main>
 </div>
 </body>

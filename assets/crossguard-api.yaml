@@ -1,0 +1,347 @@
+openapi: 3.1.0
+info:
+  title: Cross Guard NATS Message API
+  description: >
+    Defines the message envelope and payload schemas used by the Cross Guard
+    plugin to relay events between Mattermost instances over a NATS bus.
+    All messages are published and consumed as JSON-encoded bytes on NATS
+    subjects that begin with the `crossguard.` prefix.
+  version: 1.0.0
+  contact:
+    name: Mattermost Federal
+
+# NATS is not HTTP, so paths are modeled as logical channels (AsyncAPI-style)
+# using x-nats-subject to document the actual NATS subject convention.
+paths:
+  /publish:
+    post:
+      operationId: publishMessage
+      summary: Publish a message to a NATS subject
+      description: >
+        Represents the act of publishing a Cross Guard message envelope to a
+        configured outbound NATS subject (e.g. `crossguard.high`).
+        The subject is determined by the outbound connection configuration.
+      x-nats-subject: "crossguard.{domain}"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MessageEnvelope"
+      responses:
+        "200":
+          description: Message accepted by NATS broker.
+
+  /subscribe:
+    post:
+      operationId: subscribeMessage
+      summary: Receive a message from a NATS subject
+      description: >
+        Represents the receipt of a Cross Guard message envelope on a
+        configured inbound NATS subject (e.g. `crossguard.low`).
+        The subject is determined by the inbound connection configuration.
+      x-nats-subject: "crossguard.{domain}"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MessageEnvelope"
+      responses:
+        "200":
+          description: Message processed by the receiving plugin instance.
+
+components:
+  schemas:
+    # ------------------------------------------------------------------
+    # Envelope
+    # ------------------------------------------------------------------
+    MessageEnvelope:
+      type: object
+      description: >
+        Standard envelope that wraps every message sent over NATS. The `json`
+        field contains a serialized payload whose schema depends on `type`.
+      required:
+        - type
+        - timestamp
+        - json
+      properties:
+        type:
+          $ref: "#/components/schemas/MessageType"
+        timestamp:
+          type: string
+          format: date-time
+          description: UTC timestamp in RFC 3339 format indicating when the message was created.
+          examples:
+            - "2026-03-27T14:30:00Z"
+        json:
+          type: string
+          description: >
+            JSON-encoded string containing the payload. Deserialize according
+            to the `type` field to obtain one of PostMessage, DeleteMessage,
+            ReactionMessage, or TestMessage.
+          examples:
+            - '{"post_id":"abc123","channel_id":"ch1","channel_name":"town-square","team_id":"t1","team_name":"test-a","user_id":"u1","username":"alice","message":"Hello from the other side","create_at":1711547400000}'
+
+    # ------------------------------------------------------------------
+    # Message type enum
+    # ------------------------------------------------------------------
+    MessageType:
+      type: string
+      description: Discriminator that identifies the payload schema inside the envelope.
+      enum:
+        - crossguard_post
+        - crossguard_update
+        - crossguard_delete
+        - crossguard_reaction_add
+        - crossguard_reaction_remove
+        - crossguard_test
+      x-enum-descriptions:
+        crossguard_post: A new post was created.
+        crossguard_update: An existing post was edited.
+        crossguard_delete: A post was deleted.
+        crossguard_reaction_add: A reaction was added to a post.
+        crossguard_reaction_remove: A reaction was removed from a post.
+        crossguard_test: A connectivity test message.
+
+    # ------------------------------------------------------------------
+    # Payloads
+    # ------------------------------------------------------------------
+    PostMessage:
+      type: object
+      description: >
+        Payload for `crossguard_post` and `crossguard_update` message types.
+        For updates, the fields reflect the post state after the edit.
+      required:
+        - post_id
+        - channel_id
+        - channel_name
+        - team_id
+        - team_name
+        - user_id
+        - username
+        - message
+        - create_at
+      properties:
+        post_id:
+          type: string
+          description: Unique identifier of the post on the originating server.
+          examples:
+            - "8swgtrrdiff89yj1z33pofo15r"
+        root_id:
+          type: string
+          description: >
+            If this post is a threaded reply, the ID of the root post.
+            Omitted for top-level posts.
+          examples:
+            - "nzwq4p3jkbysfmh3e3x4151n5o"
+        channel_id:
+          type: string
+          description: ID of the channel the post belongs to on the originating server.
+          examples:
+            - "9a1f4h6e17yfmk9w6pxs3jqd3e"
+        channel_name:
+          type: string
+          description: URL-safe name of the channel (used for cross-domain resolution).
+          examples:
+            - "town-square"
+        team_id:
+          type: string
+          description: ID of the team on the originating server.
+          examples:
+            - "5f3h8k2m41ygdj7w8pxr6nqb9c"
+        team_name:
+          type: string
+          description: URL-safe name of the team (used for cross-domain resolution).
+          examples:
+            - "test-a"
+        user_id:
+          type: string
+          description: ID of the user who authored the post on the originating server.
+          examples:
+            - "7m4k9j2p63ynfr8x1qwt5hab4e"
+        username:
+          type: string
+          description: Username of the post author.
+          examples:
+            - "alice"
+        message:
+          type: string
+          description: The Markdown-formatted message body of the post.
+          examples:
+            - "Hello from the other side"
+        create_at:
+          type: integer
+          format: int64
+          description: Unix timestamp in milliseconds when the post was originally created.
+          examples:
+            - 1711547400000
+
+    DeleteMessage:
+      type: object
+      description: Payload for the `crossguard_delete` message type.
+      required:
+        - post_id
+        - channel_id
+        - channel_name
+        - team_id
+        - team_name
+      properties:
+        post_id:
+          type: string
+          description: Unique identifier of the deleted post on the originating server.
+          examples:
+            - "8swgtrrdiff89yj1z33pofo15r"
+        channel_id:
+          type: string
+          description: ID of the channel the post belonged to.
+          examples:
+            - "9a1f4h6e17yfmk9w6pxs3jqd3e"
+        channel_name:
+          type: string
+          description: URL-safe name of the channel.
+          examples:
+            - "town-square"
+        team_id:
+          type: string
+          description: ID of the team on the originating server.
+          examples:
+            - "5f3h8k2m41ygdj7w8pxr6nqb9c"
+        team_name:
+          type: string
+          description: URL-safe name of the team.
+          examples:
+            - "test-a"
+
+    ReactionMessage:
+      type: object
+      description: >
+        Payload for `crossguard_reaction_add` and `crossguard_reaction_remove`
+        message types.
+      required:
+        - post_id
+        - channel_id
+        - channel_name
+        - team_id
+        - team_name
+        - user_id
+        - username
+        - emoji_name
+      properties:
+        post_id:
+          type: string
+          description: ID of the post the reaction applies to.
+          examples:
+            - "8swgtrrdiff89yj1z33pofo15r"
+        channel_id:
+          type: string
+          description: ID of the channel containing the post.
+          examples:
+            - "9a1f4h6e17yfmk9w6pxs3jqd3e"
+        channel_name:
+          type: string
+          description: URL-safe name of the channel.
+          examples:
+            - "town-square"
+        team_id:
+          type: string
+          description: ID of the team on the originating server.
+          examples:
+            - "5f3h8k2m41ygdj7w8pxr6nqb9c"
+        team_name:
+          type: string
+          description: URL-safe name of the team.
+          examples:
+            - "test-a"
+        user_id:
+          type: string
+          description: ID of the user who added or removed the reaction.
+          examples:
+            - "7m4k9j2p63ynfr8x1qwt5hab4e"
+        username:
+          type: string
+          description: Username of the user.
+          examples:
+            - "alice"
+        emoji_name:
+          type: string
+          description: Name of the emoji (without colons).
+          examples:
+            - "thumbsup"
+
+    TestMessage:
+      type: object
+      description: Payload for the `crossguard_test` message type, used to verify NATS connectivity.
+      required:
+        - id
+      properties:
+        id:
+          type: string
+          description: A Mattermost-generated unique identifier for the test request.
+          examples:
+            - "dj7f8k2m41ygsr9w6pxt3nqb4e"
+
+    # ------------------------------------------------------------------
+    # Connection configuration (reference, not transmitted over NATS)
+    # ------------------------------------------------------------------
+    NATSConnection:
+      type: object
+      description: >
+        Configuration for a single NATS connection (inbound or outbound).
+        This schema is stored in plugin settings, not transmitted over the wire.
+        Included here for completeness.
+      required:
+        - name
+        - address
+        - subject
+      properties:
+        name:
+          type: string
+          description: >
+            Human-readable connection identifier. Lowercase alphanumeric
+            characters and hyphens only.
+          pattern: "^[a-z0-9-]+$"
+          examples:
+            - "high-side"
+        address:
+          type: string
+          description: NATS server address.
+          examples:
+            - "nats://nats:4222"
+        subject:
+          type: string
+          description: NATS subject to publish to or subscribe on. Must start with `crossguard.`.
+          pattern: "^crossguard\\."
+          examples:
+            - "crossguard.high"
+        tls_enabled:
+          type: boolean
+          description: Whether TLS is enabled for this connection.
+          default: false
+        auth_type:
+          type: string
+          enum:
+            - none
+            - token
+            - credentials
+          description: Authentication method for the NATS connection.
+          default: "none"
+        token:
+          type: string
+          description: Bearer token (used when auth_type is `token`).
+        username:
+          type: string
+          description: Username (used when auth_type is `credentials`).
+        password:
+          type: string
+          format: password
+          description: Password (used when auth_type is `credentials`).
+        client_cert:
+          type: string
+          description: Filesystem path to the client TLS certificate.
+        client_key:
+          type: string
+          description: Filesystem path to the client TLS private key.
+        ca_cert:
+          type: string
+          description: Filesystem path to the CA certificate for server verification.

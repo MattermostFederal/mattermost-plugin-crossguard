@@ -48,6 +48,7 @@ async function main() {
     const singles = [
         { html: 'whitepaper.html', output: 'crossguard-whitepaper.pdf' },
         { html: 'threatmodel.html', output: 'crossguard-threatmodel.pdf' },
+        { html: 'nats-interface.html', output: 'crossguard-nats-interface.pdf' },
     ];
 
     for (const { html, output } of singles) {
@@ -73,7 +74,7 @@ async function main() {
     console.log(`  Wrote ${helpOutPath}`);
 
     await browser.close();
-    console.log('Done. Generated 3 PDFs.');
+    console.log('Done. Generated 4 PDFs.');
 }
 
 main().catch((err) => {

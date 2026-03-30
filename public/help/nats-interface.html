@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NATS Interface - Cross Guard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="layout">
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <h2>Cross Guard</h2>
+            <span class="version">Plugin Documentation</span>
+        </div>
+        <nav>
+            <span class="nav-section">Documentation</span>
+            <a href="help.html">Overview</a>
+            <a href="commands.html">Slash Commands</a>
+            <a href="admin.html">Admin Configuration</a>
+            <a href="api.html">REST API</a>
+            <a href="nats-interface.html" class="active">NATS Interface</a>
+            <a href="threatmodel.html">Threat Model</a>
+            <a href="whitepaper.html">Whitepaper</a>
+        </nav>
+    </aside>
+
+    <main class="content">
+        <div class="breadcrumb">
+            <a href="help.html">Docs</a>
+            <span class="separator">/</span>
+            NATS Interface
+        </div>
+
+        <h1>NATS Interface Reference</h1>
+        <p class="tagline">Wire protocol and message schemas for the Cross Guard NATS bus</p>
+
+        <!-- Overview -->
+        <h2>Overview</h2>
+        <p>
+            Cross Guard relays messages between Mattermost instances using
+            <a href="https://nats.io">NATS</a> as the transport layer. Every event (post, edit,
+            delete, reaction) is wrapped in a standard JSON envelope and published to a configured
+            NATS subject. The receiving instance subscribes to its inbound subject, deserializes
+            the envelope, and applies the event locally.
+        </p>
+
+        <table class="field-table">
+            <tbody>
+                <tr><td>Transport</td><td>NATS (core publish/subscribe)</td></tr>
+                <tr><td>Wire Format</td><td>JSON (UTF-8 encoded bytes)</td></tr>
+                <tr><td>Subject Prefix</td><td><code>crossguard.</code> (required for all subjects)</td></tr>
+                <tr><td>Subject Pattern</td><td><code>crossguard.{domain}</code>, e.g. <code>crossguard.high</code>, <code>crossguard.low</code></td></tr>
+                <tr><td>Retry Policy</td><td>Up to 3 attempts with exponential backoff (500ms base, 5s max)</td></tr>
+                <tr><td>Concurrency</td><td>Up to 50 concurrent outbound publishes per plugin instance</td></tr>
+            </tbody>
+        </table>
+
+        <!-- Data Flow -->
+        <h2>Data Flow</h2>
+
+        <h3>Outbound (Local to Remote)</h3>
+        <div class="diagram-box">
+<pre>User action in Mattermost
+    |
+    v
+Plugin hook fires (MessageHasBeenPosted, etc.)
+    |
+    v
+Check: channel relay enabled? team linked to outbound connection?
+    |
+    v
+Build Message envelope (type + serialized payload)
+    |
+    v
+Queue for async publish (semaphore-gated, max 50)
+    |
+    v
+Publish to NATS subject with retry (3x, exponential backoff)
+    |
+    v
+Flush to confirm delivery</pre>
+        </div>
+
+        <h3>Inbound (Remote to Local)</h3>
+        <div class="diagram-box">
+<pre>NATS message arrives on subscribed subject
+    |
+    v
+Deserialize Message envelope
+    |
+    v
+Dispatch by message type (post, update, delete, reaction, test)
+    |
+    v
+Resolve team and channel by name (apply rewrite rules if configured)
+    |
+    v
+Verify team AND channel are linked to this inbound connection
+    |
+    v
+Resolve user (lookup by username or use relay bot)
+    |
+    v
+Create/Update/Delete post or reaction in Mattermost
+    |
+    v
+Store post ID mapping (remote ID to local ID)
+    |
+    v
+Set "crossguard_relayed" property (prevents relay loops)</pre>
+        </div>
+
+        <!-- Message Envelope -->
+        <h2>Message Envelope</h2>
+        <p>
+            Every message published to NATS uses this standard envelope. The <code>type</code>
+            field determines which payload schema is serialized inside <code>json</code>.
+        </p>
+
+        <div class="endpoint-card">
+            <div class="endpoint-card-header">
+                <span class="method-badge method-post">NATS</span>
+                <span class="path">MessageEnvelope</span>
+            </div>
+            <div class="endpoint-card-body">
+                <h4>Schema</h4>
+                <table class="field-table">
+                    <tbody>
+                        <tr><td><code>type</code></td><td><strong>string, required</strong>. One of the <a href="#message-types">message type</a> values. Determines the payload schema.</td></tr>
+                        <tr><td><code>timestamp</code></td><td><strong>string, required</strong>. UTC timestamp in RFC 3339 format (e.g. <code>2026-03-27T14:30:00Z</code>). Set when the envelope is created.</td></tr>
+                        <tr><td><code>json</code></td><td><strong>string, required</strong>. JSON-encoded payload. Deserialize according to <code>type</code> to obtain the inner message object.</td></tr>
+                    </tbody>
+                </table>
+
+                <h4>Example</h4>
+<pre><code>{
+  "type": "crossguard_post",
+  "timestamp": "2026-03-27T14:30:00Z",
+  "json": "{\"post_id\":\"8swgtrrdiff89yj1z33pofo15r\",\"channel_id\":\"9a1f4h6e17yfmk9w6pxs3jqd3e\",\"channel_name\":\"town-square\",\"team_id\":\"5f3h8k2m41ygdj7w8pxr6nqb9c\",\"team_name\":\"test-a\",\"user_id\":\"7m4k9j2p63ynfr8x1qwt5hab4e\",\"username\":\"alice\",\"message\":\"Hello from the other side\",\"create_at\":1711547400000}"
+}</code></pre>
+            </div>
+        </div>
+
+        <!-- Message Types -->
+        <h2 id="message-types">Message Types</h2>
+        <p>
+            The <code>type</code> field in the envelope acts as a discriminator. Each value maps
+            to a specific payload schema serialized in the <code>json</code> field.
+        </p>
+
+        <table>
+            <thead>
+                <tr><th>Type Value</th><th>Go Constant</th><th>Payload Schema</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>crossguard_post</code></td>
+                    <td><code>MessageTypePost</code></td>
+                    <td><a href="#postmessage">PostMessage</a></td>
+                    <td>A new post was created</td>
+                </tr>
+                <tr>
+                    <td><code>crossguard_update</code></td>
+                    <td><code>MessageTypeUpdate</code></td>
+                    <td><a href="#postmessage">PostMessage</a></td>
+                    <td>An existing post was edited</td>
+                </tr>
+                <tr>
+                    <td><code>crossguard_delete</code></td>
+                    <td><code>MessageTypeDelete</code></td>
+                    <td><a href="#deletemessage">DeleteMessage</a></td>
+                    <td>A post was deleted</td>
+                </tr>
+                <tr>
+                    <td><code>crossguard_reaction_add</code></td>
+                    <td><code>MessageTypeReactionAdd</code></td>
+                    <td><a href="#reactionmessage">ReactionMessage</a></td>
+                    <td>A reaction was added to a post</td>
+                </tr>
+                <tr>
+                    <td><code>crossguard_reaction_remove</code></td>
+                    <td><code>MessageTypeReactionRemove</code></td>
+                    <td><a href="#reactionmessage">ReactionMessage</a></td>
+                    <td>A reaction was removed from a post</td>
+                </tr>
+                <tr>
+                    <td><code>crossguard_test</code></td>
+                    <td><code>MessageTypeTest</code></td>
+                    <td><a href="#testmessage">TestMessage</a></td>
+                    <td>Connectivity test message</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- PostMessage -->
+        <h2 id="postmessage">PostMessage</h2>
+        <p>
+            Used for both <code>crossguard_post</code> (new posts) and
+            <code>crossguard_update</code> (edits). For updates, the fields reflect the
+            post state after the edit.
+        </p>
+
+        <div class="endpoint-card">
+            <div class="endpoint-card-header">
+                <span class="method-badge method-post">PAYLOAD</span>
+                <span class="path">PostMessage</span>
+            </div>
+            <div class="endpoint-card-body">
+                <h4>Fields</h4>
+                <table>
+                    <thead>
+                        <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>post_id</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>Unique identifier of the post on the originating server</td>
+                        </tr>
+                        <tr>
+                            <td><code>root_id</code></td>
+                            <td>string</td>
+                            <td>No</td>
+                            <td>ID of the root post if this is a threaded reply. Omitted for top-level posts.</td>
+                        </tr>
+                        <tr>
+                            <td><code>channel_id</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>ID of the channel on the originating server</td>
+                        </tr>
+                        <tr>
+                            <td><code>channel_name</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>URL-safe channel name (used for cross-domain resolution)</td>
+                        </tr>
+                        <tr>
+                            <td><code>team_id</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>ID of the team on the originating server</td>
+                        </tr>
+                        <tr>
+                            <td><code>team_name</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>URL-safe team name (used for cross-domain resolution, subject to rewrite rules)</td>
+                        </tr>
+                        <tr>
+                            <td><code>user_id</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>ID of the post author on the originating server</td>
+                        </tr>
+                        <tr>
+                            <td><code>username</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>Username of the post author</td>
+                        </tr>
+                        <tr>
+                            <td><code>message</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>Markdown-formatted message body</td>
+                        </tr>
+                        <tr>
+                            <td><code>create_at</code></td>
+                            <td>integer (int64)</td>
+                            <td>Yes</td>
+                            <td>Unix timestamp in milliseconds when the post was originally created</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Example: New Post</h4>
+<pre><code>{
+  "post_id": "8swgtrrdiff89yj1z33pofo15r",
+  "channel_id": "9a1f4h6e17yfmk9w6pxs3jqd3e",
+  "channel_name": "town-square",
+  "team_id": "5f3h8k2m41ygdj7w8pxr6nqb9c",
+  "team_name": "test-a",
+  "user_id": "7m4k9j2p63ynfr8x1qwt5hab4e",
+  "username": "alice",
+  "message": "Hello from the other side",
+  "create_at": 1711547400000
+}</code></pre>
+
+                <h4>Example: Threaded Reply</h4>
+<pre><code>{
+  "post_id": "kf7g2m4x91yrnh5w3pqs8jab6e",
+  "root_id": "8swgtrrdiff89yj1z33pofo15r",
+  "channel_id": "9a1f4h6e17yfmk9w6pxs3jqd3e",
+  "channel_name": "town-square",
+  "team_id": "5f3h8k2m41ygdj7w8pxr6nqb9c",
+  "team_name": "test-a",
+  "user_id": "3n6k8j1p42ygfr9x7qwt5hab2c",
+  "username": "bob",
+  "message": "Replying in thread",
+  "create_at": 1711547460000
+}</code></pre>
+            </div>
+        </div>
+
+        <!-- DeleteMessage -->
+        <h2 id="deletemessage">DeleteMessage</h2>
+        <p>
+            Identifies a post that was deleted on the originating server. The receiving
+            instance uses the <code>post_id</code> to look up the local copy via its
+            post ID mapping and delete it.
+        </p>
+
+        <div class="endpoint-card">
+            <div class="endpoint-card-header">
+                <span class="method-badge method-delete">PAYLOAD</span>
+                <span class="path">DeleteMessage</span>
+            </div>
+            <div class="endpoint-card-body">
+                <h4>Fields</h4>
+                <table>
+                    <thead>
+                        <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>post_id</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>Unique identifier of the deleted post on the originating server</td>
+                        </tr>
+                        <tr>
+                            <td><code>channel_id</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>ID of the channel the post belonged to</td>
+                        </tr>
+                        <tr>
+                            <td><code>channel_name</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>URL-safe channel name</td>
+                        </tr>
+                        <tr>
+                            <td><code>team_id</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>ID of the team on the originating server</td>
+                        </tr>
+                        <tr>
+                            <td><code>team_name</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>URL-safe team name</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Example</h4>
+<pre><code>{
+  "post_id": "8swgtrrdiff89yj1z33pofo15r",
+  "channel_id": "9a1f4h6e17yfmk9w6pxs3jqd3e",
+  "channel_name": "town-square",
+  "team_id": "5f3h8k2m41ygdj7w8pxr6nqb9c",
+  "team_name": "test-a"
+}</code></pre>
+            </div>
+        </div>
+
+        <!-- ReactionMessage -->
+        <h2 id="reactionmessage">ReactionMessage</h2>
+        <p>
+            Represents a reaction added to or removed from a post. Used by both
+            <code>crossguard_reaction_add</code> and <code>crossguard_reaction_remove</code>.
+            The receiving instance resolves the local post via its post ID mapping and
+            applies or removes the reaction.
+        </p>
+
+        <div class="endpoint-card">
+            <div class="endpoint-card-header">
+                <span class="method-badge method-put">PAYLOAD</span>
+                <span class="path">ReactionMessage</span>
+            </div>
+            <div class="endpoint-card-body">
+                <h4>Fields</h4>
+                <table>
+                    <thead>
+                        <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>post_id</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>ID of the post the reaction applies to</td>
+                        </tr>
+                        <tr>
+                            <td><code>channel_id</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>ID of the channel containing the post</td>
+                        </tr>
+                        <tr>
+                            <td><code>channel_name</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>URL-safe channel name</td>
+                        </tr>
+                        <tr>
+                            <td><code>team_id</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>ID of the team on the originating server</td>
+                        </tr>
+                        <tr>
+                            <td><code>team_name</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>URL-safe team name</td>
+                        </tr>
+                        <tr>
+                            <td><code>user_id</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>ID of the user who added or removed the reaction</td>
+                        </tr>
+                        <tr>
+                            <td><code>username</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>Username of the user</td>
+                        </tr>
+                        <tr>
+                            <td><code>emoji_name</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>Emoji name without colons (e.g. <code>thumbsup</code>, not <code>:thumbsup:</code>)</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Example</h4>
+<pre><code>{
+  "post_id": "8swgtrrdiff89yj1z33pofo15r",
+  "channel_id": "9a1f4h6e17yfmk9w6pxs3jqd3e",
+  "channel_name": "town-square",
+  "team_id": "5f3h8k2m41ygdj7w8pxr6nqb9c",
+  "team_name": "test-a",
+  "user_id": "7m4k9j2p63ynfr8x1qwt5hab4e",
+  "username": "alice",
+  "emoji_name": "thumbsup"
+}</code></pre>
+            </div>
+        </div>
+
+        <!-- TestMessage -->
+        <h2 id="testmessage">TestMessage</h2>
+        <p>
+            A lightweight message used to verify NATS connectivity. Sent via the
+            <code>POST /api/v1/test-connection</code> REST endpoint when testing an
+            outbound connection. The receiving instance logs receipt and confirms
+            the connection is functional.
+        </p>
+
+        <div class="endpoint-card">
+            <div class="endpoint-card-header">
+                <span class="method-badge method-get">PAYLOAD</span>
+                <span class="path">TestMessage</span>
+            </div>
+            <div class="endpoint-card-body">
+                <h4>Fields</h4>
+                <table>
+                    <thead>
+                        <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>id</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>A Mattermost-generated unique identifier for the test request</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Example</h4>
+<pre><code>{
+  "id": "dj7f8k2m41ygsr9w6pxt3nqb4e"
+}</code></pre>
+            </div>
+        </div>
+
+        <!-- Complete Wire Examples -->
+        <h2>Complete Wire Format Examples</h2>
+        <p>
+            Each example below shows the full envelope as it appears on the NATS wire,
+            with the <code>json</code> field containing the serialized payload string.
+        </p>
+
+        <h3>New Post</h3>
+<pre><code>{
+  "type": "crossguard_post",
+  "timestamp": "2026-03-27T14:30:00Z",
+  "json": "{\"post_id\":\"8swgtrrdiff89yj1z33pofo15r\",\"channel_id\":\"9a1f4h6e17yfmk9w6pxs3jqd3e\",\"channel_name\":\"town-square\",\"team_id\":\"5f3h8k2m41ygdj7w8pxr6nqb9c\",\"team_name\":\"test-a\",\"user_id\":\"7m4k9j2p63ynfr8x1qwt5hab4e\",\"username\":\"alice\",\"message\":\"Hello from the other side\",\"create_at\":1711547400000}"
+}</code></pre>
+
+        <h3>Post Edit</h3>
+<pre><code>{
+  "type": "crossguard_update",
+  "timestamp": "2026-03-27T14:31:00Z",
+  "json": "{\"post_id\":\"8swgtrrdiff89yj1z33pofo15r\",\"channel_id\":\"9a1f4h6e17yfmk9w6pxs3jqd3e\",\"channel_name\":\"town-square\",\"team_id\":\"5f3h8k2m41ygdj7w8pxr6nqb9c\",\"team_name\":\"test-a\",\"user_id\":\"7m4k9j2p63ynfr8x1qwt5hab4e\",\"username\":\"alice\",\"message\":\"Hello from the other side (edited)\",\"create_at\":1711547400000}"
+}</code></pre>
+
+        <h3>Post Delete</h3>
+<pre><code>{
+  "type": "crossguard_delete",
+  "timestamp": "2026-03-27T14:32:00Z",
+  "json": "{\"post_id\":\"8swgtrrdiff89yj1z33pofo15r\",\"channel_id\":\"9a1f4h6e17yfmk9w6pxs3jqd3e\",\"channel_name\":\"town-square\",\"team_id\":\"5f3h8k2m41ygdj7w8pxr6nqb9c\",\"team_name\":\"test-a\"}"
+}</code></pre>
+
+        <h3>Reaction Added</h3>
+<pre><code>{
+  "type": "crossguard_reaction_add",
+  "timestamp": "2026-03-27T14:33:00Z",
+  "json": "{\"post_id\":\"8swgtrrdiff89yj1z33pofo15r\",\"channel_id\":\"9a1f4h6e17yfmk9w6pxs3jqd3e\",\"channel_name\":\"town-square\",\"team_id\":\"5f3h8k2m41ygdj7w8pxr6nqb9c\",\"team_name\":\"test-a\",\"user_id\":\"3n6k8j1p42ygfr9x7qwt5hab2c\",\"username\":\"bob\",\"emoji_name\":\"thumbsup\"}"
+}</code></pre>
+
+        <h3>Reaction Removed</h3>
+<pre><code>{
+  "type": "crossguard_reaction_remove",
+  "timestamp": "2026-03-27T14:34:00Z",
+  "json": "{\"post_id\":\"8swgtrrdiff89yj1z33pofo15r\",\"channel_id\":\"9a1f4h6e17yfmk9w6pxs3jqd3e\",\"channel_name\":\"town-square\",\"team_id\":\"5f3h8k2m41ygdj7w8pxr6nqb9c\",\"team_name\":\"test-a\",\"user_id\":\"3n6k8j1p42ygfr9x7qwt5hab2c\",\"username\":\"bob\",\"emoji_name\":\"thumbsup\"}"
+}</code></pre>
+
+        <h3>Connectivity Test</h3>
+<pre><code>{
+  "type": "crossguard_test",
+  "timestamp": "2026-03-27T14:35:00Z",
+  "json": "{\"id\":\"dj7f8k2m41ygsr9w6pxt3nqb4e\"}"
+}</code></pre>
+
+        <!-- Connection Configuration -->
+        <h2>Connection Configuration</h2>
+        <p>
+            Each NATS connection (inbound or outbound) is configured in the System Console.
+            This schema is stored in plugin settings and is not transmitted over the wire.
+            It is included here for reference when setting up integrations.
+        </p>
+
+        <div class="endpoint-card">
+            <div class="endpoint-card-header">
+                <span class="method-badge method-put">CONFIG</span>
+                <span class="path">NATSConnection</span>
+            </div>
+            <div class="endpoint-card-body">
+                <h4>Fields</h4>
+                <table>
+                    <thead>
+                        <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>name</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>Connection identifier. Lowercase alphanumeric and hyphens only (pattern: <code>^[a-z0-9-]+$</code>).</td>
+                        </tr>
+                        <tr>
+                            <td><code>address</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>NATS server address (e.g. <code>nats://nats:4222</code>).</td>
+                        </tr>
+                        <tr>
+                            <td><code>subject</code></td>
+                            <td>string</td>
+                            <td>Yes</td>
+                            <td>NATS subject. Must start with <code>crossguard.</code> (e.g. <code>crossguard.high</code>).</td>
+                        </tr>
+                        <tr>
+                            <td><code>tls_enabled</code></td>
+                            <td>boolean</td>
+                            <td>No</td>
+                            <td>Enable TLS encryption. Default: <code>false</code>.</td>
+                        </tr>
+                        <tr>
+                            <td><code>auth_type</code></td>
+                            <td>string</td>
+                            <td>No</td>
+                            <td>Authentication method: <code>none</code>, <code>token</code>, or <code>credentials</code>. Default: <code>none</code>.</td>
+                        </tr>
+                        <tr>
+                            <td><code>token</code></td>
+                            <td>string</td>
+                            <td>Conditional</td>
+                            <td>Bearer token. Required when <code>auth_type</code> is <code>token</code>.</td>
+                        </tr>
+                        <tr>
+                            <td><code>username</code></td>
+                            <td>string</td>
+                            <td>Conditional</td>
+                            <td>Username. Required when <code>auth_type</code> is <code>credentials</code>.</td>
+                        </tr>
+                        <tr>
+                            <td><code>password</code></td>
+                            <td>string</td>
+                            <td>Conditional</td>
+                            <td>Password. Required when <code>auth_type</code> is <code>credentials</code>.</td>
+                        </tr>
+                        <tr>
+                            <td><code>client_cert</code></td>
+                            <td>string</td>
+                            <td>No</td>
+                            <td>Filesystem path to the client TLS certificate.</td>
+                        </tr>
+                        <tr>
+                            <td><code>client_key</code></td>
+                            <td>string</td>
+                            <td>No</td>
+                            <td>Filesystem path to the client TLS private key.</td>
+                        </tr>
+                        <tr>
+                            <td><code>ca_cert</code></td>
+                            <td>string</td>
+                            <td>No</td>
+                            <td>Filesystem path to the CA certificate for server verification.</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h4>Example: Token Authentication</h4>
+<pre><code>{
+  "name": "high-side",
+  "address": "nats://nats:4222",
+  "subject": "crossguard.high",
+  "tls_enabled": false,
+  "auth_type": "token",
+  "token": "my-secret-token"
+}</code></pre>
+
+                <h4>Example: TLS with Credentials</h4>
+<pre><code>{
+  "name": "secure-relay",
+  "address": "nats://nats.example.com:4222",
+  "subject": "crossguard.relay",
+  "tls_enabled": true,
+  "auth_type": "credentials",
+  "username": "crossguard-svc",
+  "password": "s3cret",
+  "client_cert": "/etc/crossguard/client.crt",
+  "client_key": "/etc/crossguard/client.key",
+  "ca_cert": "/etc/crossguard/ca.crt"
+}</code></pre>
+            </div>
+        </div>
+
+        <!-- Connection Behavior -->
+        <h2>Connection Behavior</h2>
+
+        <table>
+            <thead>
+                <tr><th>Parameter</th><th>Value</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Connect Timeout (test)</td>
+                    <td>30 seconds</td>
+                    <td>One-time connections used by the test-connection API endpoint</td>
+                </tr>
+                <tr>
+                    <td>Connect Timeout (relay)</td>
+                    <td>5 seconds</td>
+                    <td>Persistent relay connections established at plugin activation</td>
+                </tr>
+                <tr>
+                    <td>Max Reconnects</td>
+                    <td>Unlimited</td>
+                    <td>Relay connections attempt reconnection indefinitely</td>
+                </tr>
+                <tr>
+                    <td>Reconnect Wait</td>
+                    <td>2 seconds</td>
+                    <td>Delay between reconnection attempts</td>
+                </tr>
+                <tr>
+                    <td>Publish Retries</td>
+                    <td>3</td>
+                    <td>Maximum attempts per message publish</td>
+                </tr>
+                <tr>
+                    <td>Publish Base Delay</td>
+                    <td>500ms</td>
+                    <td>Initial backoff delay between retries</td>
+                </tr>
+                <tr>
+                    <td>Publish Max Delay</td>
+                    <td>5 seconds</td>
+                    <td>Maximum backoff delay between retries</td>
+                </tr>
+                <tr>
+                    <td>Concurrent Publishes</td>
+                    <td>50</td>
+                    <td>Maximum concurrent outbound publish operations (semaphore-gated)</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- Loop Prevention -->
+        <h2>Loop Prevention</h2>
+        <p>
+            Cross Guard prevents infinite relay loops through multiple mechanisms:
+        </p>
+        <ul>
+            <li>
+                <strong>Relayed property:</strong> Every post created by inbound message processing
+                is tagged with a <code>crossguard_relayed</code> post property. Outbound hooks
+                skip posts with this property.
+            </li>
+            <li>
+                <strong>System message filtering:</strong> System-generated messages (join/leave,
+                header changes, etc.) are never relayed.
+            </li>
+            <li>
+                <strong>Bot post filtering:</strong> Posts from the relay bot itself are excluded
+                from outbound processing.
+            </li>
+            <li>
+                <strong>Connection linkage validation:</strong> Messages are only published to
+                outbound connections that are explicitly linked to the originating team.
+                Inbound messages are only processed if the target team and channel are linked
+                to the receiving inbound connection.
+            </li>
+        </ul>
+
+        <div class="alert alert-info">
+            <p class="alert-title">OpenAPI Specification</p>
+            <p>
+                The machine-readable OpenAPI 3.1 specification for this interface is available at
+                <code>assets/crossguard-api.yaml</code> in the plugin source repository.
+            </p>
+        </div>
+    </main>
+</div>
+</body>
+</html>

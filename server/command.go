@@ -10,6 +10,34 @@ import (
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
+func fileTransferLabel(enabled bool, filterMode, filterTypes string) string {
+	if !enabled {
+		return "files off"
+	}
+	switch filterMode {
+	case "allow":
+		return "files on, allow: " + filterTypes
+	case "deny":
+		return "files on, deny: " + filterTypes
+	default:
+		return "files on"
+	}
+}
+
+func fileTransferLabelEmoji(enabled bool, filterMode, filterTypes string) string {
+	if !enabled {
+		return ":x: Off"
+	}
+	switch filterMode {
+	case "allow":
+		return ":white_check_mark: On (allow: " + filterTypes + ")"
+	case "deny":
+		return ":white_check_mark: On (deny: " + filterTypes + ")"
+	default:
+		return ":white_check_mark: On"
+	}
+}
+
 const (
 	commandTrigger           = "crossguard"
 	actionInitTeam           = "init-team"
@@ -291,17 +319,23 @@ func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandRespo
 	sb.WriteString("|:-----|:-----|:---|:------------|\n")
 	fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", teamDisplayName, teamName, teamID, teamStatus)
 
-	if len(resp.LinkedConnections) > 0 {
+	if len(resp.Connections) > 0 {
 		sb.WriteString("\n**Team Connections:**\n\n")
-		for _, name := range connectionDisplayNames(resp.LinkedConnections) {
-			fmt.Fprintf(&sb, "- `%s`\n", name)
+		for _, cs := range resp.Connections {
+			if !cs.Linked {
+				continue
+			}
+			fmt.Fprintf(&sb, "- `%s:%s` (%s)\n", cs.Direction, cs.Name, fileTransferLabel(cs.FileTransferEnabled, cs.FileFilterMode, cs.FileFilterTypes))
 		}
 	}
 
 	if len(channelConns) > 0 {
+		natsMap := p.getNATSConnectionMap()
 		sb.WriteString("\n**Channel Connections:**\n\n")
-		for _, name := range connectionDisplayNames(channelConns) {
-			fmt.Fprintf(&sb, "- `%s`\n", name)
+		for _, tc := range channelConns {
+			key := connKey(tc)
+			nc := natsMap[key]
+			fmt.Fprintf(&sb, "- `%s` (%s)\n", key, fileTransferLabel(nc.FileTransferEnabled, nc.FileFilterMode, nc.FileFilterTypes))
 		}
 	}
 
@@ -343,9 +377,12 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 	fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", channelDisplayName, channelName, channelID, channelStatus)
 
 	if len(channelConns) > 0 {
+		natsMap := p.getNATSConnectionMap()
 		sb.WriteString("\n**Channel Connections:**\n\n")
-		for _, name := range connectionDisplayNames(channelConns) {
-			fmt.Fprintf(&sb, "- `%s`\n", name)
+		for _, tc := range channelConns {
+			key := connKey(tc)
+			nc := natsMap[key]
+			fmt.Fprintf(&sb, "- `%s` (%s)\n", key, fileTransferLabel(nc.FileTransferEnabled, nc.FileFilterMode, nc.FileFilterTypes))
 		}
 	}
 
@@ -367,10 +404,10 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 
 	if len(resp.Connections) > 0 {
 		sb.WriteString("\n**NATS Connections:**\n\n")
-		sb.WriteString("| Name | Direction | Address | Auth Type | Subject |\n")
-		sb.WriteString("|:-----|:----------|:--------|:----------|:--------|\n")
+		sb.WriteString("| Name | Direction | Address | Auth Type | Subject | Files |\n")
+		sb.WriteString("|:-----|:----------|:--------|:----------|:--------|:------|\n")
 		for _, conn := range resp.Connections {
-			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s |\n", conn.Name, conn.Direction, conn.Address, conn.AuthType, conn.Subject)
+			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %s |\n", conn.Name, conn.Direction, conn.Address, conn.AuthType, conn.Subject, fileTransferLabelEmoji(conn.FileTransferEnabled, conn.FileFilterMode, conn.FileFilterTypes))
 		}
 	}
 

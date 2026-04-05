@@ -39,20 +39,23 @@
         <h2>Overview</h2>
         <p>
             Cross Guard relays messages between Mattermost instances using
-            <a href="https://nats.io">NATS</a> as the transport layer. Every event (post, edit,
-            delete, reaction) is wrapped in a standard JSON envelope and published to a configured
-            NATS subject. The receiving instance subscribes to its inbound subject, deserializes
-            the envelope, and applies the event locally.
+            <a href="https://nats.io">NATS</a> as the transport layer. Text events (posts, edits,
+            deletes, reactions) are wrapped in a standard JSON envelope and published via core NATS
+            publish/subscribe. File attachments use a separate subsystem: NATS JetStream Object
+            Store, which provides reliable binary object transfer with automatic TTL-based cleanup.
+            Both subsystems share the same NATS connection but operate independently.
         </p>
 
         <table class="field-table">
             <tbody>
-                <tr><td>Transport</td><td>NATS (core publish/subscribe)</td></tr>
-                <tr><td>Wire Format</td><td>JSON (UTF-8 encoded bytes)</td></tr>
+                <tr><td>Text Transport</td><td>NATS core publish/subscribe</td></tr>
+                <tr><td>File Transport</td><td>NATS JetStream Object Store (bucket: <code>crossguard-files</code>)</td></tr>
+                <tr><td>Wire Format</td><td>JSON (UTF-8 encoded bytes) for text; binary for files</td></tr>
                 <tr><td>Subject Prefix</td><td><code>crossguard.</code> (required for all subjects)</td></tr>
                 <tr><td>Subject Pattern</td><td><code>crossguard.{domain}</code>, e.g. <code>crossguard.high</code>, <code>crossguard.low</code></td></tr>
-                <tr><td>Retry Policy</td><td>Up to 3 attempts with exponential backoff (500ms base, 5s max)</td></tr>
-                <tr><td>Concurrency</td><td>Up to 50 concurrent outbound publishes per plugin instance</td></tr>
+                <tr><td>Retry Policy</td><td>Up to 3 attempts with exponential backoff (500ms base, 5s max) for text relay</td></tr>
+                <tr><td>Text Concurrency</td><td>Up to 256 concurrent text relay operations per plugin instance</td></tr>
+                <tr><td>File Concurrency</td><td>Up to 32 concurrent file upload/download operations per plugin instance</td></tr>
             </tbody>
         </table>
 
@@ -627,6 +630,24 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
                             <td>No</td>
                             <td>Filesystem path to the CA certificate for server verification.</td>
                         </tr>
+                        <tr>
+                            <td><code>file_transfer_enabled</code></td>
+                            <td>boolean</td>
+                            <td>No</td>
+                            <td>Enable file attachment relay via JetStream Object Store. Default: <code>false</code>.</td>
+                        </tr>
+                        <tr>
+                            <td><code>file_filter_mode</code></td>
+                            <td>string</td>
+                            <td>No</td>
+                            <td>File extension filter: <code>""</code> (no filter), <code>"allow"</code> (whitelist), or <code>"deny"</code> (blacklist). Default: <code>""</code>.</td>
+                        </tr>
+                        <tr>
+                            <td><code>file_filter_types</code></td>
+                            <td>string</td>
+                            <td>No</td>
+                            <td>Comma-separated extensions (e.g. <code>.pdf,.docx,.png</code>). Case-insensitive. Used with <code>file_filter_mode</code>.</td>
+                        </tr>
                     </tbody>
                 </table>
 
@@ -652,6 +673,18 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
   "client_cert": "/etc/crossguard/client.crt",
   "client_key": "/etc/crossguard/client.key",
   "ca_cert": "/etc/crossguard/ca.crt"
+}</code></pre>
+
+                <h4>Example: File Transfer with Allow Filter</h4>
+<pre><code>{
+  "name": "high-side",
+  "address": "nats://nats:4222",
+  "subject": "crossguard.high",
+  "auth_type": "token",
+  "token": "my-secret-token",
+  "file_transfer_enabled": true,
+  "file_filter_mode": "allow",
+  "file_filter_types": ".pdf,.docx,.png,.jpg"
 }</code></pre>
             </div>
         </div>
@@ -700,12 +733,198 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
                     <td>Maximum backoff delay between retries</td>
                 </tr>
                 <tr>
-                    <td>Concurrent Publishes</td>
-                    <td>50</td>
-                    <td>Maximum concurrent outbound publish operations (semaphore-gated)</td>
+                    <td>Text Relay Semaphore</td>
+                    <td>256</td>
+                    <td>Maximum concurrent text relay operations (semaphore-gated)</td>
+                </tr>
+                <tr>
+                    <td>File Semaphore</td>
+                    <td>32</td>
+                    <td>Maximum concurrent file upload/download operations (separate from text relay)</td>
+                </tr>
+                <tr>
+                    <td>Object Store TTL</td>
+                    <td>1 hour</td>
+                    <td>JetStream Object Store bucket TTL for file objects</td>
+                </tr>
+                <tr>
+                    <td>File Post Mapping Retry</td>
+                    <td>3 attempts</td>
+                    <td>Inbound file watcher retries post mapping lookup with linear backoff (1s, 2s, 3s)</td>
                 </tr>
             </tbody>
         </table>
+
+        <!-- File Transfer Protocol -->
+        <h2 id="file-transfer">File Transfer Protocol</h2>
+        <p>
+            File attachment relay uses NATS JetStream Object Store as an out-of-band binary
+            transfer mechanism. Text and file relay are completely independent systems that share
+            the same NATS connection but use different protocols. File operations cannot starve
+            text relay because they use a separate semaphore.
+        </p>
+
+        <h3>Object Store Configuration</h3>
+        <table>
+            <thead>
+                <tr><th>Parameter</th><th>Value</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Bucket Name</td>
+                    <td><code>crossguard-files</code></td>
+                    <td>Auto-created on first use via <code>CreateOrUpdateObjectStore</code></td>
+                </tr>
+                <tr>
+                    <td>TTL</td>
+                    <td>1 hour</td>
+                    <td>Objects are automatically purged after TTL. No receiver-side deletion (supports fan-out to multiple receivers).</td>
+                </tr>
+                <tr>
+                    <td>Object Key</td>
+                    <td><code>{postID}/{randomID}</code></td>
+                    <td>Post ID from the originating server combined with a generated unique identifier. Avoids filename encoding issues.</td>
+                </tr>
+                <tr>
+                    <td>Max File Size</td>
+                    <td>Server's <code>MaxFileSize</code></td>
+                    <td>Governed by <code>FileSettings.MaxFileSize</code> in the Mattermost server config. Default: 100 MB.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Object Metadata Headers</h3>
+        <p>
+            Each uploaded object carries three custom NATS headers that the receiving instance
+            uses to route and attach the file to the correct local post.
+        </p>
+        <table>
+            <thead>
+                <tr><th>Header</th><th>Type</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>X-Post-Id</code></td>
+                    <td>string</td>
+                    <td>The originating server's post ID. Used to look up the local post via the post ID mapping (<code>pm-{connName}-{remotePostID}</code>).</td>
+                </tr>
+                <tr>
+                    <td><code>X-Conn-Name</code></td>
+                    <td>string</td>
+                    <td>The connection name that uploaded the file. Receivers filter objects by this header to process only files from the matching inbound connection.</td>
+                </tr>
+                <tr>
+                    <td><code>X-Filename</code></td>
+                    <td>string</td>
+                    <td>Original filename of the attachment as it appeared on the sending server.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Outbound File Flow</h3>
+        <div class="diagram-box">
+<pre>User posts message with file attachment
+    |
+    v
+Plugin hook fires (MessageHasBeenPosted)
+    |
+    +--> Text relay (core NATS pub/sub, unchanged)
+    |
+    +--> File relay (for each enabled outbound connection):
+         |
+         v
+         Check: file_transfer_enabled? File passes filter? Under size limit?
+             |
+             v
+         Download file bytes from Mattermost (once, shared across connections)
+             |
+             v
+         Acquire file semaphore (max 32)
+             |
+             v
+         Get or create Object Store bucket ("crossguard-files")
+             |
+             v
+         Upload file bytes to Object Store
+         Key: {postID}/{randomID}
+         Headers: X-Post-Id, X-Conn-Name, X-Filename
+             |
+             v
+         Release semaphore</pre>
+        </div>
+
+        <h3>Inbound File Flow</h3>
+        <div class="diagram-box">
+<pre>Object Store watcher detects new object (UpdatesOnly mode)
+    |
+    v
+Read metadata headers (X-Post-Id, X-Conn-Name, X-Filename)
+    |
+    v
+Filter: does X-Conn-Name match this inbound connection?
+    |
+    v
+Check: file passes inbound filter policy?
+    |
+    v
+Look up local post ID via KV mapping: pm-{connName}-{remotePostID}
+    |  (retries up to 3 times with linear backoff: 1s, 2s, 3s)
+    v
+Acquire file semaphore (max 32)
+    |
+    v
+Download file bytes from Object Store
+    |
+    v
+Upload file to local Mattermost (API.UploadFile)
+    |
+    v
+Attach file to local post (append FileId via UpdatePost)
+    |
+    v
+Release semaphore</pre>
+        </div>
+
+        <h3>File Filtering</h3>
+        <p>
+            Each connection can independently filter files by extension using three modes:
+        </p>
+        <table>
+            <thead>
+                <tr><th>Mode</th><th>Behavior</th><th>Example</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><code>""</code> (empty, default)</td>
+                    <td>No filtering. All files pass.</td>
+                    <td><code>"file_filter_mode": ""</code></td>
+                </tr>
+                <tr>
+                    <td><code>"allow"</code></td>
+                    <td>Only files with listed extensions are relayed.</td>
+                    <td><code>"file_filter_mode": "allow", "file_filter_types": ".pdf,.docx"</code></td>
+                </tr>
+                <tr>
+                    <td><code>"deny"</code></td>
+                    <td>Files with listed extensions are blocked.</td>
+                    <td><code>"file_filter_mode": "deny", "file_filter_types": ".exe,.bat"</code></td>
+                </tr>
+            </tbody>
+        </table>
+        <p>
+            Extensions are case-insensitive and a leading dot is optional (both <code>pdf</code>
+            and <code>.pdf</code> are accepted). Filters are evaluated independently on outbound
+            (before upload) and inbound (before download).
+        </p>
+
+        <div class="alert alert-info">
+            <p class="alert-title">JetStream Requirement</p>
+            <p>
+                File transfer requires a JetStream-enabled NATS server. If the NATS server does not
+                have JetStream enabled, file transfer will fail silently with errors logged. Core
+                NATS text relay is not affected.
+            </p>
+        </div>
 
         <!-- Loop Prevention -->
         <h2>Loop Prevention</h2>

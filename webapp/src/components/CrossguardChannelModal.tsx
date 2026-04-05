@@ -7,6 +7,9 @@ interface ConnectionStatus {
     linked: boolean;
     orphaned?: boolean;
     remote_team_name?: string;
+    file_transfer_enabled: boolean;
+    file_filter_mode?: string;
+    file_filter_types?: string;
 }
 
 interface ChannelStatusResponse {
@@ -382,6 +385,18 @@ const CrossguardChannelModal: React.FC = () => {
                                         {`Remote team: ${conn.remote_team_name}`}
                                     </div>
                                 )}
+                                <div style={s.directionLabel}>
+                                    {conn.file_transfer_enabled ? (
+                                        <>
+                                            {'\u{1F4CE} Files: '}
+                                            {conn.file_filter_mode === 'allow' && `Allow ${conn.file_filter_types}`}
+                                            {conn.file_filter_mode === 'deny' && `Deny ${conn.file_filter_types}`}
+                                            {!conn.file_filter_mode && 'All types'}
+                                        </>
+                                    ) : (
+                                        '\u{1F6AB} Files: Disabled'
+                                    )}
+                                </div>
                             </div>
                             {conn.linked ? (
                                 <button

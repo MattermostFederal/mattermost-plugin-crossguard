@@ -40,11 +40,14 @@ type TeamStatusEntry struct {
 
 // RedactedNATSConnection exposes only safe fields from a NATS connection config.
 type RedactedNATSConnection struct {
-	Name      string `json:"name"`
-	Direction string `json:"direction"`
-	Address   string `json:"address"`
-	AuthType  string `json:"auth_type"`
-	Subject   string `json:"subject"`
+	Name                string `json:"name"`
+	Direction           string `json:"direction"`
+	Address             string `json:"address"`
+	AuthType            string `json:"auth_type"`
+	Subject             string `json:"subject"`
+	FileTransferEnabled bool   `json:"file_transfer_enabled"`
+	FileFilterMode      string `json:"file_filter_mode,omitempty"`
+	FileFilterTypes     string `json:"file_filter_types,omitempty"`
 }
 
 // GlobalStatusResponse is the JSON response for the system-wide status endpoint.
@@ -163,6 +166,7 @@ func (p *Plugin) getTeamStatus(teamID string) (*TeamStatusResponse, *apiError) {
 	}
 
 	allConns := p.getAllConnectionNames()
+	natsMap := p.getNATSConnectionMap()
 	configSet := make(map[string]store.TeamConnection, len(allConns))
 	connSet := make(map[string]store.TeamConnection)
 	for _, tc := range allConns {
@@ -191,12 +195,16 @@ func (p *Plugin) getTeamStatus(teamID string) (*TeamStatusResponse, *apiError) {
 		tc := connSet[key]
 		_, inConfig := configSet[key]
 		_, isLinked := linkedSet[key]
+		nc := natsMap[key]
 		statuses = append(statuses, ConnectionStatus{
-			Name:           tc.Connection,
-			Direction:      tc.Direction,
-			Linked:         isLinked,
-			Orphaned:       !inConfig,
-			RemoteTeamName: tc.RemoteTeamName,
+			Name:                tc.Connection,
+			Direction:           tc.Direction,
+			Linked:              isLinked,
+			Orphaned:            !inConfig,
+			RemoteTeamName:      tc.RemoteTeamName,
+			FileTransferEnabled: nc.FileTransferEnabled,
+			FileFilterMode:      nc.FileFilterMode,
+			FileFilterTypes:     nc.FileFilterTypes,
 		})
 	}
 
@@ -274,11 +282,14 @@ type ChannelStatusResponse struct {
 
 // ConnectionStatus represents a single connection and whether it is linked.
 type ConnectionStatus struct {
-	Name           string `json:"name"`
-	Direction      string `json:"direction"`
-	Linked         bool   `json:"linked"`
-	Orphaned       bool   `json:"orphaned,omitempty"`
-	RemoteTeamName string `json:"remote_team_name,omitempty"`
+	Name                string `json:"name"`
+	Direction           string `json:"direction"`
+	Linked              bool   `json:"linked"`
+	Orphaned            bool   `json:"orphaned,omitempty"`
+	RemoteTeamName      string `json:"remote_team_name,omitempty"`
+	FileTransferEnabled bool   `json:"file_transfer_enabled"`
+	FileFilterMode      string `json:"file_filter_mode,omitempty"`
+	FileFilterTypes     string `json:"file_filter_types,omitempty"`
 }
 
 // getChannelStatus returns the connection status for a channel, showing
@@ -311,6 +322,7 @@ func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *ap
 	}
 
 	allConns := p.getAllConnectionNames()
+	natsMap := p.getNATSConnectionMap()
 	configSet := make(map[string]store.TeamConnection, len(allConns))
 	connSet := make(map[string]store.TeamConnection)
 	for _, tc := range allConns {
@@ -344,12 +356,16 @@ func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *ap
 		tc := connSet[key]
 		_, inConfig := configSet[key]
 		_, isLinked := channelLinkedSet[key]
+		nc := natsMap[key]
 		statuses = append(statuses, ConnectionStatus{
-			Name:           tc.Connection,
-			Direction:      tc.Direction,
-			Linked:         isLinked,
-			Orphaned:       !inConfig,
-			RemoteTeamName: tc.RemoteTeamName,
+			Name:                tc.Connection,
+			Direction:           tc.Direction,
+			Linked:              isLinked,
+			Orphaned:            !inConfig,
+			RemoteTeamName:      tc.RemoteTeamName,
+			FileTransferEnabled: nc.FileTransferEnabled,
+			FileFilterMode:      nc.FileFilterMode,
+			FileFilterTypes:     nc.FileFilterTypes,
 		})
 	}
 
@@ -604,6 +620,30 @@ func (p *Plugin) getAllConnectionNames() []store.TeamConnection {
 	return conns
 }
 
+// getNATSConnectionMap returns a map of "direction:name" to NATSConnection for config lookups.
+func (p *Plugin) getNATSConnectionMap() map[string]NATSConnection {
+	cfg := p.getConfiguration()
+	outbound, outErr := cfg.GetOutboundConnections()
+	inbound, inErr := cfg.GetInboundConnections()
+
+	m := make(map[string]NATSConnection, len(outbound)+len(inbound))
+	if outErr != nil {
+		p.API.LogWarn("Failed to parse outbound connections for NATS map", "error", outErr.Error())
+	} else {
+		for _, conn := range outbound {
+			m["outbound:"+conn.Name] = conn
+		}
+	}
+	if inErr != nil {
+		p.API.LogWarn("Failed to parse inbound connections for NATS map", "error", inErr.Error())
+	} else {
+		for _, conn := range inbound {
+			m["inbound:"+conn.Name] = conn
+		}
+	}
+	return m
+}
+
 // resolveConnectionName resolves the connection name from the given name and available list.
 // If connName is empty and there is exactly one connection, it auto-selects it.
 // Returns (resolved connection, available list, error message). A non-empty error message
@@ -634,20 +674,26 @@ func redactConnections(outbound, inbound []NATSConnection) []RedactedNATSConnect
 	connections := make([]RedactedNATSConnection, 0, len(outbound)+len(inbound))
 	for _, conn := range outbound {
 		connections = append(connections, RedactedNATSConnection{
-			Name:      conn.Name,
-			Direction: "outbound",
-			Address:   conn.Address,
-			AuthType:  conn.AuthType,
-			Subject:   conn.Subject,
+			Name:                conn.Name,
+			Direction:           "outbound",
+			Address:             conn.Address,
+			AuthType:            conn.AuthType,
+			Subject:             conn.Subject,
+			FileTransferEnabled: conn.FileTransferEnabled,
+			FileFilterMode:      conn.FileFilterMode,
+			FileFilterTypes:     conn.FileFilterTypes,
 		})
 	}
 	for _, conn := range inbound {
 		connections = append(connections, RedactedNATSConnection{
-			Name:      conn.Name,
-			Direction: "inbound",
-			Address:   conn.Address,
-			AuthType:  conn.AuthType,
-			Subject:   conn.Subject,
+			Name:                conn.Name,
+			Direction:           "inbound",
+			Address:             conn.Address,
+			AuthType:            conn.AuthType,
+			Subject:             conn.Subject,
+			FileTransferEnabled: conn.FileTransferEnabled,
+			FileFilterMode:      conn.FileFilterMode,
+			FileFilterTypes:     conn.FileFilterTypes,
 		})
 	}
 	return connections

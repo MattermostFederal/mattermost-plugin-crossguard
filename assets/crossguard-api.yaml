@@ -345,3 +345,108 @@ components:
         ca_cert:
           type: string
           description: Filesystem path to the CA certificate for server verification.
+        file_transfer_enabled:
+          type: boolean
+          description: >
+            Whether file attachment relay is enabled for this connection. When
+            enabled, file attachments on outbound posts are uploaded to a
+            JetStream Object Store bucket, and inbound file objects are
+            downloaded and attached to local posts.
+          default: false
+        file_filter_mode:
+          type: string
+          enum:
+            - ""
+            - allow
+            - deny
+          description: >
+            File extension filter mode. Empty string means no filtering (all
+            files pass). `allow` means only extensions listed in
+            `file_filter_types` are relayed. `deny` means extensions listed
+            in `file_filter_types` are blocked.
+          default: ""
+        file_filter_types:
+          type: string
+          description: >
+            Comma-separated list of file extensions to filter (e.g.
+            `.pdf,.docx,.png`). Extensions are case-insensitive and a leading
+            dot is optional (both `pdf` and `.pdf` are accepted). Only
+            meaningful when `file_filter_mode` is `allow` or `deny`.
+          default: ""
+          examples:
+            - ".pdf,.docx,.png"
+
+    # ------------------------------------------------------------------
+    # File transfer protocol (reference, not transmitted over NATS)
+    # ------------------------------------------------------------------
+    FileTransferProtocol:
+      type: object
+      description: >
+        Documents the JetStream Object Store protocol used for file
+        attachment relay. This is a reference schema describing the
+        out-of-band binary transfer mechanism. File transfer operates
+        independently of the core NATS pub/sub text relay. Text messages
+        flow through standard NATS publish/subscribe; files flow through
+        JetStream Object Store using the same NATS connection.
+      properties:
+        bucket:
+          type: string
+          const: "crossguard-files"
+          description: >
+            JetStream Object Store bucket name. Auto-created on first use
+            via CreateOrUpdateObjectStore.
+        ttl:
+          type: string
+          const: "1h"
+          description: >
+            Object time-to-live. Objects are automatically purged after
+            1 hour. No receiver-side deletion is performed because the
+            same object may be consumed by multiple receivers (fan-out).
+        object_key_format:
+          type: string
+          description: >
+            Object key format: `{postID}/{randomID}` where postID is the
+            Mattermost post ID from the originating server and randomID
+            is a generated unique identifier.
+          examples:
+            - "8swgtrrdiff89yj1z33pofo15r/dj7f8k2m41ygsr9w6pxt3nqb4e"
+        metadata_headers:
+          type: object
+          description: >
+            Custom NATS headers set on each uploaded object. The receiving
+            instance reads these headers to route and attach the file.
+          properties:
+            X-Post-Id:
+              type: string
+              description: >
+                The originating server's post ID. Used by the receiver to
+                look up the local post via its post ID mapping.
+              examples:
+                - "8swgtrrdiff89yj1z33pofo15r"
+            X-Conn-Name:
+              type: string
+              description: >
+                Name of the connection that uploaded the file. Receivers
+                filter objects by this header to process only files from
+                the matching connection.
+              examples:
+                - "high-side"
+            X-Filename:
+              type: string
+              description: >
+                Original filename of the attachment as it appeared on the
+                sending server.
+              examples:
+                - "report.pdf"
+        max_concurrent_ops:
+          type: integer
+          const: 32
+          description: >
+            Maximum concurrent file upload/download operations per plugin
+            instance. Separate from the text relay semaphore (256 slots).
+        max_file_size:
+          type: string
+          description: >
+            Governed by the Mattermost server's FileSettings.MaxFileSize
+            configuration. Default is 100 MB. Files exceeding this limit
+            are skipped with a log warning.

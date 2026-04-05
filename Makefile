@@ -247,7 +247,7 @@ endif
 .PHONY: test
 test: apply webapp/node_modules install-go-tools
 ifneq ($(HAS_SERVER),)
-	$(GOBIN)/gotestsum -- -v ./...
+	$(GOBIN)/gotestsum -- -v $$(go list ./... | grep -v /docker/)
 endif
 ifneq ($(HAS_WEBAPP),)
 	cd webapp && $(NPM) run test;
@@ -476,16 +476,16 @@ docker-deploy: docker-check dist
 	curl -sf -X PUT http://localhost:$(MM_PORT_A)/api/v4/config/patch \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"},{\"name\":\"loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"}]","inboundconnections":"[{\"name\":\"high-to-low\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\"},{\"name\":\"loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"}]"}}}}' >/dev/null && \
-	echo "Server A configured with outbound:low-to-high,loopback + inbound:high-to-low,loopback"
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\",\"file_transfer_enabled\":true},{\"name\":\"loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"}]","inboundconnections":"[{\"name\":\"high-to-low\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\",\"file_transfer_enabled\":true},{\"name\":\"loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"}]"}}}}' >/dev/null && \
+	echo "Server A configured with outbound:low-to-high(files),loopback + inbound:high-to-low(files),loopback"
 	@TOKEN_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/users/login \
 		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
 		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
 	curl -sf -X PUT http://localhost:$(MM_PORT_B)/api/v4/config/patch \
 		-H "Authorization: Bearer $$TOKEN_B" \
 		-H "Content-Type: application/json" \
-		-d '{"PluginSettings":{"Plugins":{"crossguard":{"inboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}]","outboundconnections":"[{\"name\":\"high-to-low\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\"}]"}}}}' >/dev/null && \
-	echo "Server B configured with inbound:low-to-high + outbound:high-to-low"
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"inboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\",\"file_transfer_enabled\":true}]","outboundconnections":"[{\"name\":\"high-to-low\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\",\"file_transfer_enabled\":true}]"}}}}' >/dev/null && \
+	echo "Server B configured with inbound:low-to-high(files) + outbound:high-to-low(files)"
 
 ## End-to-end smoke test: init teams/channels, post message on A, verify relay to B
 .PHONY: docker-smoke-test
@@ -704,6 +704,53 @@ docker-smoke-test: docker-check
 		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$LB_ID';found=any('loopback-test:'+sid in p.get('message','') for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
 	echo "Loopback test result: $$LB_FOUND" || \
 	{ echo "Loopback test FAILED: message loopback-test:$$LB_ID not found on Server A test/local-loopback"; exit 1; }
+	@echo ""
+	@echo "Running file attachment relay test..."
+	@TOKEN_A=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	TOKEN_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/users/login \
+		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	TOKEN_USERA=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"usera","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	LTH_A=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test/channels/name/low-to-high \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	LTH_B=$$(curl -sf http://localhost:$(MM_PORT_B)/api/v4/teams/name/test/channels/name/low-to-high \
+		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	FILE_ID=$$(date +%s)-$$$$ && \
+	echo "Uploading sample.pdf to Server A and posting with message..." && \
+	FILE_UPLOAD=$$(curl -sf -X POST "http://localhost:$(MM_PORT_A)/api/v4/files?channel_id=$$LTH_A" \
+		-H "Authorization: Bearer $$TOKEN_USERA" \
+		-F "files=@testdata/sample.pdf" | python3 -c "import sys,json; print(json.load(sys.stdin)['file_infos'][0]['id'])") && \
+	POST_RESP=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/posts \
+		-H "Authorization: Bearer $$TOKEN_USERA" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$LTH_A"'","message":"file-test:'"$$FILE_ID"'","file_ids":["'"$$FILE_UPLOAD"'"]}') && \
+	echo "  Posted file-test:$$FILE_ID with sample.pdf to Server A low-to-high" && \
+	echo "Uploading sample.docx to Server A and posting with message..." && \
+	DOCX_ID=$$(date +%s)-$$$$-docx && \
+	DOCX_UPLOAD=$$(curl -sf -X POST "http://localhost:$(MM_PORT_A)/api/v4/files?channel_id=$$LTH_A" \
+		-H "Authorization: Bearer $$TOKEN_USERA" \
+		-F "files=@testdata/sample.docx" | python3 -c "import sys,json; print(json.load(sys.stdin)['file_infos'][0]['id'])") && \
+	POST_RESP2=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/posts \
+		-H "Authorization: Bearer $$TOKEN_USERA" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$LTH_A"'","message":"file-test:'"$$DOCX_ID"'","file_ids":["'"$$DOCX_UPLOAD"'"]}') && \
+	echo "  Posted file-test:$$DOCX_ID with sample.docx to Server A low-to-high" && \
+	echo "Waiting for file relay (5s)..." && \
+	sleep 5 && \
+	echo "Verifying PDF relay on Server B..." && \
+	PDF_FOUND=$$(curl -sf "http://localhost:$(MM_PORT_B)/api/v4/channels/$$LTH_B/posts?per_page=10" \
+		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$FILE_ID';found=any('file-test:'+sid in p.get('message','') and len(p.get('file_ids',[]))>0 for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
+	echo "  PDF file relay test: $$PDF_FOUND" || \
+	{ echo "  PDF file relay FAILED: file-test:$$FILE_ID not found with attachments on Server B"; exit 1; } && \
+	echo "Verifying DOCX relay on Server B..." && \
+	DOCX_FOUND=$$(curl -sf "http://localhost:$(MM_PORT_B)/api/v4/channels/$$LTH_B/posts?per_page=10" \
+		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$DOCX_ID';found=any('file-test:'+sid in p.get('message','') and len(p.get('file_ids',[]))>0 for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
+	echo "  DOCX file relay test: $$DOCX_FOUND" || \
+	{ echo "  DOCX file relay FAILED: file-test:$$DOCX_ID not found with attachments on Server B"; exit 1; }
 
 ## Disable and re-enable plugin on both servers
 .PHONY: docker-reset

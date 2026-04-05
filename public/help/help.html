@@ -44,9 +44,11 @@
             between servers.
         </p>
         <p>
-            Posts, edits, deletes, and reactions flow bidirectionally across server boundaries. Each
-            server maintains its own users, teams, and channels. Cross Guard bridges them at the
-            message level, preserving each server's independence while enabling real-time communication.
+            Posts, edits, deletes, reactions, and file attachments flow bidirectionally across server
+            boundaries. Each server maintains its own users, teams, and channels. Cross Guard bridges
+            them at the message level, preserving each server's independence while enabling real-time
+            communication. File attachments are transferred using NATS JetStream Object Store, a
+            separate transport from the core pub/sub text relay. File transfer is opt-in per connection.
         </p>
         <p>
             The plugin integrates with Mattermost's post lifecycle hooks, so relay behavior is
@@ -63,7 +65,10 @@
 |  User posts in        |    |   Subject:     |    |  Bot posts in         |
 |  #town-square         |---&gt;|   crossguard.  |---&gt;|  #town-square         |
 |                       |    |   relay.msg    |    |                       |
-|  Outbound hook        |    |                |    |  Inbound handler      |
+|  Outbound hook        |    |  (core NATS)   |    |  Inbound handler      |
+|                       |    |                |    |                       |
+|  File attached?       |    | JetStream Obj  |    |  File downloaded &amp;    |
+|  Upload to ObjStore   |---&gt;| Store bucket   |---&gt;|  attached to post     |
 +-----------------------+    +----------------+    +-----------------------+</pre>
         </div>
 
@@ -92,6 +97,7 @@
                 <tr><td>Post deletes</td><td>Yes</td><td>Matched by original post ID</td></tr>
                 <tr><td>Reaction adds</td><td>Yes</td><td>Emoji name and user are relayed</td></tr>
                 <tr><td>Reaction removes</td><td>Yes</td><td>Matched by emoji name and post ID</td></tr>
+                <tr><td>File attachments</td><td>Configurable</td><td>Enabled per connection via <code>file_transfer_enabled</code>. Supports allow/deny extension filters.</td></tr>
                 <tr><td>System messages</td><td>No</td><td>Filtered out to avoid noise</td></tr>
                 <tr><td>Relay bot posts</td><td>No</td><td>Loop prevention via <code>crossguard_relayed</code> property</td></tr>
             </tbody>

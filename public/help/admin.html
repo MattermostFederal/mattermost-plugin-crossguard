@@ -156,6 +156,27 @@
                     <td>-</td>
                     <td>Path to CA certificate for verifying the NATS server's TLS certificate.</td>
                 </tr>
+                <tr>
+                    <td><strong>File Transfer Enabled</strong></td>
+                    <td><code>file_transfer_enabled</code></td>
+                    <td>No</td>
+                    <td>Boolean</td>
+                    <td>Enable file attachment relay for this connection. Files are transferred via JetStream Object Store. Default: <code>false</code>.</td>
+                </tr>
+                <tr>
+                    <td><strong>File Filter Mode</strong></td>
+                    <td><code>file_filter_mode</code></td>
+                    <td>No</td>
+                    <td><code>""</code>, <code>"allow"</code>, or <code>"deny"</code></td>
+                    <td>Controls whether file extensions are filtered. <code>allow</code> = only listed extensions are relayed. <code>deny</code> = listed extensions are blocked. Empty = all files pass (default).</td>
+                </tr>
+                <tr>
+                    <td><strong>File Filter Types</strong></td>
+                    <td><code>file_filter_types</code></td>
+                    <td>No</td>
+                    <td>Comma-separated extensions. Case-insensitive, leading dot optional.</td>
+                    <td>List of file extensions used by the filter (e.g. <code>.pdf,.docx,.png</code>). Only meaningful when <code>file_filter_mode</code> is <code>allow</code> or <code>deny</code>.</td>
+                </tr>
             </tbody>
         </table>
 
@@ -223,6 +244,54 @@
             </p>
         </div>
 
+        <!-- File Transfer Settings -->
+        <h2>File Transfer Settings</h2>
+        <p>
+            File transfer is configured per connection, not globally. Each NATS connection can
+            independently enable or disable file attachment relay and apply extension filters.
+        </p>
+
+        <h3>Requirements</h3>
+        <ul>
+            <li><strong>JetStream-enabled NATS server:</strong> File transfer uses NATS JetStream Object Store. Core NATS alone is not sufficient. The NATS server must have JetStream enabled.</li>
+            <li><strong>Object Store bucket:</strong> The plugin auto-creates a <code>crossguard-files</code> bucket with a 1-hour TTL on first use. No manual NATS configuration is needed.</li>
+            <li><strong>Max file size:</strong> Governed by the Mattermost server's <code>FileSettings.MaxFileSize</code> configuration (default 100 MB). Files exceeding this limit are silently skipped with a log warning.</li>
+        </ul>
+
+        <h3>Filter Examples</h3>
+        <table>
+            <thead>
+                <tr><th>Goal</th><th>file_filter_mode</th><th>file_filter_types</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Allow all files (default)</td>
+                    <td><code>""</code></td>
+                    <td><code>""</code></td>
+                </tr>
+                <tr>
+                    <td>Allow only PDFs and images</td>
+                    <td><code>"allow"</code></td>
+                    <td><code>".pdf,.png,.jpg,.gif"</code></td>
+                </tr>
+                <tr>
+                    <td>Block executables</td>
+                    <td><code>"deny"</code></td>
+                    <td><code>".exe,.bat,.sh,.cmd"</code></td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="alert alert-info">
+            <p class="alert-title">Note</p>
+            <p>
+                For bidirectional file relay, both the outbound and inbound connections must have
+                <code>file_transfer_enabled</code> set to <code>true</code>. File filters are
+                evaluated independently on each side, so the outbound connection can filter what
+                it sends and the inbound connection can filter what it accepts.
+            </p>
+        </div>
+
         <!-- Testing Connections -->
         <h2>Testing Connections</h2>
         <p>
@@ -249,7 +318,10 @@
   "address": "nats://nats.example.com:4222",
   "subject": "crossguard.relay.messages",
   "auth_type": "token",
-  "token": "shared-secret-token"
+  "token": "shared-secret-token",
+  "file_transfer_enabled": true,
+  "file_filter_mode": "allow",
+  "file_filter_types": ".pdf,.docx,.png"
 }]
 
 Inbound Connections: []</code></pre>
@@ -261,7 +333,8 @@ Inbound Connections: []</code></pre>
   "address": "nats://nats.example.com:4222",
   "subject": "crossguard.relay.messages",
   "auth_type": "token",
-  "token": "shared-secret-token"
+  "token": "shared-secret-token",
+  "file_transfer_enabled": true
 }]
 
 Outbound Connections: []</code></pre>
@@ -327,6 +400,26 @@ Inbound:  [{"name": "from-a", "address": "nats://nats:4222", "subject": "crossgu
                 <tr>
                     <td>Wrong team receives messages</td>
                     <td>Check team name rewrite settings with <code>/crossguard status</code>. Remote team names must match or be rewritten.</td>
+                </tr>
+                <tr>
+                    <td>Files not transferring</td>
+                    <td>Verify <code>file_transfer_enabled</code> is <code>true</code> on both outbound and inbound connections. Ensure the NATS server has JetStream enabled (not just core NATS).</td>
+                </tr>
+                <tr>
+                    <td>"File semaphore full" log warnings</td>
+                    <td>Too many concurrent file transfers. The limit is 32 simultaneous file operations. Large files or slow NATS connections can cause congestion. Consider reducing file sizes or upgrading NATS bandwidth.</td>
+                </tr>
+                <tr>
+                    <td>File blocked by filter</td>
+                    <td>Check <code>file_filter_mode</code> and <code>file_filter_types</code> on the connection. An <code>allow</code> filter rejects extensions not in the list; a <code>deny</code> filter rejects extensions in the list.</td>
+                </tr>
+                <tr>
+                    <td>File appears after text message</td>
+                    <td>Normal behavior. Files arrive via Object Store watcher asynchronously. The inbound watcher retries post mapping lookup up to 3 times with backoff to wait for the text message to be processed first.</td>
+                </tr>
+                <tr>
+                    <td>Large files silently dropped</td>
+                    <td>Files larger than the server's <code>MaxFileSize</code> setting (default 100 MB) are skipped with a log warning. Check <code>FileSettings.MaxFileSize</code> in the Mattermost server configuration.</td>
                 </tr>
             </tbody>
         </table>

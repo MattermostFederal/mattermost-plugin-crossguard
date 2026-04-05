@@ -322,12 +322,14 @@
             <li>
                 <strong>Regular users / Team Admins:</strong> Current channel status (relay enabled yes/no),
                 current team status (initialized yes/no), team connections list, channel connections list.
+                Each connection displays file transfer status (e.g., <code>files off</code>,
+                <code>files on</code>, <code>files on, allow: .pdf,.docx</code>).
             </li>
             <li>
                 <strong>System Admins:</strong> Global overview with all initialized teams (table with display
                 name, team ID, team name, linked connections), all configured NATS connections (table with name,
-                direction, address, auth type, subject), plus current channel status. Warnings shown if
-                connection configuration cannot be parsed.
+                direction, address, auth type, subject, file transfer status), plus current channel status.
+                Warnings shown if connection configuration cannot be parsed.
             </li>
         </ul>
 

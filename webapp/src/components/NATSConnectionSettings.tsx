@@ -869,6 +869,14 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                         <span style={styles.cardMetaLabel}>{'Subject'}</span>
                         {conn.subject}
                     </div>
+                    {conn.file_transfer_enabled && (
+                        <div style={styles.cardMetaItem}>
+                            <span style={styles.cardMetaLabel}>{'Files'}</span>
+                            {conn.file_filter_mode === 'allow' && `Allow: ${conn.file_filter_types}`}
+                            {conn.file_filter_mode === 'deny' && `Deny: ${conn.file_filter_types}`}
+                            {conn.file_filter_mode === '' && 'All types allowed'}
+                        </div>
+                    )}
                 </div>
                 <div style={styles.cardActions}>
                     <button

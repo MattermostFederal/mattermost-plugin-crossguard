@@ -7,6 +7,9 @@ interface ConnectionStatus {
     linked: boolean;
     orphaned?: boolean;
     remote_team_name?: string;
+    file_transfer_enabled: boolean;
+    file_filter_mode?: string;
+    file_filter_types?: string;
 }
 
 interface TeamStatusResponse {
@@ -573,6 +576,18 @@ const CrossguardTeamModal: React.FC = () => {
                                         </button>
                                     </div>
                                 )}
+                                <div style={s.rewriteRow}>
+                                    {conn.file_transfer_enabled ? (
+                                        <span style={s.rewriteLabel}>
+                                            {'\u{1F4CE} Files: '}
+                                            {conn.file_filter_mode === 'allow' && `Allow ${conn.file_filter_types}`}
+                                            {conn.file_filter_mode === 'deny' && `Deny ${conn.file_filter_types}`}
+                                            {!conn.file_filter_mode && 'All types'}
+                                        </span>
+                                    ) : (
+                                        <span style={s.rewriteLabel}>{'\u{1F6AB} Files: Disabled'}</span>
+                                    )}
+                                </div>
                             </div>
                             {conn.linked ? (
                                 <button

@@ -125,7 +125,7 @@ release-tag:
 
 ## Full release build: clean, checks, style, tests, build, SBOM audit, CodeQL, bundle with SBOMs, sign, and checksum.
 .PHONY: release
-release: release-check clean all sbom-audit codeql-analyze security-gate release-bundle release-sign release-checksum
+release: release-check clean all sbom-audit codeql-analyze security-gate release-bundle virus-scan release-sign release-checksum
 	@echo ""
 	@echo "=========================================="
 	@echo "Release build complete!"
@@ -933,6 +933,45 @@ security-gate:
 		exit 1; \
 	fi
 	@echo "Security gate passed."
+
+# ====================================================================================
+# Virus Scanning
+# ====================================================================================
+
+## Install ClamAV antivirus scanner
+.PHONY: install-clamav
+install-clamav:
+	@if ! command -v clamscan >/dev/null 2>&1; then \
+		echo "Installing ClamAV..."; \
+		if [ "$$(uname)" = "Darwin" ]; then \
+			brew install clamav; \
+		else \
+			sudo apt-get update && sudo apt-get install -y clamav; \
+		fi; \
+	else \
+		echo "ClamAV already installed"; \
+	fi
+	@echo "Updating virus definitions..."
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		if [ ! -f /opt/homebrew/etc/clamav/freshclam.conf ] && [ -f /opt/homebrew/etc/clamav/freshclam.conf.sample ]; then \
+			cp /opt/homebrew/etc/clamav/freshclam.conf.sample /opt/homebrew/etc/clamav/freshclam.conf; \
+			sed -i '' 's/^Example/#Example/' /opt/homebrew/etc/clamav/freshclam.conf; \
+		fi; \
+	else \
+		sudo systemctl stop clamav-freshclam 2>/dev/null || true; \
+	fi
+	@sudo freshclam || freshclam
+
+## Scan dist/ for viruses using ClamAV (fails if any detected)
+.PHONY: virus-scan
+virus-scan: install-clamav
+	@if [ ! -d dist ]; then \
+		echo "No dist/ directory found. Run 'make dist' first."; \
+		exit 1; \
+	fi
+	@echo "Scanning release artifacts for viruses..."
+	clamscan --recursive --infected --alert-broken dist/
+	@echo "Virus scan passed."
 
 # ====================================================================================
 # PDF Generation

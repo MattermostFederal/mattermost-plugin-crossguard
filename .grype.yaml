@@ -2,34 +2,6 @@
 # https://github.com/anchore/grype#configuration
 
 ignore:
-  # These vulnerabilities are FALSE POSITIVES due to Go pseudo-version comparison limitations.
-  #
-  # We use github.com/mattermost/mattermost/server/v8 v8.0.0-20260210201214-1ac14a9dfbcc
-  # which is a pseudo-version from February 10, 2026. This commit contains all fixes from
-  # the 8.1.x release line (which were merged into main months earlier).
-  #
-  # Grype compares our "v8.0.0" pseudo-version against tagged versions "8.1.5" and "8.1.9"
-  # and incorrectly reports them as unfixed because it can't reason about pseudo-versions.
-  #
-  # Evidence: The Mattermost module path remains "server/v8" for all product versions
-  # 8.x through 11.4+. There are no tagged Go module releases - only pseudo-versions.
-
-  # CVE-2023-6458: Client-side path traversal in webapp route parameters
-  # Fixed in Mattermost 8.1.5 (merged to main well before Feb 2026)
-  # https://github.com/advisories/GHSA-7664-hcp7-f497
-  - vulnerability: GHSA-7664-hcp7-f497
-    package:
-      name: github.com/mattermost/mattermost/server/v8
-    reason: "False positive - using pseudo-version v8.0.0-20260210201214 which contains fix from 8.1.5"
-
-  # CVE-2024-1887: Improper access control in compliance export
-  # Fixed in Mattermost 8.1.9 (merged to main well before Feb 2026)
-  # https://github.com/advisories/GHSA-fx48-xv6q-6gp3
-  - vulnerability: GHSA-fx48-xv6q-6gp3
-    package:
-      name: github.com/mattermost/mattermost/server/v8
-    reason: "False positive - using pseudo-version v8.0.0-20260210201214 which contains fix from 8.1.9"
-
   # minimatch ReDoS (GHSA-3ppc-4f35-3m26) - dev-only transitive dependency
   # Present in eslint, babel/cli, jest, and typescript-eslint. These are build
   # tools only and are NOT included in the production plugin bundle. The fix

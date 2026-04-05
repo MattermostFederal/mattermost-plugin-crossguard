@@ -134,9 +134,7 @@ func (p *Plugin) handleInboundMessage(connName string) nats.MsgHandler {
 			return
 		}
 
-		p.wg.Add(1)
-		go func() {
-			defer p.wg.Done()
+		p.wg.Go(func() {
 			defer func() { <-p.relaySem }()
 
 			select {
@@ -172,7 +170,7 @@ func (p *Plugin) handleInboundMessage(connName string) nats.MsgHandler {
 			default:
 				p.API.LogWarn("Unknown inbound message type", "conn", connName, "type", envelope.Type)
 			}
-		}()
+		})
 	}
 }
 

@@ -960,7 +960,7 @@ install-clamav:
 	else \
 		sudo systemctl stop clamav-freshclam 2>/dev/null || true; \
 	fi
-	@sudo freshclam || freshclam
+	@freshclam || sudo freshclam
 
 ## Scan dist/ for viruses using ClamAV (fails if any detected)
 .PHONY: virus-scan

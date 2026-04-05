@@ -38,7 +38,7 @@ func (p *Plugin) handleUnlinkedInbound(team *model.Team, connName string) {
 		ChannelId: channel.Id,
 		Message:   message,
 	}
-	model.ParseSlackAttachment(post, []*model.SlackAttachment{
+	model.ParseMessageAttachment(post, []*model.MessageAttachment{
 		{
 			Actions: []*model.PostAction{
 				{
@@ -223,7 +223,7 @@ func (p *Plugin) handleUnlinkedInboundChannel(team *model.Team, channel *model.C
 		ChannelId: channel.Id,
 		Message:   message,
 	}
-	model.ParseSlackAttachment(post, []*model.SlackAttachment{
+	model.ParseMessageAttachment(post, []*model.MessageAttachment{
 		{
 			Actions: []*model.PostAction{
 				{

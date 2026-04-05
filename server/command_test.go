@@ -13,7 +13,7 @@ func TestIsTeamAdminOrSystemAdmin(t *testing.T) {
 	t.Run("system admin always allowed", func(t *testing.T) {
 		api := &plugintest.API{}
 		p, _ := setupTestPlugin(api)
-		p.setConfiguration(&configuration{RestrictToSystemAdmins: boolPtr(true)})
+		p.setConfiguration(&configuration{RestrictToSystemAdmins: new(true)})
 
 		api.On("GetUser", "sysadmin").Return(&mmModel.User{
 			Roles: mmModel.SystemAdminRoleId,
@@ -25,7 +25,7 @@ func TestIsTeamAdminOrSystemAdmin(t *testing.T) {
 	t.Run("team admin allowed when unrestricted", func(t *testing.T) {
 		api := &plugintest.API{}
 		p, _ := setupTestPlugin(api)
-		p.setConfiguration(&configuration{RestrictToSystemAdmins: boolPtr(false)})
+		p.setConfiguration(&configuration{RestrictToSystemAdmins: new(false)})
 
 		api.On("GetUser", "teamadmin").Return(&mmModel.User{
 			Roles: mmModel.TeamAdminRoleId,
@@ -40,7 +40,7 @@ func TestIsTeamAdminOrSystemAdmin(t *testing.T) {
 	t.Run("team admin blocked when restricted", func(t *testing.T) {
 		api := &plugintest.API{}
 		p, _ := setupTestPlugin(api)
-		p.setConfiguration(&configuration{RestrictToSystemAdmins: boolPtr(true)})
+		p.setConfiguration(&configuration{RestrictToSystemAdmins: new(true)})
 
 		api.On("GetUser", "teamadmin").Return(&mmModel.User{
 			Roles: mmModel.TeamAdminRoleId,
@@ -83,7 +83,7 @@ func TestIsChannelAdminOrHigher(t *testing.T) {
 	t.Run("channel admin allowed when unrestricted", func(t *testing.T) {
 		api := &plugintest.API{}
 		p, _ := setupTestPlugin(api)
-		p.setConfiguration(&configuration{RestrictToSystemAdmins: boolPtr(false)})
+		p.setConfiguration(&configuration{RestrictToSystemAdmins: new(false)})
 
 		api.On("GetChannelMember", "chan-id", "chanadmin").Return(&mmModel.ChannelMember{
 			SchemeAdmin: true,
@@ -95,7 +95,7 @@ func TestIsChannelAdminOrHigher(t *testing.T) {
 	t.Run("channel admin blocked when restricted", func(t *testing.T) {
 		api := &plugintest.API{}
 		p, _ := setupTestPlugin(api)
-		p.setConfiguration(&configuration{RestrictToSystemAdmins: boolPtr(true)})
+		p.setConfiguration(&configuration{RestrictToSystemAdmins: new(true)})
 
 		api.On("GetUser", "chanadmin").Return(&mmModel.User{
 			Roles: mmModel.SystemUserRoleId,
@@ -107,7 +107,7 @@ func TestIsChannelAdminOrHigher(t *testing.T) {
 	t.Run("system admin passes when restricted via channel path", func(t *testing.T) {
 		api := &plugintest.API{}
 		p, _ := setupTestPlugin(api)
-		p.setConfiguration(&configuration{RestrictToSystemAdmins: boolPtr(true)})
+		p.setConfiguration(&configuration{RestrictToSystemAdmins: new(true)})
 
 		api.On("GetUser", "sysadmin").Return(&mmModel.User{
 			Roles: mmModel.SystemAdminRoleId,
@@ -119,7 +119,7 @@ func TestIsChannelAdminOrHigher(t *testing.T) {
 	t.Run("team admin passes channel check when unrestricted", func(t *testing.T) {
 		api := &plugintest.API{}
 		p, _ := setupTestPlugin(api)
-		p.setConfiguration(&configuration{RestrictToSystemAdmins: boolPtr(false)})
+		p.setConfiguration(&configuration{RestrictToSystemAdmins: new(false)})
 
 		api.On("GetChannelMember", "chan-id", "teamadmin").Return(&mmModel.ChannelMember{
 			SchemeAdmin: false,
@@ -137,7 +137,7 @@ func TestIsChannelAdminOrHigher(t *testing.T) {
 	t.Run("team admin blocked via channel path when restricted", func(t *testing.T) {
 		api := &plugintest.API{}
 		p, _ := setupTestPlugin(api)
-		p.setConfiguration(&configuration{RestrictToSystemAdmins: boolPtr(true)})
+		p.setConfiguration(&configuration{RestrictToSystemAdmins: new(true)})
 
 		api.On("GetUser", "teamadmin").Return(&mmModel.User{
 			Roles: mmModel.TeamAdminRoleId,

@@ -312,10 +312,6 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 }
 
-func boolPtr(b bool) *bool {
-	return &b
-}
-
 func TestIsUsernameLookupEnabled(t *testing.T) {
 	t.Run("nil defaults to true", func(t *testing.T) {
 		cfg := &configuration{}
@@ -323,12 +319,12 @@ func TestIsUsernameLookupEnabled(t *testing.T) {
 	})
 
 	t.Run("explicitly true", func(t *testing.T) {
-		cfg := &configuration{UsernameLookup: boolPtr(true)}
+		cfg := &configuration{UsernameLookup: new(true)}
 		assert.True(t, cfg.isUsernameLookupEnabled())
 	})
 
 	t.Run("explicitly false", func(t *testing.T) {
-		cfg := &configuration{UsernameLookup: boolPtr(false)}
+		cfg := &configuration{UsernameLookup: new(false)}
 		assert.False(t, cfg.isUsernameLookupEnabled())
 	})
 }
@@ -340,12 +336,12 @@ func TestIsRestrictedToSystemAdmins(t *testing.T) {
 	})
 
 	t.Run("explicitly true", func(t *testing.T) {
-		cfg := &configuration{RestrictToSystemAdmins: boolPtr(true)}
+		cfg := &configuration{RestrictToSystemAdmins: new(true)}
 		assert.True(t, cfg.isRestrictedToSystemAdmins())
 	})
 
 	t.Run("explicitly false", func(t *testing.T) {
-		cfg := &configuration{RestrictToSystemAdmins: boolPtr(false)}
+		cfg := &configuration{RestrictToSystemAdmins: new(false)}
 		assert.False(t, cfg.isRestrictedToSystemAdmins())
 	})
 }

@@ -52,12 +52,10 @@ func (p *Plugin) relayToOutbound(data []byte, connNames []store.TeamConnection, 
 		return
 	}
 
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
+	p.wg.Go(func() {
 		defer func() { <-p.relaySem }()
 		p.publishToOutbound(p.ctx, data, connNames)
-	}()
+	})
 }
 
 func (p *Plugin) MessageHasBeenPosted(_ *plugin.Context, post *mmModel.Post) {

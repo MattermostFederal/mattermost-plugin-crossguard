@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -10,6 +11,7 @@ import (
 
 	mmModel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
@@ -113,7 +115,14 @@ func (p *Plugin) connectOutbound() {
 				"name", conn.Name, "address", conn.Address, "error", err.Error())
 			continue
 		}
-		pool = append(pool, outboundConn{nc: nc, subject: conn.Subject, name: conn.Name})
+		pool = append(pool, outboundConn{
+			nc:                  nc,
+			subject:             conn.Subject,
+			name:                conn.Name,
+			fileTransferEnabled: conn.FileTransferEnabled,
+			fileFilterMode:      conn.FileFilterMode,
+			fileFilterTypes:     conn.FileFilterTypes,
+		})
 		p.API.LogInfo("Outbound NATS connection established for relay", "name", conn.Name, "address", conn.Address)
 	}
 
@@ -319,4 +328,117 @@ func isOutboundLinked(outboundName string, conns []store.TeamConnection) bool {
 		}
 	}
 	return false
+}
+
+const (
+	objectStoreBucket  = "crossguard-files"
+	objectStoreTTL     = time.Hour
+	defaultMaxFileSize = 100 * 1024 * 1024 // 100 MB
+	fileSemaphoreSize  = 32
+	relaySemaphoreSize = 256
+
+	headerPostID   = "X-Post-Id"
+	headerConnName = "X-Conn-Name"
+	headerFilename = "X-Filename"
+)
+
+func getOrCreateObjectStore(ctx context.Context, nc *nats.Conn, bucketName string) (jetstream.ObjectStore, error) {
+	js, err := jetstream.New(nc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create JetStream context: %w", err)
+	}
+	obs, err := js.CreateOrUpdateObjectStore(ctx, jetstream.ObjectStoreConfig{
+		Bucket: bucketName,
+		TTL:    objectStoreTTL,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create/update object store bucket %q: %w", bucketName, err)
+	}
+	return obs, nil
+}
+
+func (p *Plugin) uploadPostFiles(post *mmModel.Post, conns []store.TeamConnection) {
+	p.outboundMu.RLock()
+	var fileConns []outboundConn
+	for _, oc := range p.outboundConns {
+		if oc.fileTransferEnabled && isOutboundLinked(oc.name, conns) {
+			fileConns = append(fileConns, oc)
+		}
+	}
+	p.outboundMu.RUnlock()
+
+	if len(fileConns) == 0 {
+		return
+	}
+
+	var maxFileSize int64 = defaultMaxFileSize
+	if cfg := p.API.GetConfig(); cfg != nil && cfg.FileSettings.MaxFileSize != nil {
+		maxFileSize = *cfg.FileSettings.MaxFileSize
+	}
+
+	for _, fileID := range post.FileIds {
+		fi, appErr := p.API.GetFileInfo(fileID)
+		if appErr != nil {
+			p.API.LogError("Failed to get file info for relay",
+				"file_id", fileID, "post_id", post.Id, "error", appErr.Error())
+			continue
+		}
+		if fi.Size > maxFileSize {
+			p.API.LogWarn("Skipping oversized file for relay",
+				"file", fi.Name, "size", fi.Size, "max", maxFileSize)
+			continue
+		}
+
+		fileData, appErr := p.API.GetFile(fi.Id)
+		if appErr != nil {
+			p.API.LogError("Failed to download file for relay",
+				"file_id", fi.Id, "file", fi.Name, "error", appErr.Error())
+			continue
+		}
+
+		for _, oc := range fileConns {
+			if !isFileAllowed(fi.Name, oc.fileFilterMode, oc.fileFilterTypes) {
+				p.API.LogInfo("Outbound file filtered by policy",
+					"file", fi.Name, "conn", oc.name)
+				continue
+			}
+
+			p.wg.Add(1)
+			go func(oc outboundConn, fi *mmModel.FileInfo, data []byte) {
+				defer p.wg.Done()
+
+				select {
+				case p.fileSem <- struct{}{}:
+					defer func() { <-p.fileSem }()
+				default:
+					p.API.LogWarn("File semaphore full, skipping file upload",
+						"file", fi.Name, "conn", oc.name)
+					return
+				}
+
+				objectStore, err := getOrCreateObjectStore(p.ctx, oc.nc, objectStoreBucket)
+				if err != nil {
+					p.API.LogError("Failed to open object store for file upload",
+						"conn", oc.name, "error", err.Error())
+					return
+				}
+
+				key := post.Id + "/" + mmModel.NewId()
+				meta := jetstream.ObjectMeta{
+					Name: key,
+					Headers: nats.Header{
+						headerPostID:   {post.Id},
+						headerConnName: {oc.name},
+						headerFilename: {fi.Name},
+					},
+				}
+
+				_, err = objectStore.Put(p.ctx, meta, bytes.NewReader(data))
+				if err != nil {
+					p.API.LogError("Failed to upload file to object store",
+						"key", key, "conn", oc.name, "error", err.Error())
+				}
+			}(oc, fi, fileData)
+		}
+	}
 }

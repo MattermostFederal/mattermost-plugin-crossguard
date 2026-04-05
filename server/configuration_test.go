@@ -391,6 +391,110 @@ func TestIsTestMessage(t *testing.T) {
 	})
 }
 
+func TestIsFileAllowed(t *testing.T) {
+	t.Run("no filter mode allows all files", func(t *testing.T) {
+		conn := NATSConnection{FileFilterMode: ""}
+		assert.True(t, conn.IsFileAllowed("document.pdf"))
+		assert.True(t, conn.IsFileAllowed("image.png"))
+		assert.True(t, conn.IsFileAllowed("noext"))
+	})
+
+	t.Run("allow mode permits listed types", func(t *testing.T) {
+		conn := NATSConnection{FileFilterMode: "allow", FileFilterTypes: ".pdf,.docx,.png"}
+		assert.True(t, conn.IsFileAllowed("report.pdf"))
+		assert.True(t, conn.IsFileAllowed("doc.docx"))
+		assert.True(t, conn.IsFileAllowed("image.png"))
+		assert.False(t, conn.IsFileAllowed("script.exe"))
+		assert.False(t, conn.IsFileAllowed("noext"))
+	})
+
+	t.Run("deny mode blocks listed types", func(t *testing.T) {
+		conn := NATSConnection{FileFilterMode: "deny", FileFilterTypes: ".exe,.bat"}
+		assert.False(t, conn.IsFileAllowed("virus.exe"))
+		assert.False(t, conn.IsFileAllowed("script.bat"))
+		assert.True(t, conn.IsFileAllowed("document.pdf"))
+		assert.True(t, conn.IsFileAllowed("image.png"))
+	})
+
+	t.Run("case insensitive matching", func(t *testing.T) {
+		conn := NATSConnection{FileFilterMode: "allow", FileFilterTypes: ".PDF,.Docx"}
+		assert.True(t, conn.IsFileAllowed("REPORT.pdf"))
+		assert.True(t, conn.IsFileAllowed("doc.DOCX"))
+		assert.False(t, conn.IsFileAllowed("image.png"))
+	})
+
+	t.Run("types without leading dot are normalized", func(t *testing.T) {
+		conn := NATSConnection{FileFilterMode: "allow", FileFilterTypes: "pdf,docx"}
+		assert.True(t, conn.IsFileAllowed("report.pdf"))
+		assert.True(t, conn.IsFileAllowed("doc.docx"))
+		assert.False(t, conn.IsFileAllowed("image.png"))
+	})
+
+	t.Run("file with no extension in deny mode", func(t *testing.T) {
+		conn := NATSConnection{FileFilterMode: "deny", FileFilterTypes: ".exe"}
+		assert.True(t, conn.IsFileAllowed("Makefile"))
+	})
+
+	t.Run("spaces in filter types are trimmed", func(t *testing.T) {
+		conn := NATSConnection{FileFilterMode: "allow", FileFilterTypes: " .pdf , .docx "}
+		assert.True(t, conn.IsFileAllowed("report.pdf"))
+		assert.True(t, conn.IsFileAllowed("doc.docx"))
+	})
+}
+
+func TestFileFilterValidation(t *testing.T) {
+	t.Run("invalid file_filter_mode fails validation", func(t *testing.T) {
+		conns := []NATSConnection{
+			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", FileFilterMode: "invalid"},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{InboundConnections: string(data)}
+		err := cfg.validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "file_filter_mode must be")
+	})
+
+	t.Run("allow mode without types fails validation", func(t *testing.T) {
+		conns := []NATSConnection{
+			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", FileFilterMode: "allow", FileFilterTypes: ""},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{InboundConnections: string(data)}
+		err := cfg.validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "file_filter_types is required")
+	})
+
+	t.Run("deny mode without types fails validation", func(t *testing.T) {
+		conns := []NATSConnection{
+			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", FileFilterMode: "deny", FileFilterTypes: ""},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{InboundConnections: string(data)}
+		err := cfg.validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "file_filter_types is required")
+	})
+
+	t.Run("allow mode with types passes", func(t *testing.T) {
+		conns := []NATSConnection{
+			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", FileFilterMode: "allow", FileFilterTypes: ".pdf"},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{InboundConnections: string(data)}
+		assert.NoError(t, cfg.validate())
+	})
+
+	t.Run("file transfer enabled without filter passes", func(t *testing.T) {
+		conns := []NATSConnection{
+			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", FileTransferEnabled: true},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{InboundConnections: string(data)}
+		assert.NoError(t, cfg.validate())
+	})
+}
+
 func TestBuildTestMessage(t *testing.T) {
 	data, msgID, err := buildTestMessage()
 	require.NoError(t, err)

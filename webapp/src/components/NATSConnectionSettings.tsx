@@ -13,6 +13,9 @@ interface NATSConnection {
     client_cert: string;
     client_key: string;
     ca_cert: string;
+    file_transfer_enabled: boolean;
+    file_filter_mode: '' | 'allow' | 'deny';
+    file_filter_types: string;
 }
 
 interface CustomSettingProps {
@@ -54,6 +57,9 @@ const emptyConnection: NATSConnection = {
     client_cert: '',
     client_key: '',
     ca_cert: '',
+    file_transfer_enabled: false,
+    file_filter_mode: '',
+    file_filter_types: '',
 };
 
 const colors = {
@@ -750,6 +756,57 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                     )}
                 </div>
 
+                <div style={styles.formSection}>
+                    <div style={styles.formSectionTitle as React.CSSProperties}>{'File Transfer'}</div>
+                    <div style={styles.inputGroup}>
+                        <label style={styles.checkbox}>
+                            <input
+                                type='checkbox'
+                                checked={editForm.file_transfer_enabled}
+                                onChange={(e) => handleFormChange('file_transfer_enabled', e.target.checked)}
+                                disabled={disabled}
+                            />
+                            {'Enable File Transfer'}
+                        </label>
+                        <div style={styles.helpText}>
+                            {'Relay file attachments on posts across this connection. Requires JetStream on the NATS server.'}
+                        </div>
+                    </div>
+                    {editForm.file_transfer_enabled && (
+                        <>
+                            <div style={styles.inputGroup}>
+                                <label style={styles.label}>{'File Filter Mode'}</label>
+                                <select
+                                    style={styles.select}
+                                    value={editForm.file_filter_mode}
+                                    onChange={(e) => handleFormChange('file_filter_mode', e.target.value)}
+                                    disabled={disabled}
+                                >
+                                    <option value=''>{'None (all types allowed)'}</option>
+                                    <option value='allow'>{'Allow only these types'}</option>
+                                    <option value='deny'>{'Block these types'}</option>
+                                </select>
+                            </div>
+                            {(editForm.file_filter_mode === 'allow' || editForm.file_filter_mode === 'deny') && (
+                                <div style={styles.inputGroup}>
+                                    <label style={styles.label}>{'File Types'}</label>
+                                    <input
+                                        style={styles.input}
+                                        type='text'
+                                        value={editForm.file_filter_types}
+                                        onChange={(e) => handleFormChange('file_filter_types', e.target.value)}
+                                        disabled={disabled}
+                                        placeholder='.pdf,.docx,.png,.jpg'
+                                    />
+                                    <div style={styles.helpText}>
+                                        {'Comma-separated list of file extensions.'}
+                                    </div>
+                                </div>
+                            )}
+                        </>
+                    )}
+                </div>
+
                 <div style={styles.formActions}>
                     <button
                         style={styles.btnPrimary}
@@ -794,6 +851,11 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                         {conn.tls_enabled && (
                             <span style={{...styles.badge, ...styles.badgeTls}}>
                                 {'TLS'}
+                            </span>
+                        )}
+                        {conn.file_transfer_enabled && (
+                            <span style={{...styles.badge, ...styles.badgeTls}}>
+                                {'Files'}
                             </span>
                         )}
                     </div>

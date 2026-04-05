@@ -83,6 +83,10 @@ func (p *Plugin) MessageHasBeenPosted(_ *plugin.Context, post *mmModel.Post) {
 	}
 
 	p.relayToOutbound(data, connNames, "post:"+post.Id)
+
+	if len(post.FileIds) > 0 {
+		p.uploadPostFiles(post, connNames)
+	}
 }
 
 func (p *Plugin) MessageHasBeenUpdated(_ *plugin.Context, newPost *mmModel.Post, _ *mmModel.Post) {

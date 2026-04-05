@@ -20,9 +20,12 @@ import (
 // between the server and plugin processes.
 // outboundConn holds a persistent NATS connection used for relay publishing.
 type outboundConn struct {
-	nc      *nats.Conn
-	subject string
-	name    string
+	nc                  *nats.Conn
+	subject             string
+	name                string
+	fileTransferEnabled bool
+	fileFilterMode      string
+	fileFilterTypes     string
 }
 
 type Plugin struct {
@@ -39,6 +42,10 @@ type Plugin struct {
 	cancel        context.CancelFunc
 	wg            sync.WaitGroup
 	relaySem      chan struct{}
+	fileSem       chan struct{}
+	inboundCtx    context.Context
+	inboundCancel context.CancelFunc
+	fileWatcherWg sync.WaitGroup
 	outboundMu    sync.RWMutex
 	outboundConns []outboundConn
 	inboundMu     sync.RWMutex
@@ -82,7 +89,8 @@ func (p *Plugin) OnActivate() error {
 	p.initAPI()
 
 	p.ctx, p.cancel = context.WithCancel(context.Background())
-	p.relaySem = make(chan struct{}, 50)
+	p.relaySem = make(chan struct{}, relaySemaphoreSize)
+	p.fileSem = make(chan struct{}, fileSemaphoreSize)
 	p.connectOutbound()
 	p.connectInbound()
 

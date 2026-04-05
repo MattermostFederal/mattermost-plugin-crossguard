@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
@@ -17,6 +19,9 @@ const (
 	AuthTypeNone        = "none"
 	AuthTypeToken       = "token"
 	AuthTypeCredentials = "credentials"
+
+	fileFilterModeAllow = "allow"
+	fileFilterModeDeny  = "deny"
 )
 
 // NATSConnection represents a single NATS connection configuration.
@@ -32,6 +37,50 @@ type NATSConnection struct {
 	ClientCert string `json:"client_cert"`
 	ClientKey  string `json:"client_key"`
 	CACert     string `json:"ca_cert"`
+
+	FileTransferEnabled bool   `json:"file_transfer_enabled"`
+	FileFilterMode      string `json:"file_filter_mode"`  // "", "allow", "deny"
+	FileFilterTypes     string `json:"file_filter_types"` // ".pdf,.docx,.png"
+}
+
+// IsFileAllowed checks whether a filename passes this connection's file filter.
+func (c NATSConnection) IsFileAllowed(filename string) bool {
+	return isFileAllowed(filename, c.FileFilterMode, c.FileFilterTypes)
+}
+
+func isFileAllowed(filename, filterMode, filterTypes string) bool {
+	if filterMode == "" {
+		return true
+	}
+
+	ext := strings.ToLower(filepath.Ext(filename))
+	if ext == "" {
+		ext = "."
+	}
+
+	types := parseFilterTypes(filterTypes)
+	found := slices.Contains(types, ext)
+
+	if filterMode == fileFilterModeAllow {
+		return found
+	}
+	// deny mode
+	return !found
+}
+
+func parseFilterTypes(raw string) []string {
+	var types []string
+	for part := range strings.SplitSeq(raw, ",") {
+		t := strings.TrimSpace(strings.ToLower(part))
+		if t == "" {
+			continue
+		}
+		if !strings.HasPrefix(t, ".") {
+			t = "." + t
+		}
+		types = append(types, t)
+	}
+	return types
 }
 
 type configuration struct {
@@ -144,6 +193,17 @@ func validateConnectionList(connections []NATSConnection, direction string, allN
 			if strings.TrimSpace(conn.Password) == "" {
 				errs = append(errs, fmt.Sprintf("%s: password is required when auth_type is \"credentials\"", prefix))
 			}
+		}
+
+		switch conn.FileFilterMode {
+		case "", fileFilterModeAllow, fileFilterModeDeny:
+			// valid
+		default:
+			errs = append(errs, fmt.Sprintf("%s: file_filter_mode must be \"\", \"allow\", or \"deny\"", prefix))
+		}
+
+		if (conn.FileFilterMode == fileFilterModeAllow || conn.FileFilterMode == fileFilterModeDeny) && strings.TrimSpace(conn.FileFilterTypes) == "" {
+			errs = append(errs, fmt.Sprintf("%s: file_filter_types is required when file_filter_mode is set", prefix))
 		}
 	}
 

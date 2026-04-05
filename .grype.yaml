@@ -2,6 +2,37 @@
 # https://github.com/anchore/grype#configuration
 
 ignore:
+  # lodash vulnerabilities - transitive dependency via mattermost-redux which is
+  # externalized at runtime (provided by the Mattermost host app, not bundled).
+  # lodash does not appear in our production webapp/dist/main.js.
+  - vulnerability: GHSA-r5fr-rjxr-66jc
+    package:
+      name: lodash
+      type: npm
+    reason: "Not shipped in plugin bundle - transitive dep of mattermost-redux which is externalized at runtime"
+
+  - vulnerability: GHSA-f23m-r3pf-42rh
+    package:
+      name: lodash
+      type: npm
+    reason: "Not shipped in plugin bundle - transitive dep of mattermost-redux which is externalized at runtime"
+
+  # brace-expansion vulnerability - dev-only transitive dependency via build tools.
+  # Not included in the production plugin bundle.
+  - vulnerability: GHSA-f886-m6hf-6m8v
+    package:
+      name: brace-expansion
+      type: npm
+    reason: "Dev-only transitive dependency not shipped in plugin bundle"
+
+  # yaml vulnerability - dev-only transitive dependency via build tools.
+  # Not included in the production plugin bundle.
+  - vulnerability: GHSA-48c2-rrv3-qjmp
+    package:
+      name: yaml
+      type: npm
+    reason: "Dev-only transitive dependency not shipped in plugin bundle"
+
   # minimatch ReDoS (GHSA-3ppc-4f35-3m26) - dev-only transitive dependency
   # Present in eslint, babel/cli, jest, and typescript-eslint. These are build
   # tools only and are NOT included in the production plugin bundle. The fix

@@ -476,8 +476,8 @@ docker-deploy: docker-check dist
 	curl -sf -X PUT http://localhost:$(MM_PORT_A)/api/v4/config/patch \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\",\"file_transfer_enabled\":true},{\"name\":\"loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"}]","inboundconnections":"[{\"name\":\"high-to-low\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\",\"file_transfer_enabled\":true},{\"name\":\"loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"}]"}}}}' >/dev/null && \
-	echo "Server A configured with outbound:low-to-high(files),loopback + inbound:high-to-low(files),loopback"
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\",\"file_transfer_enabled\":true},{\"name\":\"loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"},{\"name\":\"xml-loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.xml-loopback\",\"auth_type\":\"none\",\"message_format\":\"xml\"}]","inboundconnections":"[{\"name\":\"high-to-low\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\",\"file_transfer_enabled\":true},{\"name\":\"loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"},{\"name\":\"xml-loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.xml-loopback\",\"auth_type\":\"none\",\"message_format\":\"xml\"}]"}}}}' >/dev/null && \
+	echo "Server A configured with outbound:low-to-high(files),loopback,xml-loopback(xml) + inbound:high-to-low(files),loopback,xml-loopback(xml)"
 	@TOKEN_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/users/login \
 		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
 		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
@@ -751,6 +751,85 @@ docker-smoke-test: docker-check
 		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$DOCX_ID';found=any('file-test:'+sid in p.get('message','') and len(p.get('file_ids',[]))>0 for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
 	echo "  DOCX file relay test: $$DOCX_FOUND" || \
 	{ echo "  DOCX file relay FAILED: file-test:$$DOCX_ID not found with attachments on Server B"; exit 1; }
+	@echo ""
+	@echo "Running XML loopback test..."
+	@TOKEN_A=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	echo "Getting team IDs..." && \
+	LOOP_TEAM=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/loop \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	TEST_TEAM=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "Creating xml-loopback channels..." && \
+	XML_LOOP_CH=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"team_id":"'"$$LOOP_TEAM"'","name":"xml-loopback","display_name":"XML Loopback","type":"O"}' \
+		2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || \
+		curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/loop/channels/name/xml-loopback \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "  Server A loop/xml-loopback channel ($$XML_LOOP_CH)" && \
+	XML_LB_CH=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"team_id":"'"$$TEST_TEAM"'","name":"xml-loopback","display_name":"XML Loopback","type":"O"}' \
+		2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || \
+		curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test/channels/name/xml-loopback \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "  Server A test/xml-loopback channel ($$XML_LB_CH)" && \
+	echo "Adding users to xml-loopback channels..." && \
+	USERA_ID=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/users/username/usera \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels/$$XML_LOOP_CH/members \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"user_id":"'"$$USERA_ID"'"}' >/dev/null 2>&1 || true && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels/$$XML_LB_CH/members \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"user_id":"'"$$USERA_ID"'"}' >/dev/null 2>&1 || true && \
+	echo "  usera added to both xml-loopback channels" && \
+	echo "Initializing xml-loopback teams..." && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$XML_LOOP_CH"'","command":"/crossguard init-team outbound:xml-loopback"}' >/dev/null && \
+	echo "  Server A loop: init-team outbound:xml-loopback" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$XML_LB_CH"'","command":"/crossguard init-team inbound:xml-loopback"}' >/dev/null && \
+	echo "  Server A test: init-team inbound:xml-loopback" && \
+	echo "Initializing xml-loopback channels..." && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$XML_LOOP_CH"'","command":"/crossguard init-channel outbound:xml-loopback"}' >/dev/null && \
+	echo "  Server A loop/xml-loopback: init-channel outbound:xml-loopback" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$XML_LB_CH"'","command":"/crossguard init-channel inbound:xml-loopback"}' >/dev/null && \
+	echo "  Server A test/xml-loopback: init-channel inbound:xml-loopback" && \
+	echo "Setting rewrite-team rule for xml-loopback..." && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$XML_LB_CH"'","command":"/crossguard rewrite-team xml-loopback loop"}' >/dev/null && \
+	echo "  Server A: rewrite-team xml-loopback loop -> test" && \
+	echo "Posting XML loopback test message..." && \
+	TOKEN_USERA=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"usera","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	XML_ID=$$(date +%s)-$$$$-xml && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/posts \
+		-H "Authorization: Bearer $$TOKEN_USERA" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$XML_LOOP_CH"'","message":"xml-smoke-test:'"$$XML_ID"'"}' >/dev/null && \
+	echo "  Posted xml-smoke-test:$$XML_ID to Server A loop/xml-loopback" && \
+	echo "Waiting for XML loopback relay..." && \
+	sleep 3 && \
+	XML_FOUND=$$(curl -sf "http://localhost:$(MM_PORT_A)/api/v4/channels/$$XML_LB_CH/posts?per_page=10" \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$XML_ID';found=any('xml-smoke-test:'+sid in p.get('message','') for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
+	echo "XML loopback test result: $$XML_FOUND" || \
+	{ echo "XML loopback test FAILED: message xml-smoke-test:$$XML_ID not found on Server A test/xml-loopback"; exit 1; }
 
 ## Disable and re-enable plugin on both servers
 .PHONY: docker-reset

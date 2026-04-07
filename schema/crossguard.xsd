@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:cg="urn:mattermost-crossguard"
+           targetNamespace="urn:mattermost-crossguard"
+           elementFormDefault="qualified">
+
+  <!-- Root element -->
+  <xs:element name="CrossguardMessage" type="cg:CrossguardMessageType"/>
+
+  <!-- Envelope type -->
+  <xs:complexType name="CrossguardMessageType">
+    <xs:sequence>
+      <xs:element name="Type" type="cg:MessageTypeEnum"/>
+      <xs:element name="Timestamp" type="xs:string"/>
+      <xs:choice>
+        <xs:element name="PostMessage" type="cg:PostMessageType" minOccurs="0"/>
+        <xs:element name="DeleteMessage" type="cg:DeleteMessageType" minOccurs="0"/>
+        <xs:element name="ReactionMessage" type="cg:ReactionMessageType" minOccurs="0"/>
+        <xs:element name="TestMessage" type="cg:TestMessageType" minOccurs="0"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Message type enumeration -->
+  <xs:simpleType name="MessageTypeEnum">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="crossguard_post"/>
+      <xs:enumeration value="crossguard_update"/>
+      <xs:enumeration value="crossguard_delete"/>
+      <xs:enumeration value="crossguard_reaction_add"/>
+      <xs:enumeration value="crossguard_reaction_remove"/>
+      <xs:enumeration value="crossguard_test"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- Post message (new post or update) -->
+  <xs:complexType name="PostMessageType">
+    <xs:sequence>
+      <xs:element name="PostID" type="xs:string"/>
+      <xs:element name="RootID" type="xs:string" minOccurs="0"/>
+      <xs:element name="ChannelID" type="xs:string"/>
+      <xs:element name="ChannelName" type="xs:string"/>
+      <xs:element name="TeamID" type="xs:string"/>
+      <xs:element name="TeamName" type="xs:string"/>
+      <xs:element name="UserID" type="xs:string"/>
+      <xs:element name="Username" type="xs:string"/>
+      <xs:element name="MessageText" type="xs:string"/>
+      <xs:element name="CreateAt" type="xs:long"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Delete message -->
+  <xs:complexType name="DeleteMessageType">
+    <xs:sequence>
+      <xs:element name="PostID" type="xs:string"/>
+      <xs:element name="ChannelID" type="xs:string"/>
+      <xs:element name="ChannelName" type="xs:string"/>
+      <xs:element name="TeamID" type="xs:string"/>
+      <xs:element name="TeamName" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Reaction message -->
+  <xs:complexType name="ReactionMessageType">
+    <xs:sequence>
+      <xs:element name="PostID" type="xs:string"/>
+      <xs:element name="ChannelID" type="xs:string"/>
+      <xs:element name="ChannelName" type="xs:string"/>
+      <xs:element name="TeamID" type="xs:string"/>
+      <xs:element name="TeamName" type="xs:string"/>
+      <xs:element name="UserID" type="xs:string"/>
+      <xs:element name="Username" type="xs:string"/>
+      <xs:element name="EmojiName" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Test message (connectivity check) -->
+  <xs:complexType name="TestMessageType">
+    <xs:sequence>
+      <xs:element name="ID" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+</xs:schema>

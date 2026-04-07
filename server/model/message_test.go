@@ -2,119 +2,249 @@ package model
 
 import (
 	"encoding/json"
+	"encoding/xml"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewMessage(t *testing.T) {
-	t.Run("creates envelope with serialized payload", func(t *testing.T) {
-		payload := TestMessage{ID: "test-123"}
-		msg, err := NewMessage(MessageTypeTest, payload)
-		require.NoError(t, err)
-
-		assert.Equal(t, MessageTypeTest, msg.Type)
-		assert.NotEmpty(t, msg.Timestamp)
-		assert.Contains(t, msg.JSON, `"id":"test-123"`)
-
-		_, err = time.Parse(time.RFC3339, msg.Timestamp)
-		require.NoError(t, err)
-	})
-
-	t.Run("returns error for unmarshalable payload", func(t *testing.T) {
-		_, err := NewMessage("test", make(chan int))
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to marshal payload")
-	})
-}
-
-func TestMessageDecode(t *testing.T) {
-	t.Run("decodes payload from JSON field", func(t *testing.T) {
-		msg := &Message{
-			Type: MessageTypeTest,
-			JSON: `{"id":"decoded-456"}`,
+func TestMarshalUnmarshalJSON(t *testing.T) {
+	t.Run("round-trip test message", func(t *testing.T) {
+		env := &Envelope{
+			Type:        MessageTypeTest,
+			Timestamp:   "2026-04-06T12:00:00Z",
+			TestMessage: &TestMessage{ID: "round-trip"},
 		}
 
-		var tm TestMessage
-		err := msg.Decode(&tm)
+		data, err := Marshal(env, FormatJSON)
 		require.NoError(t, err)
-		assert.Equal(t, "decoded-456", tm.ID)
+
+		restored, err := Unmarshal(data, FormatJSON)
+		require.NoError(t, err)
+
+		assert.Equal(t, env.Type, restored.Type)
+		assert.Equal(t, env.Timestamp, restored.Timestamp)
+		require.NotNil(t, restored.TestMessage)
+		assert.Equal(t, "round-trip", restored.TestMessage.ID)
+		assert.Nil(t, restored.PostMessage)
+		assert.Nil(t, restored.DeleteMessage)
+		assert.Nil(t, restored.ReactionMessage)
 	})
 
-	t.Run("returns error for invalid JSON", func(t *testing.T) {
-		msg := &Message{JSON: "not json"}
-		var tm TestMessage
-		err := msg.Decode(&tm)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to decode message payload")
-	})
-}
+	t.Run("JSON has expected structure", func(t *testing.T) {
+		env := &Envelope{
+			Type:        MessageTypeTest,
+			Timestamp:   "2026-04-06T12:00:00Z",
+			TestMessage: &TestMessage{ID: "struct-check"},
+		}
 
-func TestMarshalUnmarshal(t *testing.T) {
-	t.Run("round-trip preserves data", func(t *testing.T) {
-		original, err := NewMessage(MessageTypeTest, TestMessage{ID: "round-trip"})
-		require.NoError(t, err)
-
-		data, err := Marshal(original)
-		require.NoError(t, err)
-
-		restored, err := UnmarshalMessage(data)
-		require.NoError(t, err)
-
-		assert.Equal(t, original.Type, restored.Type)
-		assert.Equal(t, original.Timestamp, restored.Timestamp)
-		assert.Equal(t, original.JSON, restored.JSON)
-
-		var tm TestMessage
-		err = restored.Decode(&tm)
-		require.NoError(t, err)
-		assert.Equal(t, "round-trip", tm.ID)
-	})
-
-	t.Run("marshal returns error for nil", func(t *testing.T) {
-		data, err := Marshal(nil)
-		require.NoError(t, err)
-		assert.Equal(t, "null", string(data))
-	})
-}
-
-func TestUnmarshalMessage(t *testing.T) {
-	t.Run("returns error for invalid JSON", func(t *testing.T) {
-		_, err := UnmarshalMessage([]byte("not json"))
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to unmarshal message envelope")
-	})
-
-	t.Run("unmarshals valid envelope", func(t *testing.T) {
-		raw := `{"type":"crossguard_test","timestamp":"2026-03-14T12:00:00Z","json":"{\"id\":\"abc\"}"}`
-		msg, err := UnmarshalMessage([]byte(raw))
-		require.NoError(t, err)
-		assert.Equal(t, MessageTypeTest, msg.Type)
-		assert.Equal(t, "2026-03-14T12:00:00Z", msg.Timestamp)
-
-		var tm TestMessage
-		require.NoError(t, msg.Decode(&tm))
-		assert.Equal(t, "abc", tm.ID)
-	})
-}
-
-func TestEnvelopeFormat(t *testing.T) {
-	t.Run("envelope JSON has expected structure", func(t *testing.T) {
-		msg, err := NewMessage(MessageTypeTest, TestMessage{ID: "struct-check"})
-		require.NoError(t, err)
-
-		data, err := Marshal(msg)
+		data, err := Marshal(env, FormatJSON)
 		require.NoError(t, err)
 
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
 
-		assert.Contains(t, raw, "type")
-		assert.Contains(t, raw, "timestamp")
-		assert.Contains(t, raw, "json")
 		assert.Equal(t, MessageTypeTest, raw["type"])
-		assert.IsType(t, "", raw["json"])
+		assert.Equal(t, "2026-04-06T12:00:00Z", raw["timestamp"])
+		testMsg, ok := raw["test_message"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "struct-check", testMsg["id"])
+		assert.NotContains(t, raw, "post_message")
+		assert.NotContains(t, raw, "delete_message")
+		assert.NotContains(t, raw, "reaction_message")
+	})
+}
+
+func TestMarshalUnmarshalXML(t *testing.T) {
+	t.Run("round-trip test message", func(t *testing.T) {
+		env := &Envelope{
+			Type:        MessageTypeTest,
+			Timestamp:   "2026-04-06T12:00:00Z",
+			TestMessage: &TestMessage{ID: "xml-trip"},
+		}
+
+		data, err := Marshal(env, FormatXML)
+		require.NoError(t, err)
+
+		assert.True(t, strings.HasPrefix(string(data), xml.Header))
+		assert.Contains(t, string(data), "urn:mattermost-crossguard")
+
+		restored, err := Unmarshal(data, FormatXML)
+		require.NoError(t, err)
+
+		assert.Equal(t, env.Type, restored.Type)
+		assert.Equal(t, env.Timestamp, restored.Timestamp)
+		require.NotNil(t, restored.TestMessage)
+		assert.Equal(t, "xml-trip", restored.TestMessage.ID)
+	})
+
+	t.Run("round-trip post message", func(t *testing.T) {
+		env := &Envelope{
+			Type:      MessageTypePost,
+			Timestamp: "2026-04-06T12:00:00Z",
+			PostMessage: &PostMessage{
+				PostID:      "p1",
+				ChannelID:   "ch1",
+				ChannelName: "town-square",
+				TeamID:      "t1",
+				TeamName:    "test",
+				UserID:      "u1",
+				Username:    "admin",
+				MessageText: "hello",
+				CreateAt:    1712404800000,
+			},
+		}
+
+		data, err := Marshal(env, FormatXML)
+		require.NoError(t, err)
+
+		restored, err := Unmarshal(data, FormatXML)
+		require.NoError(t, err)
+
+		require.NotNil(t, restored.PostMessage)
+		assert.Equal(t, "p1", restored.PostMessage.PostID)
+		assert.Equal(t, "hello", restored.PostMessage.MessageText)
+		assert.Equal(t, int64(1712404800000), restored.PostMessage.CreateAt)
+	})
+}
+
+func TestDetectFormat(t *testing.T) {
+	t.Run("JSON input", func(t *testing.T) {
+		assert.Equal(t, FormatJSON, DetectFormat([]byte(`{"type":"test"}`)))
+	})
+
+	t.Run("XML input", func(t *testing.T) {
+		assert.Equal(t, FormatXML, DetectFormat([]byte(`<?xml version="1.0"?><root/>`)))
+	})
+
+	t.Run("XML with leading whitespace", func(t *testing.T) {
+		assert.Equal(t, FormatXML, DetectFormat([]byte("  \t\n<CrossguardMessage/>")))
+	})
+
+	t.Run("JSON with leading whitespace", func(t *testing.T) {
+		assert.Equal(t, FormatJSON, DetectFormat([]byte("  \n{}")))
+	})
+
+	t.Run("empty input defaults to JSON", func(t *testing.T) {
+		assert.Equal(t, FormatJSON, DetectFormat([]byte{}))
+	})
+
+	t.Run("whitespace only defaults to JSON", func(t *testing.T) {
+		assert.Equal(t, FormatJSON, DetectFormat([]byte("   \t\n")))
+	})
+
+	t.Run("BOM-prefixed XML detected as XML", func(t *testing.T) {
+		bom := []byte{0xEF, 0xBB, 0xBF}
+		data := make([]byte, 0, len(bom)+len("<root/>"))
+		data = append(data, bom...)
+		data = append(data, []byte("<root/>")...)
+		assert.Equal(t, FormatXML, DetectFormat(data))
+	})
+
+	t.Run("BOM-only defaults to JSON", func(t *testing.T) {
+		bom := []byte{0xEF, 0xBB, 0xBF}
+		assert.Equal(t, FormatJSON, DetectFormat(bom))
+	})
+}
+
+func TestCrossFormatDetection(t *testing.T) {
+	env := &Envelope{
+		Type:        MessageTypeTest,
+		Timestamp:   "2026-04-06T12:00:00Z",
+		TestMessage: &TestMessage{ID: "detect"},
+	}
+
+	jsonData, err := Marshal(env, FormatJSON)
+	require.NoError(t, err)
+	assert.Equal(t, FormatJSON, DetectFormat(jsonData))
+
+	xmlData, err := Marshal(env, FormatXML)
+	require.NoError(t, err)
+	assert.Equal(t, FormatXML, DetectFormat(xmlData))
+}
+
+func TestUnmarshalErrors(t *testing.T) {
+	t.Run("invalid JSON", func(t *testing.T) {
+		_, err := Unmarshal([]byte("not json"), FormatJSON)
+		require.Error(t, err)
+	})
+
+	t.Run("invalid XML", func(t *testing.T) {
+		_, err := Unmarshal([]byte("not xml"), FormatXML)
+		require.Error(t, err)
+	})
+
+	t.Run("unsupported format in Marshal", func(t *testing.T) {
+		env := &Envelope{Type: MessageTypeTest, Timestamp: "2026-04-06T12:00:00Z"}
+		_, err := Marshal(env, Format("yaml"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported format")
+	})
+
+	t.Run("unsupported format in Unmarshal", func(t *testing.T) {
+		_, err := Unmarshal([]byte(`{}`), Format("yaml"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unsupported format")
+	})
+}
+
+func TestEnvelopeNilPayload(t *testing.T) {
+	t.Run("post type with nil payload round-trips", func(t *testing.T) {
+		env := &Envelope{
+			Type:      MessageTypePost,
+			Timestamp: "2026-04-06T12:00:00Z",
+		}
+
+		for _, format := range []Format{FormatJSON, FormatXML} {
+			t.Run(string(format), func(t *testing.T) {
+				data, err := Marshal(env, format)
+				require.NoError(t, err)
+
+				restored, err := Unmarshal(data, format)
+				require.NoError(t, err)
+				assert.Equal(t, MessageTypePost, restored.Type)
+				assert.Nil(t, restored.PostMessage)
+			})
+		}
+	})
+
+	t.Run("delete type with nil payload round-trips", func(t *testing.T) {
+		env := &Envelope{
+			Type:      MessageTypeDelete,
+			Timestamp: "2026-04-06T12:00:00Z",
+		}
+
+		for _, format := range []Format{FormatJSON, FormatXML} {
+			t.Run(string(format), func(t *testing.T) {
+				data, err := Marshal(env, format)
+				require.NoError(t, err)
+
+				restored, err := Unmarshal(data, format)
+				require.NoError(t, err)
+				assert.Equal(t, MessageTypeDelete, restored.Type)
+				assert.Nil(t, restored.DeleteMessage)
+			})
+		}
+	})
+
+	t.Run("reaction type with nil payload round-trips", func(t *testing.T) {
+		env := &Envelope{
+			Type:      MessageTypeReactionAdd,
+			Timestamp: "2026-04-06T12:00:00Z",
+		}
+
+		for _, format := range []Format{FormatJSON, FormatXML} {
+			t.Run(string(format), func(t *testing.T) {
+				data, err := Marshal(env, format)
+				require.NoError(t, err)
+
+				restored, err := Unmarshal(data, format)
+				require.NoError(t, err)
+				assert.Equal(t, MessageTypeReactionAdd, restored.Type)
+				assert.Nil(t, restored.ReactionMessage)
+			})
+		}
 	})
 }

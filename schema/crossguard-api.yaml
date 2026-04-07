@@ -4,8 +4,11 @@ info:
   description: >
     Defines the message envelope and payload schemas used by the Cross Guard
     plugin to relay events between Mattermost instances over a NATS bus.
-    All messages are published and consumed as JSON-encoded bytes on NATS
-    subjects that begin with the `crossguard.` prefix.
+    Messages are serialized as JSON or XML depending on the outbound
+    connection's `message_format` setting. Inbound messages are auto-detected
+    by inspecting the first non-whitespace byte. All NATS subjects begin
+    with the `crossguard.` prefix. XML element names and namespace are
+    defined in `crossguard.xsd`.
   version: 1.0.0
   contact:
     name: Mattermost Federal
@@ -28,6 +31,9 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/MessageEnvelope"
+          application/xml:
+            schema:
+              $ref: "#/components/schemas/MessageEnvelope"
       responses:
         "200":
           description: Message accepted by NATS broker.
@@ -40,11 +46,15 @@ paths:
         Represents the receipt of a Cross Guard message envelope on a
         configured inbound NATS subject (e.g. `crossguard.low`).
         The subject is determined by the inbound connection configuration.
+        The format (JSON or XML) is auto-detected on receipt.
       x-nats-subject: "crossguard.{domain}"
       requestBody:
         required: true
         content:
           application/json:
+            schema:
+              $ref: "#/components/schemas/MessageEnvelope"
+          application/xml:
             schema:
               $ref: "#/components/schemas/MessageEnvelope"
       responses:
@@ -59,12 +69,14 @@ components:
     MessageEnvelope:
       type: object
       description: >
-        Standard envelope that wraps every message sent over NATS. The `json`
-        field contains a serialized payload whose schema depends on `type`.
+        Standard envelope that wraps every message sent over NATS. Exactly
+        one payload field is present per message. The envelope is serialized
+        as JSON or XML depending on the outbound connection's message_format
+        setting. Inbound messages are auto-detected by first non-whitespace
+        byte (< for XML, otherwise JSON).
       required:
         - type
         - timestamp
-        - json
       properties:
         type:
           $ref: "#/components/schemas/MessageType"
@@ -74,14 +86,23 @@ components:
           description: UTC timestamp in RFC 3339 format indicating when the message was created.
           examples:
             - "2026-03-27T14:30:00Z"
-        json:
-          type: string
+        post_message:
+          $ref: "#/components/schemas/PostMessage"
           description: >
-            JSON-encoded string containing the payload. Deserialize according
-            to the `type` field to obtain one of PostMessage, DeleteMessage,
-            ReactionMessage, or TestMessage.
-          examples:
-            - '{"post_id":"abc123","channel_id":"ch1","channel_name":"town-square","team_id":"t1","team_name":"test-a","user_id":"u1","username":"alice","message":"Hello from the other side","create_at":1711547400000}'
+            Present when type is `crossguard_post` or `crossguard_update`.
+        delete_message:
+          $ref: "#/components/schemas/DeleteMessage"
+          description: >
+            Present when type is `crossguard_delete`.
+        reaction_message:
+          $ref: "#/components/schemas/ReactionMessage"
+          description: >
+            Present when type is `crossguard_reaction_add` or
+            `crossguard_reaction_remove`.
+        test_message:
+          $ref: "#/components/schemas/TestMessage"
+          description: >
+            Present when type is `crossguard_test`.
 
     # ------------------------------------------------------------------
     # Message type enum
@@ -375,6 +396,16 @@ components:
           default: ""
           examples:
             - ".pdf,.docx,.png"
+        message_format:
+          type: string
+          enum:
+            - json
+            - xml
+          description: >
+            Wire format for outbound messages. Use XML when sending through
+            a Cross Domain Solution (CDS). Inbound messages are auto-detected
+            regardless of this setting. Only applies to outbound connections.
+          default: "json"
 
     # ------------------------------------------------------------------
     # File transfer protocol (reference, not transmitted over NATS)

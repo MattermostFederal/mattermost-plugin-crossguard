@@ -143,32 +143,52 @@ func (p *Plugin) handleInboundMessage(connName string) nats.MsgHandler {
 			default:
 			}
 
-			envelope, err := model.UnmarshalMessage(msg.Data)
+			format := model.DetectFormat(msg.Data)
+			env, err := model.Unmarshal(msg.Data, format)
 			if err != nil {
 				p.API.LogError("Failed to unmarshal inbound message", "conn", connName, "error", err.Error())
 				return
 			}
 
-			switch envelope.Type {
+			switch env.Type {
 			case model.MessageTypePost:
-				p.handleInboundPost(connName, envelope)
+				if env.PostMessage == nil {
+					p.API.LogError("Inbound post: missing payload", "conn", connName)
+					return
+				}
+				p.handleInboundPost(connName, env.PostMessage)
 			case model.MessageTypeUpdate:
-				p.handleInboundUpdate(connName, envelope)
+				if env.PostMessage == nil {
+					p.API.LogError("Inbound update: missing payload", "conn", connName)
+					return
+				}
+				p.handleInboundUpdate(connName, env.PostMessage)
 			case model.MessageTypeDelete:
-				p.handleInboundDelete(connName, envelope)
+				if env.DeleteMessage == nil {
+					p.API.LogError("Inbound delete: missing payload", "conn", connName)
+					return
+				}
+				p.handleInboundDelete(connName, env.DeleteMessage)
 			case model.MessageTypeReactionAdd:
-				p.handleInboundReaction(connName, envelope, true)
+				if env.ReactionMessage == nil {
+					p.API.LogError("Inbound reaction add: missing payload", "conn", connName)
+					return
+				}
+				p.handleInboundReaction(connName, env.ReactionMessage, true)
 			case model.MessageTypeReactionRemove:
-				p.handleInboundReaction(connName, envelope, false)
+				if env.ReactionMessage == nil {
+					p.API.LogError("Inbound reaction remove: missing payload", "conn", connName)
+					return
+				}
+				p.handleInboundReaction(connName, env.ReactionMessage, false)
 			case model.MessageTypeTest:
-				var testMsg model.TestMessage
-				if err := envelope.Decode(&testMsg); err == nil {
-					p.API.LogInfo("Received inbound test message", "conn", connName, "id", testMsg.ID)
+				if env.TestMessage != nil {
+					p.API.LogInfo("Received inbound test message", "conn", connName, "id", env.TestMessage.ID)
 				} else {
 					p.API.LogInfo("Received inbound test message", "conn", connName)
 				}
 			default:
-				p.API.LogWarn("Unknown inbound message type", "conn", connName, "type", envelope.Type)
+				p.API.LogWarn("Unknown inbound message type", "conn", connName, "type", env.Type)
 			}
 		})
 	}
@@ -244,13 +264,7 @@ func (p *Plugin) findTeamByRewrite(connName, remoteTeamName string) (*mmModel.Te
 	return team, nil
 }
 
-func (p *Plugin) handleInboundPost(connName string, envelope *model.Message) {
-	var postMsg model.PostMessage
-	if err := envelope.Decode(&postMsg); err != nil {
-		p.API.LogError("Failed to decode inbound post", "conn", connName, "error", err.Error())
-		return
-	}
-
+func (p *Plugin) handleInboundPost(connName string, postMsg *model.PostMessage) {
 	team, channel, err := p.resolveTeamAndChannel(connName, postMsg.TeamName, postMsg.ChannelName)
 	if err != nil {
 		p.API.LogWarn("Inbound post: resolve failed", "conn", connName, "error", err.Error())
@@ -266,7 +280,7 @@ func (p *Plugin) handleInboundPost(connName string, envelope *model.Message) {
 	post := &mmModel.Post{
 		UserId:    userID,
 		ChannelId: channel.Id,
-		Message:   postMsg.Message,
+		Message:   postMsg.MessageText,
 	}
 	post.AddProp("crossguard_relayed", true)
 
@@ -291,13 +305,7 @@ func (p *Plugin) handleInboundPost(connName string, envelope *model.Message) {
 	}
 }
 
-func (p *Plugin) handleInboundUpdate(connName string, envelope *model.Message) {
-	var postMsg model.PostMessage
-	if err := envelope.Decode(&postMsg); err != nil {
-		p.API.LogError("Failed to decode inbound update", "conn", connName, "error", err.Error())
-		return
-	}
-
+func (p *Plugin) handleInboundUpdate(connName string, postMsg *model.PostMessage) {
 	localPostID, err := p.kvstore.GetPostMapping(connName, postMsg.PostID)
 	if err != nil {
 		p.API.LogError("Inbound update: failed to look up post mapping",
@@ -315,19 +323,13 @@ func (p *Plugin) handleInboundUpdate(connName string, envelope *model.Message) {
 		return
 	}
 
-	existing.Message = postMsg.Message
+	existing.Message = postMsg.MessageText
 	if _, appErr := p.API.UpdatePost(existing); appErr != nil {
 		p.API.LogError("Inbound update: failed to update post", "conn", connName, "local_id", localPostID, "error", appErr.Error())
 	}
 }
 
-func (p *Plugin) handleInboundDelete(connName string, envelope *model.Message) {
-	var deleteMsg model.DeleteMessage
-	if err := envelope.Decode(&deleteMsg); err != nil {
-		p.API.LogError("Failed to decode inbound delete", "conn", connName, "error", err.Error())
-		return
-	}
-
+func (p *Plugin) handleInboundDelete(connName string, deleteMsg *model.DeleteMessage) {
 	localPostID, err := p.kvstore.GetPostMapping(connName, deleteMsg.PostID)
 	if err != nil {
 		p.API.LogError("Inbound delete: failed to look up post mapping",
@@ -356,13 +358,7 @@ func (p *Plugin) handleInboundDelete(connName string, envelope *model.Message) {
 	}
 }
 
-func (p *Plugin) handleInboundReaction(connName string, envelope *model.Message, add bool) {
-	var reactionMsg model.ReactionMessage
-	if err := envelope.Decode(&reactionMsg); err != nil {
-		p.API.LogError("Failed to decode inbound reaction", "conn", connName, "error", err.Error())
-		return
-	}
-
+func (p *Plugin) handleInboundReaction(connName string, reactionMsg *model.ReactionMessage, add bool) {
 	localPostID, err := p.kvstore.GetPostMapping(connName, reactionMsg.PostID)
 	if err != nil {
 		p.API.LogError("Inbound reaction: failed to look up post mapping",

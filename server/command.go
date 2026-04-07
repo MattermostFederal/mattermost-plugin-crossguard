@@ -24,6 +24,14 @@ func fileTransferLabel(enabled bool, filterMode, filterTypes string) string {
 	}
 }
 
+func connectionLabel(format string, fileEnabled bool, filterMode, filterTypes string) string {
+	label := fileTransferLabel(fileEnabled, filterMode, filterTypes)
+	if format == "xml" {
+		label = "xml, " + label
+	}
+	return label
+}
+
 func fileTransferLabelEmoji(enabled bool, filterMode, filterTypes string) string {
 	if !enabled {
 		return ":x: Off"
@@ -325,7 +333,8 @@ func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandRespo
 			if !cs.Linked {
 				continue
 			}
-			fmt.Fprintf(&sb, "- `%s:%s` (%s)\n", cs.Direction, cs.Name, fileTransferLabel(cs.FileTransferEnabled, cs.FileFilterMode, cs.FileFilterTypes))
+			label := connectionLabel(cs.MessageFormat, cs.FileTransferEnabled, cs.FileFilterMode, cs.FileFilterTypes)
+			fmt.Fprintf(&sb, "- `%s:%s` (%s)\n", cs.Direction, cs.Name, label)
 		}
 	}
 
@@ -335,7 +344,8 @@ func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandRespo
 		for _, tc := range channelConns {
 			key := connKey(tc)
 			nc := natsMap[key]
-			fmt.Fprintf(&sb, "- `%s` (%s)\n", key, fileTransferLabel(nc.FileTransferEnabled, nc.FileFilterMode, nc.FileFilterTypes))
+			clabel := connectionLabel(nc.MessageFormat, nc.FileTransferEnabled, nc.FileFilterMode, nc.FileFilterTypes)
+			fmt.Fprintf(&sb, "- `%s` (%s)\n", key, clabel)
 		}
 	}
 
@@ -382,7 +392,8 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 		for _, tc := range channelConns {
 			key := connKey(tc)
 			nc := natsMap[key]
-			fmt.Fprintf(&sb, "- `%s` (%s)\n", key, fileTransferLabel(nc.FileTransferEnabled, nc.FileFilterMode, nc.FileFilterTypes))
+			clabel := connectionLabel(nc.MessageFormat, nc.FileTransferEnabled, nc.FileFilterMode, nc.FileFilterTypes)
+			fmt.Fprintf(&sb, "- `%s` (%s)\n", key, clabel)
 		}
 	}
 
@@ -404,10 +415,14 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 
 	if len(resp.Connections) > 0 {
 		sb.WriteString("\n**NATS Connections:**\n\n")
-		sb.WriteString("| Name | Direction | Address | Auth Type | Subject | Files |\n")
-		sb.WriteString("|:-----|:----------|:--------|:----------|:--------|:------|\n")
+		sb.WriteString("| Name | Direction | Address | Auth Type | Subject | Format | Files |\n")
+		sb.WriteString("|:-----|:----------|:--------|:----------|:--------|:-------|:------|\n")
 		for _, conn := range resp.Connections {
-			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %s |\n", conn.Name, conn.Direction, conn.Address, conn.AuthType, conn.Subject, fileTransferLabelEmoji(conn.FileTransferEnabled, conn.FileFilterMode, conn.FileFilterTypes))
+			format := conn.MessageFormat
+			if format == "" {
+				format = "json"
+			}
+			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %s | %s |\n", conn.Name, conn.Direction, conn.Address, conn.AuthType, conn.Subject, format, fileTransferLabelEmoji(conn.FileTransferEnabled, conn.FileFilterMode, conn.FileFilterTypes))
 		}
 	}
 

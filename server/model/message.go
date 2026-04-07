@@ -2,53 +2,81 @@ package model
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
-	"time"
 )
 
-// Message is the standard envelope format for all messages sent over NATS.
-type Message struct {
-	Type      string `json:"type"`
-	Timestamp string `json:"timestamp"`
-	JSON      string `json:"json"`
+// Format represents the wire format for message serialization.
+type Format string
+
+const (
+	FormatJSON Format = "json"
+	FormatXML  Format = "xml"
+)
+
+// Envelope is the top-level message wrapper for all formats.
+// Exactly one payload field is non-nil per message.
+type Envelope struct {
+	XMLName         xml.Name         `json:"-"                          xml:"urn:mattermost-crossguard CrossguardMessage"`
+	Type            string           `json:"type"                       xml:"Type"`
+	Timestamp       string           `json:"timestamp"                  xml:"Timestamp"`
+	PostMessage     *PostMessage     `json:"post_message,omitempty"     xml:"PostMessage,omitempty"`
+	DeleteMessage   *DeleteMessage   `json:"delete_message,omitempty"   xml:"DeleteMessage,omitempty"`
+	ReactionMessage *ReactionMessage `json:"reaction_message,omitempty" xml:"ReactionMessage,omitempty"`
+	TestMessage     *TestMessage     `json:"test_message,omitempty"     xml:"TestMessage,omitempty"`
 }
 
-// NewMessage creates a Message envelope by serializing the payload into the JSON field.
-func NewMessage(msgType string, payload any) (*Message, error) {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+// Marshal serializes an Envelope to bytes in the given format.
+func Marshal(env *Envelope, format Format) ([]byte, error) {
+	switch format {
+	case FormatXML:
+		data, err := xml.Marshal(env)
+		if err != nil {
+			return nil, err
+		}
+		return append([]byte(xml.Header), data...), nil
+	case FormatJSON:
+		return json.Marshal(env)
+	default:
+		return nil, fmt.Errorf("unsupported format: %q", format)
 	}
-
-	return &Message{
-		Type:      msgType,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		JSON:      string(data),
-	}, nil
 }
 
-// Decode deserializes the JSON field into dest.
-func (m *Message) Decode(dest any) error {
-	if err := json.Unmarshal([]byte(m.JSON), dest); err != nil {
-		return fmt.Errorf("failed to decode message payload: %w", err)
+// Unmarshal deserializes bytes into an Envelope using the given format.
+func Unmarshal(data []byte, format Format) (*Envelope, error) {
+	var env Envelope
+	switch format {
+	case FormatXML:
+		if err := xml.Unmarshal(data, &env); err != nil {
+			return nil, err
+		}
+	case FormatJSON:
+		if err := json.Unmarshal(data, &env); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("unsupported format: %q", format)
 	}
-	return nil
+	return &env, nil
 }
 
-// Marshal serializes the full envelope to bytes.
-func Marshal(m *Message) ([]byte, error) {
-	data, err := json.Marshal(m)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal message envelope: %w", err)
+// DetectFormat checks the first non-whitespace byte to determine format.
+// Returns FormatXML if the first non-whitespace byte is '<', FormatJSON otherwise.
+// A leading UTF-8 BOM (0xEF 0xBB 0xBF) is stripped before detection.
+func DetectFormat(data []byte) Format {
+	// Strip UTF-8 BOM if present.
+	if len(data) >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF {
+		data = data[3:]
 	}
-	return data, nil
-}
-
-// UnmarshalMessage deserializes bytes into a Message envelope.
-func UnmarshalMessage(data []byte) (*Message, error) {
-	var m Message
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal message envelope: %w", err)
+	for _, b := range data {
+		switch b {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '<':
+			return FormatXML
+		default:
+			return FormatJSON
+		}
 	}
-	return &m, nil
+	return FormatJSON
 }

@@ -77,12 +77,13 @@
             <li>
                 <strong>Outbound:</strong> Hooks into Mattermost post lifecycle events
                 (<code>MessageHasBeenPosted</code>, <code>MessageHasBeenUpdated</code>,
-                <code>MessageHasBeenDeleted</code>, reaction events), serializes to an envelope
-                format, and publishes to NATS.
+                <code>MessageHasBeenDeleted</code>, reaction events), serializes to a message
+                envelope (JSON or XML, per connection config), and publishes to NATS.
             </li>
             <li>
-                <strong>Inbound:</strong> Subscribes to a NATS subject, deserializes the envelope,
-                and creates, updates, or deletes posts locally.
+                <strong>Inbound:</strong> Subscribes to a NATS subject, auto-detects the message
+                format (JSON or XML), deserializes the envelope, and creates, updates, or
+                deletes posts locally.
             </li>
         </ul>
 

@@ -26,6 +26,7 @@ type outboundConn struct {
 	fileTransferEnabled bool
 	fileFilterMode      string
 	fileFilterTypes     string
+	messageFormat       string
 }
 
 type Plugin struct {

@@ -141,7 +141,7 @@
             <li><strong>Asynchronous, decoupled architecture via pub/sub:</strong> The two Mattermost servers never communicate directly. A NATS message bus sits between them. Publishers and subscribers interact only with NATS, not with each other.</li>
             <li><strong>Full server independence:</strong> Each server maintains its own users, teams, channels, database, authentication, and administration. Cross Guard adds relay capability without modifying any of these.</li>
             <li><strong>Opt-in at every level:</strong> Relay is not automatic. Administrators must explicitly link connections to teams, then to individual channels. Inbound connections require interactive acceptance before any messages flow.</li>
-            <li><strong>Minimal data crossing the boundary:</strong> Only text content and routing metadata transit the NATS bus. File attachments, user metadata, channel properties, post properties, and interactive message elements are intentionally excluded.</li>
+            <li><strong>Minimal data crossing the boundary:</strong> Only text content, routing metadata, and optionally file attachments transit the NATS bus. File transfer is disabled by default and must be explicitly enabled per connection with configurable type filtering and size limits. User metadata, channel properties, post properties, and interactive message elements are intentionally excluded.</li>
         </ul>
 
         <!-- Section 3: Why NATS as the Transport Layer -->
@@ -156,8 +156,9 @@
             from startups to government agencies.
         </p>
         <p>
-            In its core mode (which Cross Guard uses), NATS is fire-and-forget: messages are
-            delivered to connected subscribers in real time, with no message persistence or replay.
+            For message relay, Cross Guard uses NATS core pub/sub, which is fire-and-forget:
+            messages are delivered to connected subscribers in real time, with no message persistence
+            or replay. For optional file transfer, Cross Guard uses NATS JetStream Object Store.
             This maps directly to Cross Guard's relay model, where messages are relayed as they
             occur and not queued for later delivery.
         </p>
@@ -184,7 +185,7 @@
         <h4>3. Lightweight Protocol</h4>
         <p>
             NATS uses a text-based protocol with minimal overhead. A typical Cross Guard message
-            envelope is a few hundred bytes of JSON. NATS adds negligible framing. The result is
+            envelope is a few hundred bytes (JSON or XML). NATS adds negligible framing. The result is
             sub-millisecond publish latency, which is critical for real-time messaging where users
             expect near-instant delivery.
         </p>
@@ -321,7 +322,7 @@ Topology 3: Guard Network (Classified)
                 <code>sync.RWMutex</code> with the same read/write concurrency model.
             </li>
             <li>
-                <strong>Relay semaphore:</strong> A buffered channel of capacity 50, shared by
+                <strong>Relay semaphore:</strong> A buffered channel of capacity 256, shared by
                 both inbound and outbound relay operations. Controls the maximum number of
                 concurrent relay goroutines to prevent unbounded resource consumption under high
                 message volume.
@@ -418,6 +419,12 @@ Topology 3: Guard Network (Classified)
                 </tr>
             </tbody>
         </table>
+        <p>
+            <strong>Note:</strong> Not all filters apply to every hook. The system message and
+            <code>crossguard_relayed</code> checks apply to post create and update hooks. The delete
+            hook uses bot user ID and a deleting flag instead. Reaction hooks use bot user ID and
+            sync-user position filtering.
+        </p>
 
         <h3>Step 3: Channel and Team Validation</h3>
         <p>
@@ -427,7 +434,7 @@ Topology 3: Guard Network (Classified)
         <ol>
             <li>Look up the channel's linked connections from the KV store (key: <code>crossguard-channelinit-{channelID}</code>)</li>
             <li>Look up the team's linked connections from the KV store (key: <code>crossguard-teaminit-{teamID}</code>)</li>
-            <li>Return the intersection: only connections that are linked at both the team and channel level</li>
+            <li>Return the channel connections after verifying the team also has connections. The effective intersection happens at publish time via <code>isOutboundLinked()</code>.</li>
         </ol>
         <p>
             If no connections match, the message is not relayed. This ensures that both team-level
@@ -449,21 +456,22 @@ Topology 3: Guard Network (Classified)
             <tbody>
                 <tr>
                     <td><code>crossguard_post</code> / <code>crossguard_update</code></td>
-                    <td><code>post_id</code>, <code>root_id</code>, <code>channel_name</code>, <code>team_name</code>, <code>username</code>, <code>message</code>, <code>create_at</code></td>
+                    <td><code>post_id</code>, <code>root_id</code>, <code>channel_id</code>, <code>channel_name</code>, <code>team_id</code>, <code>team_name</code>, <code>user_id</code>, <code>username</code>, <code>message</code>, <code>create_at</code></td>
                 </tr>
                 <tr>
                     <td><code>crossguard_delete</code></td>
-                    <td><code>post_id</code>, <code>channel_name</code>, <code>team_name</code></td>
+                    <td><code>post_id</code>, <code>channel_id</code>, <code>channel_name</code>, <code>team_id</code>, <code>team_name</code></td>
                 </tr>
                 <tr>
                     <td><code>crossguard_reaction_add</code> / <code>crossguard_reaction_remove</code></td>
-                    <td><code>post_id</code>, <code>channel_name</code>, <code>team_name</code>, <code>username</code>, <code>emoji_name</code></td>
+                    <td><code>post_id</code>, <code>channel_id</code>, <code>channel_name</code>, <code>team_id</code>, <code>team_name</code>, <code>user_id</code>, <code>username</code>, <code>emoji_name</code></td>
                 </tr>
             </tbody>
         </table>
         <p>
-            The payload is wrapped in a <code>model.Message</code> envelope with a type constant
-            and an RFC 3339 UTC timestamp, then serialized to JSON bytes.
+            The payload is embedded in a <code>model.Envelope</code> struct with a type constant
+            and an RFC 3339 UTC timestamp, then serialized via <code>model.Marshal()</code> to
+            JSON or XML bytes depending on the connection's <code>message_format</code> setting.
         </p>
 
         <h3>Step 5: Semaphore Acquisition and Async Dispatch</h3>
@@ -472,8 +480,8 @@ Topology 3: Guard Network (Classified)
             post lifecycle:
         </p>
         <ol>
-            <li>Non-blocking attempt to acquire a slot from the relay semaphore (buffered channel of capacity 50)</li>
-            <li>If the semaphore is full (50 concurrent relays already in progress): drop the message and log a warning. This is a deliberate design choice to prevent unbounded goroutine spawning.</li>
+            <li>Non-blocking attempt to acquire a slot from the relay semaphore (buffered channel of capacity 256)</li>
+            <li>If the semaphore is full (256 concurrent relays already in progress): drop the message and log a warning. This is a deliberate design choice to prevent unbounded goroutine spawning.</li>
             <li>If a slot is acquired: increment the WaitGroup counter and spawn a goroutine for the publish operation</li>
         </ol>
 
@@ -484,7 +492,7 @@ Topology 3: Guard Network (Classified)
         </p>
         <ol>
             <li>Check connection state: <code>IsConnected()</code> or <code>IsReconnecting()</code>. If neither, skip with a warning log.</li>
-            <li>Publish the JSON bytes to the connection's configured subject</li>
+            <li>Publish the serialized bytes (JSON or XML, per connection config) to the connection's configured subject</li>
             <li>Flush to confirm delivery to the NATS server</li>
             <li>On failure: retry up to 3 times with exponential backoff (500ms, 1s, 2s, capped at 5s)</li>
             <li>On retry exhaustion: log an error and drop the message (no queuing)</li>
@@ -506,14 +514,15 @@ Topology 3: Guard Network (Classified)
         <p>
             The <code>handleInboundMessage()</code> closure receives a <code>nats.Msg</code> from
             the subscribed subject. Like outbound, it performs a non-blocking semaphore acquisition
-            from the same 50-slot pool. If the semaphore is full, the message is dropped with a
+            from the same 256-slot pool. If the semaphore is full, the message is dropped with a
             warning log. If a slot is acquired, a goroutine is spawned.
         </p>
 
         <h3>Step 2: Envelope Deserialization</h3>
         <p>
-            <code>model.UnmarshalMessage(msg.Data)</code> decodes the outer envelope. The handler
-            dispatches by <code>envelope.Type</code>:
+            <code>model.DetectFormat(msg.Data)</code> auto-detects the wire format (JSON or XML)
+            by inspecting the first non-whitespace byte, then <code>model.Unmarshal()</code>
+            decodes the envelope. The handler dispatches by <code>envelope.Type</code>:
         </p>
         <table>
             <thead>
@@ -643,7 +652,12 @@ Topology 3: Guard Network (Classified)
 
         <h3>Data That Crosses the Boundary (NATS Envelope)</h3>
 
-        <h4>Outer Envelope</h4>
+        <h4>Envelope Fields</h4>
+        <p>
+            The envelope is a single-layer structure (payloads are embedded directly, not
+            serialized as strings). It may be serialized as JSON or XML depending on the
+            outbound connection's <code>message_format</code> setting.
+        </p>
         <table>
             <thead>
                 <tr>
@@ -667,10 +681,28 @@ Topology 3: Guard Network (Classified)
                     <td>Logging only</td>
                 </tr>
                 <tr>
-                    <td><code>json</code></td>
-                    <td>Serialized inner payload</td>
+                    <td><code>post_message</code></td>
+                    <td>Post or update payload</td>
                     <td>Contains user-controlled fields (see below)</td>
-                    <td>Deserialized by type-specific handler</td>
+                    <td>Create or update a post</td>
+                </tr>
+                <tr>
+                    <td><code>delete_message</code></td>
+                    <td>Delete payload</td>
+                    <td>No (IDs only)</td>
+                    <td>Delete a post</td>
+                </tr>
+                <tr>
+                    <td><code>reaction_message</code></td>
+                    <td>Reaction payload</td>
+                    <td>Partially (emoji name is user-selected)</td>
+                    <td>Add or remove a reaction</td>
+                </tr>
+                <tr>
+                    <td><code>test_message</code></td>
+                    <td>Test payload</td>
+                    <td>No (generated ID)</td>
+                    <td>Connectivity verification</td>
                 </tr>
             </tbody>
         </table>
@@ -782,7 +814,7 @@ Topology 3: Guard Network (Classified)
             <tbody>
                 <tr>
                     <td>File attachments (<code>post.FileIds</code>)</td>
-                    <td>File transfer requires separate controlled mechanisms in classified environments. Files may contain embedded metadata or classified content that requires different handling than text.</td>
+                    <td>File transfer is disabled by default. When enabled per connection, files are uploaded to a NATS JetStream Object Store and downloaded by the receiving side. Administrators can restrict transfers using allow/deny file type filtering and a 100 MB size limit. Files may contain embedded metadata or classified content, so explicit opt-in and filtering are required.</td>
                 </tr>
                 <tr>
                     <td>Post properties (<code>post.Props</code>)</td>
@@ -973,7 +1005,7 @@ Topology 3: Guard Network (Classified)
         <ul>
             <li>Every inbound post is created with <code>post.AddProp("crossguard_relayed", true)</code></li>
             <li>Every outbound hook checks <code>post.GetProp("crossguard_relayed") != nil</code> and skips if present</li>
-            <li>This is the main defense and handles all post types (create, edit, delete)</li>
+            <li>This defense applies to post create and update hooks. Delete hooks use a separate deleting flag mechanism, and reaction hooks use sync-user position filtering.</li>
         </ul>
 
         <h3>Mechanism 2: Bot User Filtering (Secondary)</h3>
@@ -1058,7 +1090,7 @@ Topology 3: Guard Network (Classified)
         <ul>
             <li>Persistent connections with unlimited reconnects (<code>MaxReconnects = -1</code>)</li>
             <li>2-second reconnect wait between attempts</li>
-            <li>Disconnect and reconnect events logged at INFO level for operational visibility</li>
+            <li>Disconnect events logged at WARN level, reconnect events at INFO level</li>
             <li>Context-aware cancellation: reconnection attempts are abandoned during graceful plugin shutdown</li>
         </ul>
 
@@ -1349,7 +1381,7 @@ Server B acts as a relay point. Each hop is independent.</pre>
 
         <h3>Relay Semaphore</h3>
         <p>
-            The relay semaphore is a buffered channel of capacity 50, shared by both inbound
+            The relay semaphore is a buffered channel of capacity 256, shared by both inbound
             and outbound relay operations. It provides backpressure to prevent unbounded goroutine
             spawning under high message volume:
         </p>
@@ -1620,7 +1652,7 @@ Server B acts as a relay point. Each hop is independent.</pre>
                 </tr>
                 <tr>
                     <td><strong>Data minimization</strong></td>
-                    <td>Text only, no files</td>
+                    <td>Text + optional files (disabled by default, per-connection toggle, type filtering)</td>
                     <td>Full DB access</td>
                     <td>Full API access</td>
                     <td>Full email</td>

@@ -16,6 +16,7 @@ interface NATSConnection {
     file_transfer_enabled: boolean;
     file_filter_mode: '' | 'allow' | 'deny';
     file_filter_types: string;
+    message_format: 'json' | 'xml';
 }
 
 interface CustomSettingProps {
@@ -60,6 +61,7 @@ const emptyConnection: NATSConnection = {
     file_transfer_enabled: false,
     file_filter_mode: '',
     file_filter_types: '',
+    message_format: 'json',
 };
 
 const colors = {
@@ -641,6 +643,23 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                             {`Defaults from connection name. Must start with "${SUBJECT_PREFIX}".`}
                         </div>
                     </div>
+                    {!isInbound && (
+                        <div style={styles.inputGroup}>
+                            <label style={styles.label}>{'Message Format'}</label>
+                            <select
+                                style={styles.select}
+                                value={editForm.message_format}
+                                onChange={(e) => handleFormChange('message_format', e.target.value)}
+                                disabled={disabled}
+                            >
+                                <option value='json'>{'JSON'}</option>
+                                <option value='xml'>{'XML (for Cross Domain Solutions)'}</option>
+                            </select>
+                            <div style={styles.helpText}>
+                                {'Wire format for outbound messages. Use XML when sending through a Cross Domain Solution. Inbound messages are auto-detected.'}
+                            </div>
+                        </div>
+                    )}
                 </div>
 
                 <div style={styles.formSection}>
@@ -858,6 +877,11 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                                 {'Files'}
                             </span>
                         )}
+                        {conn.message_format === 'xml' && (
+                            <span style={{...styles.badge, ...styles.badgeTls}}>
+                                {'XML'}
+                            </span>
+                        )}
                     </div>
                 </div>
                 <div style={styles.cardMeta}>
@@ -875,6 +899,12 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                             {conn.file_filter_mode === 'allow' && `Allow: ${conn.file_filter_types}`}
                             {conn.file_filter_mode === 'deny' && `Deny: ${conn.file_filter_types}`}
                             {conn.file_filter_mode === '' && 'All types allowed'}
+                        </div>
+                    )}
+                    {conn.message_format === 'xml' && (
+                        <div style={styles.cardMetaItem}>
+                            <span style={styles.cardMetaLabel}>{'Format'}</span>
+                            {'XML'}
                         </div>
                     )}
                 </div>

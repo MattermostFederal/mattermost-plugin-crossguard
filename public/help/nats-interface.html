@@ -40,8 +40,8 @@
         <p>
             Cross Guard relays messages between Mattermost instances using
             <a href="https://nats.io">NATS</a> as the transport layer. Text events (posts, edits,
-            deletes, reactions) are wrapped in a standard JSON envelope and published via core NATS
-            publish/subscribe. File attachments use a separate subsystem: NATS JetStream Object
+            deletes, reactions) are wrapped in a message envelope (serialized as JSON or XML,
+            per connection configuration) and published via core NATS publish/subscribe. File attachments use a separate subsystem: NATS JetStream Object
             Store, which provides reliable binary object transfer with automatic TTL-based cleanup.
             Both subsystems share the same NATS connection but operate independently.
         </p>
@@ -50,7 +50,7 @@
             <tbody>
                 <tr><td>Text Transport</td><td>NATS core publish/subscribe</td></tr>
                 <tr><td>File Transport</td><td>NATS JetStream Object Store (bucket: <code>crossguard-files</code>)</td></tr>
-                <tr><td>Wire Format</td><td>JSON (UTF-8 encoded bytes) for text; binary for files</td></tr>
+                <tr><td>Wire Format</td><td>JSON or XML (UTF-8 encoded bytes, per connection config) for text; binary for files</td></tr>
                 <tr><td>Subject Prefix</td><td><code>crossguard.</code> (required for all subjects)</td></tr>
                 <tr><td>Subject Pattern</td><td><code>crossguard.{domain}</code>, e.g. <code>crossguard.high</code>, <code>crossguard.low</code></td></tr>
                 <tr><td>Retry Policy</td><td>Up to 3 attempts with exponential backoff (500ms base, 5s max) for text relay</td></tr>
@@ -73,10 +73,10 @@ Plugin hook fires (MessageHasBeenPosted, etc.)
 Check: channel relay enabled? team linked to outbound connection?
     |
     v
-Build Message envelope (type + serialized payload)
+Build Envelope (type + payload), serialize per-connection format (JSON or XML)
     |
     v
-Queue for async publish (semaphore-gated, max 50)
+Queue for async publish (semaphore-gated, max 256)
     |
     v
 Publish to NATS subject with retry (3x, exponential backoff)
@@ -90,7 +90,7 @@ Flush to confirm delivery</pre>
 <pre>NATS message arrives on subscribed subject
     |
     v
-Deserialize Message envelope
+Auto-detect format (JSON or XML) and deserialize Envelope
     |
     v
 Dispatch by message type (post, update, delete, reaction, test)
@@ -118,7 +118,10 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
         <h2>Message Envelope</h2>
         <p>
             Every message published to NATS uses this standard envelope. The <code>type</code>
-            field determines which payload schema is serialized inside <code>json</code>.
+            field identifies the message kind. Exactly one payload field is present per
+            message. The envelope can be serialized as JSON or XML depending on the
+            outbound connection's <code>message_format</code> setting. Inbound messages
+            are auto-detected by inspecting the first non-whitespace byte.
         </p>
 
         <div class="endpoint-card">
@@ -130,18 +133,50 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
                 <h4>Schema</h4>
                 <table class="field-table">
                     <tbody>
-                        <tr><td><code>type</code></td><td><strong>string, required</strong>. One of the <a href="#message-types">message type</a> values. Determines the payload schema.</td></tr>
+                        <tr><td><code>type</code></td><td><strong>string, required</strong>. One of the <a href="#message-types">message type</a> values. Determines which payload field is present.</td></tr>
                         <tr><td><code>timestamp</code></td><td><strong>string, required</strong>. UTC timestamp in RFC 3339 format (e.g. <code>2026-03-27T14:30:00Z</code>). Set when the envelope is created.</td></tr>
-                        <tr><td><code>json</code></td><td><strong>string, required</strong>. JSON-encoded payload. Deserialize according to <code>type</code> to obtain the inner message object.</td></tr>
+                        <tr><td><code>post_message</code></td><td><strong>object, optional</strong>. Present when type is <code>crossguard_post</code> or <code>crossguard_update</code>. See <a href="#postmessage">PostMessage</a>.</td></tr>
+                        <tr><td><code>delete_message</code></td><td><strong>object, optional</strong>. Present when type is <code>crossguard_delete</code>. See <a href="#deletemessage">DeleteMessage</a>.</td></tr>
+                        <tr><td><code>reaction_message</code></td><td><strong>object, optional</strong>. Present when type is <code>crossguard_reaction_add</code> or <code>crossguard_reaction_remove</code>. See <a href="#reactionmessage">ReactionMessage</a>.</td></tr>
+                        <tr><td><code>test_message</code></td><td><strong>object, optional</strong>. Present when type is <code>crossguard_test</code>. See <a href="#testmessage">TestMessage</a>.</td></tr>
                     </tbody>
                 </table>
 
-                <h4>Example</h4>
+                <h4>JSON Example</h4>
 <pre><code>{
   "type": "crossguard_post",
   "timestamp": "2026-03-27T14:30:00Z",
-  "json": "{\"post_id\":\"8swgtrrdiff89yj1z33pofo15r\",\"channel_id\":\"9a1f4h6e17yfmk9w6pxs3jqd3e\",\"channel_name\":\"town-square\",\"team_id\":\"5f3h8k2m41ygdj7w8pxr6nqb9c\",\"team_name\":\"test-a\",\"user_id\":\"7m4k9j2p63ynfr8x1qwt5hab4e\",\"username\":\"alice\",\"message\":\"Hello from the other side\",\"create_at\":1711547400000}"
+  "post_message": {
+    "post_id": "8swgtrrdiff89yj1z33pofo15r",
+    "channel_id": "9a1f4h6e17yfmk9w6pxs3jqd3e",
+    "channel_name": "town-square",
+    "team_id": "5f3h8k2m41ygdj7w8pxr6nqb9c",
+    "team_name": "test-a",
+    "user_id": "7m4k9j2p63ynfr8x1qwt5hab4e",
+    "username": "alice",
+    "message": "Hello from the other side",
+    "create_at": 1711547400000
+  }
 }</code></pre>
+
+                <h4>XML Example</h4>
+                <p><em>Note: Actual wire output is compact (no indentation). Formatted here for readability.</em></p>
+<pre><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;CrossguardMessage xmlns="urn:mattermost-crossguard"&gt;
+  &lt;Type&gt;crossguard_post&lt;/Type&gt;
+  &lt;Timestamp&gt;2026-03-27T14:30:00Z&lt;/Timestamp&gt;
+  &lt;PostMessage&gt;
+    &lt;PostID&gt;8swgtrrdiff89yj1z33pofo15r&lt;/PostID&gt;
+    &lt;ChannelID&gt;9a1f4h6e17yfmk9w6pxs3jqd3e&lt;/ChannelID&gt;
+    &lt;ChannelName&gt;town-square&lt;/ChannelName&gt;
+    &lt;TeamID&gt;5f3h8k2m41ygdj7w8pxr6nqb9c&lt;/TeamID&gt;
+    &lt;TeamName&gt;test-a&lt;/TeamName&gt;
+    &lt;UserID&gt;7m4k9j2p63ynfr8x1qwt5hab4e&lt;/UserID&gt;
+    &lt;Username&gt;alice&lt;/Username&gt;
+    &lt;MessageText&gt;Hello from the other side&lt;/MessageText&gt;
+    &lt;CreateAt&gt;1711547400000&lt;/CreateAt&gt;
+  &lt;/PostMessage&gt;
+&lt;/CrossguardMessage&gt;</code></pre>
             </div>
         </div>
 
@@ -149,7 +184,7 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
         <h2 id="message-types">Message Types</h2>
         <p>
             The <code>type</code> field in the envelope acts as a discriminator. Each value maps
-            to a specific payload schema serialized in the <code>json</code> field.
+            to a specific payload field in the envelope.
         </p>
 
         <table>
@@ -498,50 +533,97 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
         <!-- Complete Wire Examples -->
         <h2>Complete Wire Format Examples</h2>
         <p>
-            Each example below shows the full envelope as it appears on the NATS wire,
-            with the <code>json</code> field containing the serialized payload string.
+            Each example below shows the full JSON envelope as it appears on the NATS wire.
+            For XML equivalents, see the <a href="#xml-format">XML Format</a> section and
+            the <code>schema/crossguard.xsd</code> schema definition.
         </p>
 
         <h3>New Post</h3>
 <pre><code>{
   "type": "crossguard_post",
   "timestamp": "2026-03-27T14:30:00Z",
-  "json": "{\"post_id\":\"8swgtrrdiff89yj1z33pofo15r\",\"channel_id\":\"9a1f4h6e17yfmk9w6pxs3jqd3e\",\"channel_name\":\"town-square\",\"team_id\":\"5f3h8k2m41ygdj7w8pxr6nqb9c\",\"team_name\":\"test-a\",\"user_id\":\"7m4k9j2p63ynfr8x1qwt5hab4e\",\"username\":\"alice\",\"message\":\"Hello from the other side\",\"create_at\":1711547400000}"
+  "post_message": {
+    "post_id": "8swgtrrdiff89yj1z33pofo15r",
+    "channel_id": "9a1f4h6e17yfmk9w6pxs3jqd3e",
+    "channel_name": "town-square",
+    "team_id": "5f3h8k2m41ygdj7w8pxr6nqb9c",
+    "team_name": "test-a",
+    "user_id": "7m4k9j2p63ynfr8x1qwt5hab4e",
+    "username": "alice",
+    "message": "Hello from the other side",
+    "create_at": 1711547400000
+  }
 }</code></pre>
 
         <h3>Post Edit</h3>
 <pre><code>{
   "type": "crossguard_update",
   "timestamp": "2026-03-27T14:31:00Z",
-  "json": "{\"post_id\":\"8swgtrrdiff89yj1z33pofo15r\",\"channel_id\":\"9a1f4h6e17yfmk9w6pxs3jqd3e\",\"channel_name\":\"town-square\",\"team_id\":\"5f3h8k2m41ygdj7w8pxr6nqb9c\",\"team_name\":\"test-a\",\"user_id\":\"7m4k9j2p63ynfr8x1qwt5hab4e\",\"username\":\"alice\",\"message\":\"Hello from the other side (edited)\",\"create_at\":1711547400000}"
+  "post_message": {
+    "post_id": "8swgtrrdiff89yj1z33pofo15r",
+    "channel_id": "9a1f4h6e17yfmk9w6pxs3jqd3e",
+    "channel_name": "town-square",
+    "team_id": "5f3h8k2m41ygdj7w8pxr6nqb9c",
+    "team_name": "test-a",
+    "user_id": "7m4k9j2p63ynfr8x1qwt5hab4e",
+    "username": "alice",
+    "message": "Hello from the other side (edited)",
+    "create_at": 1711547400000
+  }
 }</code></pre>
 
         <h3>Post Delete</h3>
 <pre><code>{
   "type": "crossguard_delete",
   "timestamp": "2026-03-27T14:32:00Z",
-  "json": "{\"post_id\":\"8swgtrrdiff89yj1z33pofo15r\",\"channel_id\":\"9a1f4h6e17yfmk9w6pxs3jqd3e\",\"channel_name\":\"town-square\",\"team_id\":\"5f3h8k2m41ygdj7w8pxr6nqb9c\",\"team_name\":\"test-a\"}"
+  "delete_message": {
+    "post_id": "8swgtrrdiff89yj1z33pofo15r",
+    "channel_id": "9a1f4h6e17yfmk9w6pxs3jqd3e",
+    "channel_name": "town-square",
+    "team_id": "5f3h8k2m41ygdj7w8pxr6nqb9c",
+    "team_name": "test-a"
+  }
 }</code></pre>
 
         <h3>Reaction Added</h3>
 <pre><code>{
   "type": "crossguard_reaction_add",
   "timestamp": "2026-03-27T14:33:00Z",
-  "json": "{\"post_id\":\"8swgtrrdiff89yj1z33pofo15r\",\"channel_id\":\"9a1f4h6e17yfmk9w6pxs3jqd3e\",\"channel_name\":\"town-square\",\"team_id\":\"5f3h8k2m41ygdj7w8pxr6nqb9c\",\"team_name\":\"test-a\",\"user_id\":\"3n6k8j1p42ygfr9x7qwt5hab2c\",\"username\":\"bob\",\"emoji_name\":\"thumbsup\"}"
+  "reaction_message": {
+    "post_id": "8swgtrrdiff89yj1z33pofo15r",
+    "channel_id": "9a1f4h6e17yfmk9w6pxs3jqd3e",
+    "channel_name": "town-square",
+    "team_id": "5f3h8k2m41ygdj7w8pxr6nqb9c",
+    "team_name": "test-a",
+    "user_id": "3n6k8j1p42ygfr9x7qwt5hab2c",
+    "username": "bob",
+    "emoji_name": "thumbsup"
+  }
 }</code></pre>
 
         <h3>Reaction Removed</h3>
 <pre><code>{
   "type": "crossguard_reaction_remove",
   "timestamp": "2026-03-27T14:34:00Z",
-  "json": "{\"post_id\":\"8swgtrrdiff89yj1z33pofo15r\",\"channel_id\":\"9a1f4h6e17yfmk9w6pxs3jqd3e\",\"channel_name\":\"town-square\",\"team_id\":\"5f3h8k2m41ygdj7w8pxr6nqb9c\",\"team_name\":\"test-a\",\"user_id\":\"3n6k8j1p42ygfr9x7qwt5hab2c\",\"username\":\"bob\",\"emoji_name\":\"thumbsup\"}"
+  "reaction_message": {
+    "post_id": "8swgtrrdiff89yj1z33pofo15r",
+    "channel_id": "9a1f4h6e17yfmk9w6pxs3jqd3e",
+    "channel_name": "town-square",
+    "team_id": "5f3h8k2m41ygdj7w8pxr6nqb9c",
+    "team_name": "test-a",
+    "user_id": "3n6k8j1p42ygfr9x7qwt5hab2c",
+    "username": "bob",
+    "emoji_name": "thumbsup"
+  }
 }</code></pre>
 
         <h3>Connectivity Test</h3>
 <pre><code>{
   "type": "crossguard_test",
   "timestamp": "2026-03-27T14:35:00Z",
-  "json": "{\"id\":\"dj7f8k2m41ygsr9w6pxt3nqb4e\"}"
+  "test_message": {
+    "id": "dj7f8k2m41ygsr9w6pxt3nqb4e"
+  }
 }</code></pre>
 
         <!-- Connection Configuration -->
@@ -568,7 +650,7 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
                             <td><code>name</code></td>
                             <td>string</td>
                             <td>Yes</td>
-                            <td>Connection identifier. Lowercase alphanumeric and hyphens only (pattern: <code>^[a-z0-9-]+$</code>).</td>
+                            <td>Connection identifier. Must start and end with a lowercase letter or number. Hyphens allowed between segments, no consecutive hyphens (pattern: <code>^[a-z0-9]+(-[a-z0-9]+)*$</code>).</td>
                         </tr>
                         <tr>
                             <td><code>address</code></td>
@@ -645,8 +727,14 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
                         <tr>
                             <td><code>file_filter_types</code></td>
                             <td>string</td>
+                            <td>Conditional</td>
+                            <td>Comma-separated extensions (e.g. <code>.pdf,.docx,.png</code>). Case-insensitive. Required when <code>file_filter_mode</code> is <code>"allow"</code> or <code>"deny"</code>.</td>
+                        </tr>
+                        <tr>
+                            <td><code>message_format</code></td>
+                            <td>string</td>
                             <td>No</td>
-                            <td>Comma-separated extensions (e.g. <code>.pdf,.docx,.png</code>). Case-insensitive. Used with <code>file_filter_mode</code>.</td>
+                            <td>Wire format for outbound messages: <code>"json"</code> (default) or <code>"xml"</code>. Use XML when sending through a Cross Domain Solution (CDS). Inbound messages are auto-detected regardless of this setting.</td>
                         </tr>
                     </tbody>
                 </table>
@@ -685,6 +773,17 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
   "file_transfer_enabled": true,
   "file_filter_mode": "allow",
   "file_filter_types": ".pdf,.docx,.png,.jpg"
+}</code></pre>
+
+                <h4>Example: XML Format for CDS</h4>
+<pre><code>{
+  "name": "cds-relay",
+  "address": "nats://nats:4222",
+  "subject": "crossguard.cds",
+  "tls_enabled": true,
+  "auth_type": "token",
+  "token": "my-secret-token",
+  "message_format": "xml"
 }</code></pre>
             </div>
         </div>
@@ -750,7 +849,7 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
                 <tr>
                     <td>File Post Mapping Retry</td>
                     <td>3 attempts</td>
-                    <td>Inbound file watcher retries post mapping lookup with linear backoff (1s, 2s, 3s)</td>
+                    <td>Inbound file watcher retries post mapping lookup with linear backoff (1s, 2s)</td>
                 </tr>
             </tbody>
         </table>
@@ -926,6 +1025,68 @@ Release semaphore</pre>
             </p>
         </div>
 
+        <!-- XML Format -->
+        <h2 id="xml-format">XML Format</h2>
+        <p>
+            When <code>message_format</code> is set to <code>"xml"</code> on an outbound
+            connection, messages are serialized using the XML schema defined in
+            <code>schema/crossguard.xsd</code> (namespace: <code>urn:mattermost-crossguard</code>).
+            The root element is <code>CrossguardMessage</code> with child elements matching
+            the envelope fields. An XSAT report is available at
+            <code>schema/crossguard-xsat-report.md</code> for CDS approval processes.
+        </p>
+
+        <h3>Key Differences from JSON</h3>
+        <table>
+            <thead>
+                <tr><th>Aspect</th><th>JSON</th><th>XML</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Root element</td>
+                    <td>N/A (top-level object)</td>
+                    <td><code>&lt;CrossguardMessage xmlns="urn:mattermost-crossguard"&gt;</code></td>
+                </tr>
+                <tr>
+                    <td>Field names</td>
+                    <td>snake_case (<code>post_message</code>, <code>channel_name</code>)</td>
+                    <td>PascalCase (<code>PostMessage</code>, <code>ChannelName</code>)</td>
+                </tr>
+                <tr>
+                    <td>Message body field</td>
+                    <td><code>message</code></td>
+                    <td><code>MessageText</code></td>
+                </tr>
+                <tr>
+                    <td>Character escaping</td>
+                    <td>JSON string escaping</td>
+                    <td>XML entity escaping (<code>&amp;lt;</code>, <code>&amp;gt;</code>, <code>&amp;amp;</code>)</td>
+                </tr>
+                <tr>
+                    <td>Size overhead</td>
+                    <td>Baseline</td>
+                    <td>~30-50% larger (closing tags, namespace)</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>Inbound Auto-Detection</h3>
+        <p>
+            Inbound connections do not require format configuration. The plugin inspects the
+            first non-whitespace byte of each incoming message: if it is <code>&lt;</code>,
+            the message is parsed as XML; otherwise, it is parsed as JSON. This allows a
+            single inbound connection to accept messages from sources using either format.
+        </p>
+
+        <div class="alert alert-info">
+            <p class="alert-title">BOM Handling</p>
+            <p>
+                XML output does not include a Byte Order Mark (BOM). If a CDS device prepends
+                a UTF-8 BOM (0xEF 0xBB 0xBF) to the message, the inbound parser will strip it
+                automatically before format detection. BOM-prefixed XML is handled correctly.
+            </p>
+        </div>
+
         <!-- Loop Prevention -->
         <h2>Loop Prevention</h2>
         <p>
@@ -957,7 +1118,7 @@ Release semaphore</pre>
             <p class="alert-title">OpenAPI Specification</p>
             <p>
                 The machine-readable OpenAPI 3.1 specification for this interface is available at
-                <code>assets/crossguard-api.yaml</code> in the plugin source repository.
+                <code>schema/crossguard-api.yaml</code> in the plugin source repository.
             </p>
         </div>
     </main>

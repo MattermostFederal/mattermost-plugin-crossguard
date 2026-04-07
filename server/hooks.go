@@ -44,7 +44,7 @@ func (p *Plugin) isChannelRelayEnabled(channelID string) (*mmModel.Channel, *mmM
 	return channel, team, channelConns
 }
 
-func (p *Plugin) relayToOutbound(data []byte, connNames []store.TeamConnection, logContext string) {
+func (p *Plugin) relayToOutbound(env *model.Envelope, connNames []store.TeamConnection, logContext string) {
 	select {
 	case p.relaySem <- struct{}{}:
 	default:
@@ -54,7 +54,7 @@ func (p *Plugin) relayToOutbound(data []byte, connNames []store.TeamConnection, 
 
 	p.wg.Go(func() {
 		defer func() { <-p.relaySem }()
-		p.publishToOutbound(p.ctx, data, connNames)
+		p.publishToOutbound(p.ctx, env, connNames)
 	})
 }
 
@@ -74,13 +74,8 @@ func (p *Plugin) MessageHasBeenPosted(_ *plugin.Context, post *mmModel.Post) {
 		return
 	}
 
-	data, err := buildPostEnvelope(model.MessageTypePost, post, channel, team.Name, user.Username)
-	if err != nil {
-		p.API.LogError("Failed to build post envelope", "post_id", post.Id, "error", err.Error())
-		return
-	}
-
-	p.relayToOutbound(data, connNames, "post:"+post.Id)
+	env := buildPostEnvelope(model.MessageTypePost, post, channel, team.Name, user.Username)
+	p.relayToOutbound(env, connNames, "post:"+post.Id)
 
 	if len(post.FileIds) > 0 {
 		p.uploadPostFiles(post, connNames)
@@ -103,13 +98,8 @@ func (p *Plugin) MessageHasBeenUpdated(_ *plugin.Context, newPost *mmModel.Post,
 		return
 	}
 
-	data, err := buildPostEnvelope(model.MessageTypeUpdate, newPost, channel, team.Name, user.Username)
-	if err != nil {
-		p.API.LogError("Failed to build update envelope", "post_id", newPost.Id, "error", err.Error())
-		return
-	}
-
-	p.relayToOutbound(data, connNames, "update:"+newPost.Id)
+	env := buildPostEnvelope(model.MessageTypeUpdate, newPost, channel, team.Name, user.Username)
+	p.relayToOutbound(env, connNames, "update:"+newPost.Id)
 }
 
 func (p *Plugin) MessageHasBeenDeleted(_ *plugin.Context, post *mmModel.Post) {
@@ -132,13 +122,8 @@ func (p *Plugin) MessageHasBeenDeleted(_ *plugin.Context, post *mmModel.Post) {
 		return
 	}
 
-	data, err := buildDeleteEnvelope(post, channel, team.Name)
-	if err != nil {
-		p.API.LogError("Failed to build delete envelope", "post_id", post.Id, "error", err.Error())
-		return
-	}
-
-	p.relayToOutbound(data, connNames, "delete:"+post.Id)
+	env := buildDeleteEnvelope(post, channel, team.Name)
+	p.relayToOutbound(env, connNames, "delete:"+post.Id)
 }
 
 func (p *Plugin) ReactionHasBeenAdded(_ *plugin.Context, reaction *mmModel.Reaction) {
@@ -167,13 +152,8 @@ func (p *Plugin) ReactionHasBeenAdded(_ *plugin.Context, reaction *mmModel.React
 		return
 	}
 
-	data, err := buildReactionEnvelope(model.MessageTypeReactionAdd, reaction, channel, team.Name, user.Username)
-	if err != nil {
-		p.API.LogError("Failed to build reaction add envelope", "post_id", reaction.PostId, "error", err.Error())
-		return
-	}
-
-	p.relayToOutbound(data, connNames, "reaction_add:"+reaction.PostId)
+	env := buildReactionEnvelope(model.MessageTypeReactionAdd, reaction, channel, team.Name, user.Username)
+	p.relayToOutbound(env, connNames, "reaction_add:"+reaction.PostId)
 }
 
 func (p *Plugin) ReactionHasBeenRemoved(_ *plugin.Context, reaction *mmModel.Reaction) {
@@ -202,11 +182,6 @@ func (p *Plugin) ReactionHasBeenRemoved(_ *plugin.Context, reaction *mmModel.Rea
 		return
 	}
 
-	data, err := buildReactionEnvelope(model.MessageTypeReactionRemove, reaction, channel, team.Name, user.Username)
-	if err != nil {
-		p.API.LogError("Failed to build reaction remove envelope", "post_id", reaction.PostId, "error", err.Error())
-		return
-	}
-
-	p.relayToOutbound(data, connNames, "reaction_remove:"+reaction.PostId)
+	env := buildReactionEnvelope(model.MessageTypeReactionRemove, reaction, channel, team.Name, user.Username)
+	p.relayToOutbound(env, connNames, "reaction_remove:"+reaction.PostId)
 }

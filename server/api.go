@@ -7,10 +7,11 @@ import (
 	"strings"
 
 	"github.com/gorilla/mux"
-	"github.com/mattermost/mattermost/server/public/model"
+	mmModel "github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/nats-io/nats.go"
 
+	cgModel "github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
@@ -95,6 +96,14 @@ func (p *Plugin) handleTestConnection(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	switch conn.MessageFormat {
+	case "json", "xml", "":
+		// valid
+	default:
+		writeJSONError(w, `message_format must be "json" or "xml"`, http.StatusBadRequest)
+		return
+	}
+
 	nc, err := connectNATS(conn)
 	if err != nil {
 		p.API.LogError("NATS connection test failed", "address", conn.Address, "error", err.Error())
@@ -116,7 +125,11 @@ func (p *Plugin) handleTestConnection(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) handleTestOutbound(w http.ResponseWriter, nc *nats.Conn, conn NATSConnection) {
-	data, msgID, err := buildTestMessage()
+	format := cgModel.Format(conn.MessageFormat)
+	if format == "" {
+		format = cgModel.FormatJSON
+	}
+	data, msgID, err := buildTestMessage(format)
 	if err != nil {
 		p.API.LogError("Failed to build test message", "error", err.Error())
 		writeJSONError(w, "failed to build test message", http.StatusInternalServerError)
@@ -187,7 +200,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 // getAuthenticatedUser extracts the user ID from the request header, looks up
 // the user, and returns it. Returns nil and writes an error response if auth fails.
-func (p *Plugin) getAuthenticatedUser(w http.ResponseWriter, r *http.Request) *model.User {
+func (p *Plugin) getAuthenticatedUser(w http.ResponseWriter, r *http.Request) *mmModel.User {
 	userID := r.Header.Get("Mattermost-User-Id")
 	if userID == "" {
 		writeJSONError(w, "not authenticated", http.StatusUnauthorized)
@@ -211,7 +224,7 @@ func (p *Plugin) handleInitTeam(w http.ResponseWriter, r *http.Request) {
 	}
 
 	teamID := mux.Vars(r)["team_id"]
-	if !model.IsValidId(teamID) {
+	if !mmModel.IsValidId(teamID) {
 		writeJSONError(w, "invalid team_id", http.StatusBadRequest)
 		return
 	}
@@ -251,7 +264,7 @@ func (p *Plugin) handleInitChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	channelID := mux.Vars(r)["channel_id"]
-	if !model.IsValidId(channelID) {
+	if !mmModel.IsValidId(channelID) {
 		writeJSONError(w, "invalid channel_id", http.StatusBadRequest)
 		return
 	}
@@ -304,7 +317,7 @@ func (p *Plugin) handleTeardownChannel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	channelID := mux.Vars(r)["channel_id"]
-	if !model.IsValidId(channelID) {
+	if !mmModel.IsValidId(channelID) {
 		writeJSONError(w, "invalid channel_id", http.StatusBadRequest)
 		return
 	}
@@ -357,7 +370,7 @@ func (p *Plugin) handleTeardownTeam(w http.ResponseWriter, r *http.Request) {
 	}
 
 	teamID := mux.Vars(r)["team_id"]
-	if !model.IsValidId(teamID) {
+	if !mmModel.IsValidId(teamID) {
 		writeJSONError(w, "invalid team_id", http.StatusBadRequest)
 		return
 	}
@@ -418,7 +431,7 @@ func (p *Plugin) handleGlobalStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) handleDialogSelectConnection(w http.ResponseWriter, r *http.Request) {
-	var req model.SubmitDialogRequest
+	var req mmModel.SubmitDialogRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, "invalid request", http.StatusBadRequest)
 		return
@@ -443,7 +456,7 @@ func (p *Plugin) handleDialogSelectConnection(w http.ResponseWriter, r *http.Req
 
 	connNameStr, _ := req.Submission["connection_name"].(string)
 	if connNameStr == "" {
-		writeJSON(w, http.StatusOK, model.SubmitDialogResponse{
+		writeJSON(w, http.StatusOK, mmModel.SubmitDialogResponse{
 			Errors: map[string]string{"connection_name": "Please select a connection."},
 		})
 		return
@@ -458,7 +471,7 @@ func (p *Plugin) handleDialogSelectConnection(w http.ResponseWriter, r *http.Req
 	}
 	action, targetID := parts[0], parts[1]
 
-	if !model.IsValidId(targetID) {
+	if !mmModel.IsValidId(targetID) {
 		writeJSONError(w, "invalid target ID in dialog state", http.StatusBadRequest)
 		return
 	}
@@ -525,7 +538,7 @@ func (p *Plugin) handleDialogSelectConnection(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	p.API.SendEphemeralPost(userID, &model.Post{
+	p.API.SendEphemeralPost(userID, &mmModel.Post{
 		UserId:    p.botUserID,
 		ChannelId: req.ChannelId,
 		Message:   responseText,
@@ -541,7 +554,7 @@ func (p *Plugin) handleTeamStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	teamID := mux.Vars(r)["team_id"]
-	if !model.IsValidId(teamID) {
+	if !mmModel.IsValidId(teamID) {
 		writeJSONError(w, "invalid team_id", http.StatusBadRequest)
 		return
 	}
@@ -568,7 +581,7 @@ func (p *Plugin) handleChannelStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	channelID := mux.Vars(r)["channel_id"]
-	if !model.IsValidId(channelID) {
+	if !mmModel.IsValidId(channelID) {
 		writeJSONError(w, "invalid channel_id", http.StatusBadRequest)
 		return
 	}
@@ -612,7 +625,7 @@ func (p *Plugin) handleBulkChannelConnections(w http.ResponseWriter, r *http.Req
 
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
-		if !model.IsValidId(id) {
+		if !mmModel.IsValidId(id) {
 			continue
 		}
 
@@ -654,7 +667,7 @@ func (p *Plugin) handleSetTeamRewrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	teamID := mux.Vars(r)["team_id"]
-	if !model.IsValidId(teamID) {
+	if !mmModel.IsValidId(teamID) {
 		writeJSONError(w, "invalid team_id", http.StatusBadRequest)
 		return
 	}
@@ -715,7 +728,7 @@ func (p *Plugin) handleDeleteTeamRewrite(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	teamID := mux.Vars(r)["team_id"]
-	if !model.IsValidId(teamID) {
+	if !mmModel.IsValidId(teamID) {
 		writeJSONError(w, "invalid team_id", http.StatusBadRequest)
 		return
 	}

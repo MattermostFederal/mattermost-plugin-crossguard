@@ -275,6 +275,35 @@ func TestConfigurationValidate(t *testing.T) {
 		assert.Contains(t, err.Error(), "name must contain only lowercase letters, numbers, and hyphens")
 	})
 
+	t.Run("empty message_format defaults to json and passes", func(t *testing.T) {
+		conns := []NATSConnection{
+			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", MessageFormat: ""},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{OutboundConnections: string(data)}
+		assert.NoError(t, cfg.validate())
+	})
+
+	t.Run("xml message_format passes", func(t *testing.T) {
+		conns := []NATSConnection{
+			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", MessageFormat: "xml"},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{OutboundConnections: string(data)}
+		assert.NoError(t, cfg.validate())
+	})
+
+	t.Run("invalid message_format fails validation", func(t *testing.T) {
+		conns := []NATSConnection{
+			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", MessageFormat: "yaml"},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{OutboundConnections: string(data)}
+		err := cfg.validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "message_format must be")
+	})
+
 	t.Run("malformed JSON reports error", func(t *testing.T) {
 		cfg := &configuration{InboundConnections: "not json"}
 		err := cfg.validate()
@@ -347,10 +376,13 @@ func TestIsRestrictedToSystemAdmins(t *testing.T) {
 }
 
 func TestIsTestMessage(t *testing.T) {
-	t.Run("valid test message is detected", func(t *testing.T) {
-		envelope, err := model.NewMessage(model.MessageTypeTest, model.TestMessage{ID: "abc-123"})
-		require.NoError(t, err)
-		data, err := model.Marshal(envelope)
+	t.Run("valid test message is detected via JSON", func(t *testing.T) {
+		env := &model.Envelope{
+			Type:        model.MessageTypeTest,
+			Timestamp:   "2026-04-06T12:00:00Z",
+			TestMessage: &model.TestMessage{ID: "abc-123"},
+		}
+		data, err := model.Marshal(env, model.FormatJSON)
 		require.NoError(t, err)
 
 		result, ok := isTestMessage(data)
@@ -358,10 +390,27 @@ func TestIsTestMessage(t *testing.T) {
 		assert.Equal(t, "abc-123", result.ID)
 	})
 
-	t.Run("non-test message type is not detected", func(t *testing.T) {
-		envelope, err := model.NewMessage("regular_message", map[string]string{"content": "hello"})
+	t.Run("valid test message is detected via XML", func(t *testing.T) {
+		env := &model.Envelope{
+			Type:        model.MessageTypeTest,
+			Timestamp:   "2026-04-06T12:00:00Z",
+			TestMessage: &model.TestMessage{ID: "xml-456"},
+		}
+		data, err := model.Marshal(env, model.FormatXML)
 		require.NoError(t, err)
-		data, err := model.Marshal(envelope)
+
+		result, ok := isTestMessage(data)
+		require.True(t, ok)
+		assert.Equal(t, "xml-456", result.ID)
+	})
+
+	t.Run("non-test message type is not detected", func(t *testing.T) {
+		env := &model.Envelope{
+			Type:        "regular_message",
+			Timestamp:   "2026-04-06T12:00:00Z",
+			PostMessage: &model.PostMessage{PostID: "p1"},
+		}
+		data, err := model.Marshal(env, model.FormatJSON)
 		require.NoError(t, err)
 
 		result, ok := isTestMessage(data)
@@ -376,9 +425,12 @@ func TestIsTestMessage(t *testing.T) {
 	})
 
 	t.Run("empty type is not detected", func(t *testing.T) {
-		envelope, err := model.NewMessage("", model.TestMessage{ID: "123"})
-		require.NoError(t, err)
-		data, err := model.Marshal(envelope)
+		env := &model.Envelope{
+			Type:        "",
+			Timestamp:   "2026-04-06T12:00:00Z",
+			TestMessage: &model.TestMessage{ID: "123"},
+		}
+		data, err := model.Marshal(env, model.FormatJSON)
 		require.NoError(t, err)
 
 		result, ok := isTestMessage(data)
@@ -492,18 +544,31 @@ func TestFileFilterValidation(t *testing.T) {
 }
 
 func TestBuildTestMessage(t *testing.T) {
-	data, msgID, err := buildTestMessage()
-	require.NoError(t, err)
-	require.NotEmpty(t, msgID)
-	require.NotEmpty(t, data)
+	t.Run("JSON format", func(t *testing.T) {
+		data, msgID, err := buildTestMessage(model.FormatJSON)
+		require.NoError(t, err)
+		require.NotEmpty(t, msgID)
+		require.NotEmpty(t, data)
 
-	envelope, err := model.UnmarshalMessage(data)
-	require.NoError(t, err)
-	assert.Equal(t, model.MessageTypeTest, envelope.Type)
-	assert.NotEmpty(t, envelope.Timestamp)
+		env, err := model.Unmarshal(data, model.FormatJSON)
+		require.NoError(t, err)
+		assert.Equal(t, model.MessageTypeTest, env.Type)
+		assert.NotEmpty(t, env.Timestamp)
+		require.NotNil(t, env.TestMessage)
+		assert.Equal(t, msgID, env.TestMessage.ID)
+	})
 
-	var testMsg model.TestMessage
-	err = envelope.Decode(&testMsg)
-	require.NoError(t, err)
-	assert.Equal(t, msgID, testMsg.ID)
+	t.Run("XML format", func(t *testing.T) {
+		data, msgID, err := buildTestMessage(model.FormatXML)
+		require.NoError(t, err)
+		require.NotEmpty(t, msgID)
+		require.NotEmpty(t, data)
+
+		env, err := model.Unmarshal(data, model.FormatXML)
+		require.NoError(t, err)
+		assert.Equal(t, model.MessageTypeTest, env.Type)
+		assert.NotEmpty(t, env.Timestamp)
+		require.NotNil(t, env.TestMessage)
+		assert.Equal(t, msgID, env.TestMessage.ID)
+	})
 }

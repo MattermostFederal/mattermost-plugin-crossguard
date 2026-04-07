@@ -359,12 +359,10 @@ func TestHandleInboundPost(t *testing.T) {
 		ChannelName: "town-square",
 		TeamName:    "test-a",
 		Username:    "alice",
-		Message:     "hello from remote",
+		MessageText: "hello from remote",
 	}
-	envelope, err := model.NewMessage(model.MessageTypePost, postMsg)
-	require.NoError(t, err)
 
-	p.handleInboundPost("high", envelope)
+	p.handleInboundPost("high", &postMsg)
 
 	assert.Equal(t, "local-post-id", kvs.postMappings["high-remote-post-id"])
 	api.AssertExpectations(t)
@@ -388,13 +386,11 @@ func TestHandleInboundUpdate(t *testing.T) {
 	})).Return(&mmModel.Post{Id: "local-post-id"}, nil)
 
 	postMsg := model.PostMessage{
-		PostID:  "remote-post-id",
-		Message: "edited message",
+		PostID:      "remote-post-id",
+		MessageText: "edited message",
 	}
-	envelope, err := model.NewMessage(model.MessageTypeUpdate, postMsg)
-	require.NoError(t, err)
 
-	p.handleInboundUpdate("high", envelope)
+	p.handleInboundUpdate("high", &postMsg)
 	api.AssertExpectations(t)
 }
 
@@ -404,11 +400,9 @@ func TestHandleInboundUpdate_NoMapping(t *testing.T) {
 
 	api.On("LogWarn", "Inbound update: no post mapping found", "conn", "high", "remote_id", "unknown-id").Return()
 
-	postMsg := model.PostMessage{PostID: "unknown-id", Message: "edited"}
-	envelope, err := model.NewMessage(model.MessageTypeUpdate, postMsg)
-	require.NoError(t, err)
+	postMsg := model.PostMessage{PostID: "unknown-id", MessageText: "edited"}
 
-	p.handleInboundUpdate("high", envelope)
+	p.handleInboundUpdate("high", &postMsg)
 }
 
 func TestHandleInboundDelete(t *testing.T) {
@@ -424,10 +418,7 @@ func TestHandleInboundDelete(t *testing.T) {
 		ChannelName: "town-square",
 		TeamName:    "test-a",
 	}
-	envelope, err := model.NewMessage(model.MessageTypeDelete, deleteMsg)
-	require.NoError(t, err)
-
-	p.handleInboundDelete("high", envelope)
+	p.handleInboundDelete("high", &deleteMsg)
 
 	_, exists := kvs.postMappings["high-remote-post-id"]
 	assert.False(t, exists, "post mapping should be deleted")
@@ -467,10 +458,7 @@ func TestHandleInboundReaction_Add(t *testing.T) {
 		Username:    "alice",
 		EmojiName:   "thumbsup",
 	}
-	envelope, err := model.NewMessage(model.MessageTypeReactionAdd, reactionMsg)
-	require.NoError(t, err)
-
-	p.handleInboundReaction("high", envelope, true)
+	p.handleInboundReaction("high", &reactionMsg, true)
 	api.AssertExpectations(t)
 }
 
@@ -504,10 +492,7 @@ func TestHandleInboundReaction_Remove(t *testing.T) {
 		Username:    "alice",
 		EmojiName:   "thumbsup",
 	}
-	envelope, err := model.NewMessage(model.MessageTypeReactionRemove, reactionMsg)
-	require.NoError(t, err)
-
-	p.handleInboundReaction("high", envelope, false)
+	p.handleInboundReaction("high", &reactionMsg, false)
 	api.AssertExpectations(t)
 }
 
@@ -540,12 +525,10 @@ func TestHandleInboundPost_WithThread(t *testing.T) {
 		ChannelName: "town-square",
 		TeamName:    "test-a",
 		Username:    "alice",
-		Message:     "reply",
+		MessageText: "reply",
 	}
-	envelope, err := model.NewMessage(model.MessageTypePost, postMsg)
-	require.NoError(t, err)
 
-	p.handleInboundPost("high", envelope)
+	p.handleInboundPost("high", &postMsg)
 
 	assert.Equal(t, "local-reply-id", kvs.postMappings["high-remote-reply-id"])
 	api.AssertExpectations(t)

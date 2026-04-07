@@ -48,6 +48,7 @@ type RedactedNATSConnection struct {
 	FileTransferEnabled bool   `json:"file_transfer_enabled"`
 	FileFilterMode      string `json:"file_filter_mode,omitempty"`
 	FileFilterTypes     string `json:"file_filter_types,omitempty"`
+	MessageFormat       string `json:"message_format,omitempty"`
 }
 
 // GlobalStatusResponse is the JSON response for the system-wide status endpoint.
@@ -205,6 +206,7 @@ func (p *Plugin) getTeamStatus(teamID string) (*TeamStatusResponse, *apiError) {
 			FileTransferEnabled: nc.FileTransferEnabled,
 			FileFilterMode:      nc.FileFilterMode,
 			FileFilterTypes:     nc.FileFilterTypes,
+			MessageFormat:       nc.MessageFormat,
 		})
 	}
 
@@ -290,6 +292,7 @@ type ConnectionStatus struct {
 	FileTransferEnabled bool   `json:"file_transfer_enabled"`
 	FileFilterMode      string `json:"file_filter_mode,omitempty"`
 	FileFilterTypes     string `json:"file_filter_types,omitempty"`
+	MessageFormat       string `json:"message_format,omitempty"`
 }
 
 // getChannelStatus returns the connection status for a channel, showing
@@ -366,6 +369,7 @@ func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *ap
 			FileTransferEnabled: nc.FileTransferEnabled,
 			FileFilterMode:      nc.FileFilterMode,
 			FileFilterTypes:     nc.FileFilterTypes,
+			MessageFormat:       nc.MessageFormat,
 		})
 	}
 
@@ -682,6 +686,7 @@ func redactConnections(outbound, inbound []NATSConnection) []RedactedNATSConnect
 			FileTransferEnabled: conn.FileTransferEnabled,
 			FileFilterMode:      conn.FileFilterMode,
 			FileFilterTypes:     conn.FileFilterTypes,
+			MessageFormat:       conn.MessageFormat,
 		})
 	}
 	for _, conn := range inbound {
@@ -694,6 +699,7 @@ func redactConnections(outbound, inbound []NATSConnection) []RedactedNATSConnect
 			FileTransferEnabled: conn.FileTransferEnabled,
 			FileFilterMode:      conn.FileFilterMode,
 			FileFilterTypes:     conn.FileFilterTypes,
+			MessageFormat:       conn.MessageFormat,
 		})
 	}
 	return connections

@@ -5,5 +5,5 @@ const MessageTypeTest = "crossguard_test"
 
 // TestMessage represents a test message sent through NATS to verify connectivity.
 type TestMessage struct {
-	ID string `json:"id"`
+	ID string `json:"id" xml:"ID"`
 }

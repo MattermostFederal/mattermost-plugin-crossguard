@@ -41,6 +41,8 @@ type NATSConnection struct {
 	FileTransferEnabled bool   `json:"file_transfer_enabled"`
 	FileFilterMode      string `json:"file_filter_mode"`  // "", "allow", "deny"
 	FileFilterTypes     string `json:"file_filter_types"` // ".pdf,.docx,.png"
+
+	MessageFormat string `json:"message_format"` // "json" or "xml"
 }
 
 // IsFileAllowed checks whether a filename passes this connection's file filter.
@@ -195,6 +197,17 @@ func validateConnectionList(connections []NATSConnection, direction string, allN
 			}
 		}
 
+		if conn.MessageFormat == "" {
+			connections[i].MessageFormat = "json"
+			conn.MessageFormat = "json"
+		}
+		switch conn.MessageFormat {
+		case "json", "xml":
+			// valid
+		default:
+			errs = append(errs, fmt.Sprintf("%s: message_format must be \"json\" or \"xml\"", prefix))
+		}
+
 		switch conn.FileFilterMode {
 		case "", fileFilterModeAllow, fileFilterModeDeny:
 			// valid
@@ -211,21 +224,17 @@ func validateConnectionList(connections []NATSConnection, direction string, allN
 }
 
 func isTestMessage(data []byte) (*model.TestMessage, bool) {
-	envelope, err := model.UnmarshalMessage(data)
+	format := model.DetectFormat(data)
+	env, err := model.Unmarshal(data, format)
 	if err != nil {
 		return nil, false
 	}
 
-	if envelope.Type != model.MessageTypeTest {
+	if env.Type != model.MessageTypeTest || env.TestMessage == nil {
 		return nil, false
 	}
 
-	var testMsg model.TestMessage
-	if err := envelope.Decode(&testMsg); err != nil {
-		return nil, false
-	}
-
-	return &testMsg, true
+	return env.TestMessage, true
 }
 
 func (p *Plugin) getConfiguration() *configuration {

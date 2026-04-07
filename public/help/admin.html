@@ -177,6 +177,13 @@
                     <td>Comma-separated extensions. Case-insensitive, leading dot optional.</td>
                     <td>List of file extensions used by the filter (e.g. <code>.pdf,.docx,.png</code>). Only meaningful when <code>file_filter_mode</code> is <code>allow</code> or <code>deny</code>.</td>
                 </tr>
+                <tr>
+                    <td><strong>Message Format</strong></td>
+                    <td><code>message_format</code></td>
+                    <td>No</td>
+                    <td><code>"json"</code> or <code>"xml"</code>. Empty treated as <code>"json"</code>.</td>
+                    <td>Wire format for outbound messages. Use <code>"xml"</code> when sending through a Cross Domain Solution (CDS) that requires XML. Inbound messages are auto-detected regardless of this setting. Only applies to outbound connections. Default: <code>"json"</code>.</td>
+                </tr>
             </tbody>
         </table>
 
@@ -188,7 +195,7 @@
             <li>Subject must always start with <code>crossguard.</code></li>
             <li>Both sides of a relay must use the same NATS subject</li>
             <li>Auth credentials must be complete (both username AND password for credentials auth)</li>
-            <li>TLS cert and key must be provided as a pair</li>
+            <li>TLS cert and key must be provided as a pair (enforced at connection time, not config save)</li>
         </ol>
 
         <!-- Relay Settings -->

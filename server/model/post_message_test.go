@@ -17,27 +17,30 @@ func TestPostMessage_RoundTrip(t *testing.T) {
 		TeamName:    "test-team",
 		UserID:      "user-111",
 		Username:    "alice",
-		Message:     "Hello from the other side",
+		MessageText: "Hello from the other side",
 		CreateAt:    1700000000000,
 	}
 
-	env, err := NewMessage(MessageTypePost, original)
-	require.NoError(t, err)
-	assert.Equal(t, MessageTypePost, env.Type)
+	for _, format := range []Format{FormatJSON, FormatXML} {
+		t.Run(string(format), func(t *testing.T) {
+			env := &Envelope{
+				Type:        MessageTypePost,
+				Timestamp:   "2026-04-06T12:00:00Z",
+				PostMessage: &original,
+			}
 
-	data, err := Marshal(env)
-	require.NoError(t, err)
+			data, err := Marshal(env, format)
+			require.NoError(t, err)
 
-	restored, err := UnmarshalMessage(data)
-	require.NoError(t, err)
-	assert.Equal(t, MessageTypePost, restored.Type)
-	assert.NotEmpty(t, restored.Timestamp)
+			restored, err := Unmarshal(data, format)
+			require.NoError(t, err)
 
-	var decoded PostMessage
-	err = restored.Decode(&decoded)
-	require.NoError(t, err)
-
-	assert.Equal(t, original, decoded)
+			assert.Equal(t, MessageTypePost, restored.Type)
+			assert.NotEmpty(t, restored.Timestamp)
+			require.NotNil(t, restored.PostMessage)
+			assert.Equal(t, original, *restored.PostMessage)
+		})
+	}
 }
 
 func TestDeleteMessage_RoundTrip(t *testing.T) {
@@ -49,23 +52,25 @@ func TestDeleteMessage_RoundTrip(t *testing.T) {
 		TeamName:    "other-team",
 	}
 
-	env, err := NewMessage(MessageTypeDelete, original)
-	require.NoError(t, err)
-	assert.Equal(t, MessageTypeDelete, env.Type)
+	for _, format := range []Format{FormatJSON, FormatXML} {
+		t.Run(string(format), func(t *testing.T) {
+			env := &Envelope{
+				Type:          MessageTypeDelete,
+				Timestamp:     "2026-04-06T12:00:00Z",
+				DeleteMessage: &original,
+			}
 
-	data, err := Marshal(env)
-	require.NoError(t, err)
+			data, err := Marshal(env, format)
+			require.NoError(t, err)
 
-	restored, err := UnmarshalMessage(data)
-	require.NoError(t, err)
-	assert.Equal(t, MessageTypeDelete, restored.Type)
-	assert.NotEmpty(t, restored.Timestamp)
+			restored, err := Unmarshal(data, format)
+			require.NoError(t, err)
 
-	var decoded DeleteMessage
-	err = restored.Decode(&decoded)
-	require.NoError(t, err)
-
-	assert.Equal(t, original, decoded)
+			assert.Equal(t, MessageTypeDelete, restored.Type)
+			require.NotNil(t, restored.DeleteMessage)
+			assert.Equal(t, original, *restored.DeleteMessage)
+		})
+	}
 }
 
 func TestReactionMessage_RoundTrip(t *testing.T) {
@@ -80,54 +85,53 @@ func TestReactionMessage_RoundTrip(t *testing.T) {
 		EmojiName:   "thumbsup",
 	}
 
-	env, err := NewMessage(MessageTypeReactionAdd, original)
-	require.NoError(t, err)
-	assert.Equal(t, MessageTypeReactionAdd, env.Type)
+	for _, format := range []Format{FormatJSON, FormatXML} {
+		t.Run(string(format), func(t *testing.T) {
+			env := &Envelope{
+				Type:            MessageTypeReactionAdd,
+				Timestamp:       "2026-04-06T12:00:00Z",
+				ReactionMessage: &original,
+			}
 
-	data, err := Marshal(env)
-	require.NoError(t, err)
+			data, err := Marshal(env, format)
+			require.NoError(t, err)
 
-	restored, err := UnmarshalMessage(data)
-	require.NoError(t, err)
-	assert.Equal(t, MessageTypeReactionAdd, restored.Type)
-	assert.NotEmpty(t, restored.Timestamp)
+			restored, err := Unmarshal(data, format)
+			require.NoError(t, err)
 
-	var decoded ReactionMessage
-	err = restored.Decode(&decoded)
-	require.NoError(t, err)
-
-	assert.Equal(t, original, decoded)
+			assert.Equal(t, MessageTypeReactionAdd, restored.Type)
+			require.NotNil(t, restored.ReactionMessage)
+			assert.Equal(t, original, *restored.ReactionMessage)
+		})
+	}
 }
 
 func TestPostMessage_UpdateType(t *testing.T) {
 	original := PostMessage{
 		PostID:      "post-upd001",
-		RootID:      "",
 		ChannelID:   "channel-004",
 		ChannelName: "updates",
 		TeamID:      "team-ddd",
 		TeamName:    "update-team",
 		UserID:      "user-333",
 		Username:    "carol",
-		Message:     "Edited message content",
+		MessageText: "Edited message content",
 		CreateAt:    1700000001000,
 	}
 
-	env, err := NewMessage(MessageTypeUpdate, original)
-	require.NoError(t, err)
-	assert.Equal(t, MessageTypeUpdate, env.Type)
+	env := &Envelope{
+		Type:        MessageTypeUpdate,
+		Timestamp:   "2026-04-06T12:00:00Z",
+		PostMessage: &original,
+	}
 
-	data, err := Marshal(env)
+	data, err := Marshal(env, FormatJSON)
 	require.NoError(t, err)
 
-	restored, err := UnmarshalMessage(data)
+	restored, err := Unmarshal(data, FormatJSON)
 	require.NoError(t, err)
+
 	assert.Equal(t, MessageTypeUpdate, restored.Type)
-	assert.NotEmpty(t, restored.Timestamp)
-
-	var decoded PostMessage
-	err = restored.Decode(&decoded)
-	require.NoError(t, err)
-
-	assert.Equal(t, original, decoded)
+	require.NotNil(t, restored.PostMessage)
+	assert.Equal(t, original, *restored.PostMessage)
 }

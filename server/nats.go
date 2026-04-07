@@ -81,21 +81,17 @@ func connectNATS(conn NATSConnection) (*nats.Conn, error) {
 	return nc, nil
 }
 
-func buildTestMessage() ([]byte, string, error) {
+func buildTestMessage(format model.Format) ([]byte, string, error) {
 	msgID := mmModel.NewId()
-
-	testMsg := model.TestMessage{ID: msgID}
-
-	envelope, err := model.NewMessage(model.MessageTypeTest, testMsg)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to create test message envelope: %w", err)
+	env := &model.Envelope{
+		Type:        model.MessageTypeTest,
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		TestMessage: &model.TestMessage{ID: msgID},
 	}
-
-	data, err := model.Marshal(envelope)
+	data, err := model.Marshal(env, format)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to marshal test message envelope: %w", err)
 	}
-
 	return data, msgID, nil
 }
 
@@ -122,6 +118,7 @@ func (p *Plugin) connectOutbound() {
 			fileTransferEnabled: conn.FileTransferEnabled,
 			fileFilterMode:      conn.FileFilterMode,
 			fileFilterTypes:     conn.FileFilterTypes,
+			messageFormat:       conn.MessageFormat,
 		})
 		p.API.LogInfo("Outbound NATS connection established for relay", "name", conn.Name, "address", conn.Address)
 	}
@@ -214,8 +211,8 @@ func connectNATSPersistent(conn NATSConnection, p *Plugin, direction string) (*n
 	return nc, nil
 }
 
-func buildPostEnvelope(msgType string, post *mmModel.Post, channel *mmModel.Channel, teamName, username string) ([]byte, error) {
-	postMsg := model.PostMessage{
+func buildPostEnvelope(msgType string, post *mmModel.Post, channel *mmModel.Channel, teamName, username string) *model.Envelope {
+	pm := model.PostMessage{
 		PostID:      post.Id,
 		RootID:      post.RootId,
 		ChannelID:   post.ChannelId,
@@ -224,37 +221,33 @@ func buildPostEnvelope(msgType string, post *mmModel.Post, channel *mmModel.Chan
 		TeamName:    teamName,
 		UserID:      post.UserId,
 		Username:    username,
-		Message:     post.Message,
+		MessageText: post.Message,
 		CreateAt:    post.CreateAt,
 	}
-
-	envelope, err := model.NewMessage(msgType, postMsg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create post envelope: %w", err)
+	return &model.Envelope{
+		Type:        msgType,
+		Timestamp:   time.Now().UTC().Format(time.RFC3339),
+		PostMessage: &pm,
 	}
-
-	return model.Marshal(envelope)
 }
 
-func buildDeleteEnvelope(post *mmModel.Post, channel *mmModel.Channel, teamName string) ([]byte, error) {
-	deleteMsg := model.DeleteMessage{
+func buildDeleteEnvelope(post *mmModel.Post, channel *mmModel.Channel, teamName string) *model.Envelope {
+	dm := model.DeleteMessage{
 		PostID:      post.Id,
 		ChannelID:   post.ChannelId,
 		ChannelName: channel.Name,
 		TeamID:      channel.TeamId,
 		TeamName:    teamName,
 	}
-
-	envelope, err := model.NewMessage(model.MessageTypeDelete, deleteMsg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create delete envelope: %w", err)
+	return &model.Envelope{
+		Type:          model.MessageTypeDelete,
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		DeleteMessage: &dm,
 	}
-
-	return model.Marshal(envelope)
 }
 
-func buildReactionEnvelope(msgType string, reaction *mmModel.Reaction, channel *mmModel.Channel, teamName, username string) ([]byte, error) {
-	reactionMsg := model.ReactionMessage{
+func buildReactionEnvelope(msgType string, reaction *mmModel.Reaction, channel *mmModel.Channel, teamName, username string) *model.Envelope {
+	rm := model.ReactionMessage{
 		PostID:      reaction.PostId,
 		ChannelID:   channel.Id,
 		ChannelName: channel.Name,
@@ -264,16 +257,14 @@ func buildReactionEnvelope(msgType string, reaction *mmModel.Reaction, channel *
 		Username:    username,
 		EmojiName:   reaction.EmojiName,
 	}
-
-	envelope, err := model.NewMessage(msgType, reactionMsg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create reaction envelope: %w", err)
+	return &model.Envelope{
+		Type:            msgType,
+		Timestamp:       time.Now().UTC().Format(time.RFC3339),
+		ReactionMessage: &rm,
 	}
-
-	return model.Marshal(envelope)
 }
 
-func (p *Plugin) publishToOutbound(ctx context.Context, data []byte, conns []store.TeamConnection) {
+func (p *Plugin) publishToOutbound(ctx context.Context, env *model.Envelope, conns []store.TeamConnection) {
 	p.outboundMu.RLock()
 	pool := make([]outboundConn, len(p.outboundConns))
 	copy(pool, p.outboundConns)
@@ -290,6 +281,17 @@ func (p *Plugin) publishToOutbound(ctx context.Context, data []byte, conns []sto
 
 		if !oc.nc.IsConnected() && !oc.nc.IsReconnecting() {
 			p.API.LogWarn("Outbound NATS not connected, skipping", "name", oc.name)
+			continue
+		}
+
+		format := model.Format(oc.messageFormat)
+		if format == "" {
+			format = model.FormatJSON
+		}
+		data, err := model.Marshal(env, format)
+		if err != nil {
+			p.API.LogError("Failed to serialize outbound message",
+				"name", oc.name, "format", string(format), "error", err.Error())
 			continue
 		}
 

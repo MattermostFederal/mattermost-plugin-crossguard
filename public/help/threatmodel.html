@@ -114,12 +114,20 @@
             trust zones. Understanding exactly what crosses the boundary is critical for CDS evaluation.
         </p>
 
-        <h3>Outer Envelope (<code>model/message.go:Message</code>)</h3>
+        <h3>Envelope (<code>model/message.go:Envelope</code>)</h3>
+        <p>
+            The envelope is a single-layer structure with the payload embedded directly (not as a serialized string).
+            Messages may be serialized as JSON or XML depending on the outbound connection's <code>message_format</code> setting.
+            Inbound format is auto-detected by <code>model.DetectFormat()</code>.
+        </p>
         <table class="field-table">
             <tbody>
                 <tr><td><code>type</code></td><td>Message type constant (e.g., <code>crossguard_post</code>)</td></tr>
                 <tr><td><code>timestamp</code></td><td>RFC 3339 UTC timestamp</td></tr>
-                <tr><td><code>json</code></td><td>Serialized inner payload</td></tr>
+                <tr><td><code>post_message</code></td><td>Post or update payload (present when type is <code>crossguard_post</code> or <code>crossguard_update</code>)</td></tr>
+                <tr><td><code>delete_message</code></td><td>Delete payload (present when type is <code>crossguard_delete</code>)</td></tr>
+                <tr><td><code>reaction_message</code></td><td>Reaction payload (present when type is <code>crossguard_reaction_add</code> or <code>crossguard_reaction_remove</code>)</td></tr>
+                <tr><td><code>test_message</code></td><td>Test payload (present when type is <code>crossguard_test</code>)</td></tr>
             </tbody>
         </table>
 
@@ -207,11 +215,14 @@
         <div class="alert alert-tip">
             <p class="alert-title">Good security hygiene</p>
             <p>
-                The following data is intentionally excluded from the relay envelope: file attachments
-                (<code>post.FileIds</code>), post properties (<code>post.Props</code>, except the internal
-                <code>crossguard_relayed</code> flag), user metadata (email, profile image, custom fields),
-                channel purpose/header, hashtags, pinned status, edit history, and interactive message
-                elements (buttons, menus).
+                The following data is intentionally excluded from the relay envelope: post properties
+                (<code>post.Props</code>, except the internal <code>crossguard_relayed</code> flag),
+                user metadata (email, profile image, custom fields), channel purpose/header, hashtags,
+                pinned status, edit history, and interactive message elements (buttons, menus).
+                File attachments (<code>post.FileIds</code>) are not included in the envelope but can
+                be transferred separately via NATS JetStream Object Store when
+                <code>file_transfer_enabled</code> is true on the connection. File transfer is disabled
+                by default and supports allow/deny type filtering and size limits.
             </p>
         </div>
 
@@ -246,8 +257,8 @@
         <table class="field-table">
             <tbody>
                 <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
-                <tr><td>Description</td><td>The NATS envelope (<code>model/message.go:Message</code>) contains no cryptographic signature, HMAC, or message authentication code. Any entity with publish access to the NATS subject can inject arbitrary messages that the inbound handler will process as legitimate.</td></tr>
-                <tr><td>Code Path</td><td><code>inbound.go</code> calls <code>model.UnmarshalMessage(msg.Data)</code> with no signature verification. The deserialized envelope is dispatched directly to handlers.</td></tr>
+                <tr><td>Description</td><td>The NATS envelope (<code>model/message.go:Envelope</code>) contains no cryptographic signature, HMAC, or message authentication code. Any entity with publish access to the NATS subject can inject arbitrary messages (in either JSON or XML format) that the inbound handler will process as legitimate.</td></tr>
+                <tr><td>Code Path</td><td><code>inbound.go</code> calls <code>model.DetectFormat(msg.Data)</code> followed by <code>model.Unmarshal()</code> with no signature verification. The deserialized envelope is dispatched directly to handlers.</td></tr>
                 <tr><td>Mitigation</td><td>
                     <ol>
                         <li>TLS encryption (<code>nats.go</code>, min TLS 1.2) protects against passive eavesdropping. NATS authentication (token or credentials) restricts who can connect.</li>
@@ -357,7 +368,7 @@
         <table class="field-table">
             <tbody>
                 <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
-                <tr><td>Description</td><td>The inbound handler uses a semaphore of 50 concurrent goroutines (<code>plugin.go</code> <code>relaySem</code>). An attacker flooding the NATS subject can fill the semaphore, causing legitimate messages to be dropped with "Relay semaphore full, dropping inbound message" warnings.</td></tr>
+                <tr><td>Description</td><td>The inbound handler uses a semaphore of 256 concurrent goroutines (<code>plugin.go</code> <code>relaySem</code>). An attacker flooding the NATS subject can fill the semaphore, causing legitimate messages to be dropped with "Relay semaphore full, dropping inbound message" warnings.</td></tr>
                 <tr><td>Code Path</td><td><code>inbound.go</code>, semaphore channel check with <code>default:</code> drop.</td></tr>
                 <tr><td>Mitigation</td><td>The semaphore prevents unbounded resource consumption. NATS server rate limiting can be configured externally. Connection authentication limits who can publish.</td></tr>
                 <tr><td>Residual Risk</td><td>No per-connection or per-subject rate limiting within the plugin itself.</td></tr>
@@ -688,7 +699,7 @@
                     <td>DoS</td>
                     <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
                     <td>Partial</td>
-                    <td>Semaphore (50) + NATS rate limiting</td>
+                    <td>Semaphore (256) + NATS rate limiting</td>
                 </tr>
                 <tr>
                     <td><a href="#t-dos-2">T-DOS-2</a></td>

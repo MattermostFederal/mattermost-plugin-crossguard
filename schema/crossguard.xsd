@@ -7,19 +7,52 @@
   <!-- Root element -->
   <xs:element name="CrossguardMessage" type="cg:CrossguardMessageType"/>
 
-  <!-- Envelope type -->
-  <xs:complexType name="CrossguardMessageType">
-    <xs:sequence>
-      <xs:element name="Type" type="cg:MessageTypeEnum"/>
-      <xs:element name="Timestamp" type="xs:string"/>
-      <xs:choice>
-        <xs:element name="PostMessage" type="cg:PostMessageType" minOccurs="0"/>
-        <xs:element name="DeleteMessage" type="cg:DeleteMessageType" minOccurs="0"/>
-        <xs:element name="ReactionMessage" type="cg:ReactionMessageType" minOccurs="0"/>
-        <xs:element name="TestMessage" type="cg:TestMessageType" minOccurs="0"/>
-      </xs:choice>
-    </xs:sequence>
-  </xs:complexType>
+  <!-- ============================================================
+       Constrained simple types
+       ============================================================ -->
+
+  <!-- Mattermost 26-character alphanumeric identifier -->
+  <xs:simpleType name="MattermostIDType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[a-z0-9]{26}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- ISO 8601 timestamp (e.g. 2026-04-07T17:30:00Z) -->
+  <xs:simpleType name="TimestampType">
+    <xs:restriction base="xs:dateTime"/>
+  </xs:simpleType>
+
+  <!-- Mattermost channel/team slug: lowercase alphanumeric, hyphens, underscores, max 64 -->
+  <xs:simpleType name="SlugType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[a-z0-9][a-z0-9_\-]{0,63}"/>
+      <xs:maxLength value="64"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- Mattermost username: lowercase alphanumeric, hyphens, underscores, periods, max 64 -->
+  <xs:simpleType name="UsernameType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[a-z0-9][a-z0-9_\-\.]{0,63}"/>
+      <xs:maxLength value="64"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- Post body text, max 65535 characters (Mattermost post size limit) -->
+  <xs:simpleType name="MessageTextType">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="65535"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- Emoji name: alphanumeric, underscores, hyphens, plus signs, max 64 -->
+  <xs:simpleType name="EmojiNameType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[a-zA-Z0-9_\-\+]{1,64}"/>
+      <xs:maxLength value="64"/>
+    </xs:restriction>
+  </xs:simpleType>
 
   <!-- Message type enumeration -->
   <xs:simpleType name="MessageTypeEnum">
@@ -33,18 +66,36 @@
     </xs:restriction>
   </xs:simpleType>
 
+  <!-- ============================================================
+       Complex types
+       ============================================================ -->
+
+  <!-- Envelope type -->
+  <xs:complexType name="CrossguardMessageType">
+    <xs:sequence>
+      <xs:element name="Type" type="cg:MessageTypeEnum"/>
+      <xs:element name="Timestamp" type="cg:TimestampType"/>
+      <xs:choice>
+        <xs:element name="PostMessage" type="cg:PostMessageType" minOccurs="0"/>
+        <xs:element name="DeleteMessage" type="cg:DeleteMessageType" minOccurs="0"/>
+        <xs:element name="ReactionMessage" type="cg:ReactionMessageType" minOccurs="0"/>
+        <xs:element name="TestMessage" type="cg:TestMessageType" minOccurs="0"/>
+      </xs:choice>
+    </xs:sequence>
+  </xs:complexType>
+
   <!-- Post message (new post or update) -->
   <xs:complexType name="PostMessageType">
     <xs:sequence>
-      <xs:element name="PostID" type="xs:string"/>
-      <xs:element name="RootID" type="xs:string" minOccurs="0"/>
-      <xs:element name="ChannelID" type="xs:string"/>
-      <xs:element name="ChannelName" type="xs:string"/>
-      <xs:element name="TeamID" type="xs:string"/>
-      <xs:element name="TeamName" type="xs:string"/>
-      <xs:element name="UserID" type="xs:string"/>
-      <xs:element name="Username" type="xs:string"/>
-      <xs:element name="MessageText" type="xs:string"/>
+      <xs:element name="PostID" type="cg:MattermostIDType"/>
+      <xs:element name="RootID" type="cg:MattermostIDType" minOccurs="0"/>
+      <xs:element name="ChannelID" type="cg:MattermostIDType"/>
+      <xs:element name="ChannelName" type="cg:SlugType"/>
+      <xs:element name="TeamID" type="cg:MattermostIDType"/>
+      <xs:element name="TeamName" type="cg:SlugType"/>
+      <xs:element name="UserID" type="cg:MattermostIDType"/>
+      <xs:element name="Username" type="cg:UsernameType"/>
+      <xs:element name="MessageText" type="cg:MessageTextType"/>
       <xs:element name="CreateAt" type="xs:long"/>
     </xs:sequence>
   </xs:complexType>
@@ -52,32 +103,32 @@
   <!-- Delete message -->
   <xs:complexType name="DeleteMessageType">
     <xs:sequence>
-      <xs:element name="PostID" type="xs:string"/>
-      <xs:element name="ChannelID" type="xs:string"/>
-      <xs:element name="ChannelName" type="xs:string"/>
-      <xs:element name="TeamID" type="xs:string"/>
-      <xs:element name="TeamName" type="xs:string"/>
+      <xs:element name="PostID" type="cg:MattermostIDType"/>
+      <xs:element name="ChannelID" type="cg:MattermostIDType"/>
+      <xs:element name="ChannelName" type="cg:SlugType"/>
+      <xs:element name="TeamID" type="cg:MattermostIDType"/>
+      <xs:element name="TeamName" type="cg:SlugType"/>
     </xs:sequence>
   </xs:complexType>
 
   <!-- Reaction message -->
   <xs:complexType name="ReactionMessageType">
     <xs:sequence>
-      <xs:element name="PostID" type="xs:string"/>
-      <xs:element name="ChannelID" type="xs:string"/>
-      <xs:element name="ChannelName" type="xs:string"/>
-      <xs:element name="TeamID" type="xs:string"/>
-      <xs:element name="TeamName" type="xs:string"/>
-      <xs:element name="UserID" type="xs:string"/>
-      <xs:element name="Username" type="xs:string"/>
-      <xs:element name="EmojiName" type="xs:string"/>
+      <xs:element name="PostID" type="cg:MattermostIDType"/>
+      <xs:element name="ChannelID" type="cg:MattermostIDType"/>
+      <xs:element name="ChannelName" type="cg:SlugType"/>
+      <xs:element name="TeamID" type="cg:MattermostIDType"/>
+      <xs:element name="TeamName" type="cg:SlugType"/>
+      <xs:element name="UserID" type="cg:MattermostIDType"/>
+      <xs:element name="Username" type="cg:UsernameType"/>
+      <xs:element name="EmojiName" type="cg:EmojiNameType"/>
     </xs:sequence>
   </xs:complexType>
 
   <!-- Test message (connectivity check) -->
   <xs:complexType name="TestMessageType">
     <xs:sequence>
-      <xs:element name="ID" type="xs:string"/>
+      <xs:element name="ID" type="cg:MattermostIDType"/>
     </xs:sequence>
   </xs:complexType>
 

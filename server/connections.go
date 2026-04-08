@@ -186,38 +186,35 @@ func (p *Plugin) publishToOutbound(ctx context.Context, env *model.Envelope, con
 				rootID = env.PostMessage.PostID
 			}
 
-			originalText := env.PostMessage.MessageText
-			originalPostID := env.PostMessage.PostID
-			originalRootID := env.PostMessage.RootID
-
+			partFailed := false
 			for partIdx, partText := range parts {
-				env.PostMessage.MessageText = partText
-
+				// Build a per-part envelope without mutating the original.
+				partEnv := *env
+				pm := *env.PostMessage
+				pm.MessageText = partText
 				if partIdx > 0 {
-					env.PostMessage.PostID = fmt.Sprintf("%s_part%d", originalPostID, partIdx+1)
-					env.PostMessage.RootID = rootID
+					pm.PostID = fmt.Sprintf("%s_part%d", env.PostMessage.PostID, partIdx+1)
+					pm.RootID = rootID
 				}
+				partEnv.PostMessage = &pm
 
-				partData, marshalErr := model.Marshal(env, format)
+				partData, marshalErr := model.Marshal(&partEnv, format)
 				if marshalErr != nil {
 					p.API.LogError("Failed to serialize message part",
 						"name", oc.name, "part", partIdx+1, "error", marshalErr.Error())
+					partFailed = true
 					break
 				}
 
 				if pubErr := oc.provider.Publish(ctx, partData); pubErr != nil {
 					p.API.LogError("Failed to publish message part",
 						"name", oc.name, "part", partIdx+1, "error", pubErr.Error())
-					p.updateOutboundHealth(i, false)
+					partFailed = true
 					break
 				}
 			}
 
-			// Restore original envelope state for next connection in the loop.
-			env.PostMessage.MessageText = originalText
-			env.PostMessage.PostID = originalPostID
-			env.PostMessage.RootID = originalRootID
-			p.updateOutboundHealth(i, true)
+			p.updateOutboundHealth(i, !partFailed)
 			continue
 		}
 
@@ -371,8 +368,8 @@ func splitMessage(env *model.Envelope, format model.Format, maxSize int) []strin
 	}
 
 	// First pass: estimate part count to know label size.
-	// Label format: "[Part NN/MM] " is at most 15 bytes.
-	const maxLabelLen = 15
+	// Label format: "[Part NNNN/MMMM] " is at most 25 bytes.
+	const maxLabelLen = 25
 	textAvailable := available - maxLabelLen
 	if textAvailable <= 0 {
 		textAvailable = 1

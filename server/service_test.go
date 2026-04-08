@@ -52,6 +52,6 @@ func TestResolveConnectionName(t *testing.T) {
 	t.Run("no connections configured", func(t *testing.T) {
 		conn, _, errMsg := p.resolveConnectionName("", nil)
 		assert.Equal(t, store.TeamConnection{}, conn)
-		assert.Contains(t, errMsg, "no NATS connections configured")
+		assert.Contains(t, errMsg, "no connections configured")
 	})
 }

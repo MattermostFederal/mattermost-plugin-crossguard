@@ -6,27 +6,26 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 	pluginapi "github.com/mattermost/mattermost/server/public/pluginapi"
-	"github.com/nats-io/nats.go"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
-// Plugin implements the interface expected by the Mattermost server to communicate
-// between the server and plugin processes.
-// outboundConn holds a persistent NATS connection used for relay publishing.
+// outboundConn holds a provider connection used for relay publishing.
 type outboundConn struct {
-	nc                  *nats.Conn
-	subject             string
+	provider            QueueProvider
 	name                string
 	fileTransferEnabled bool
 	fileFilterMode      string
 	fileFilterTypes     string
 	messageFormat       string
+	healthy             bool
+	lastCheckTime       time.Time
 }
 
 type Plugin struct {

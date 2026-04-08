@@ -55,28 +55,48 @@ func (p *Plugin) handleTestConnection(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 
-	var conn NATSConnection
+	var conn ConnectionConfig
 	if err := json.NewDecoder(r.Body).Decode(&conn); err != nil {
 		writeJSONError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if strings.TrimSpace(conn.Address) == "" {
+	direction := r.URL.Query().Get("direction")
+
+	switch conn.Provider {
+	case ProviderNATS, "":
+		p.handleTestNATSConnection(w, conn, direction)
+	case ProviderAzure:
+		p.handleTestAzureConnection(w, conn, direction)
+	default:
+		writeJSONError(w, "provider must be \"nats\" or \"azure\"", http.StatusBadRequest)
+	}
+}
+
+func (p *Plugin) handleTestNATSConnection(w http.ResponseWriter, conn ConnectionConfig, direction string) {
+	if conn.NATS == nil {
+		writeJSONError(w, "nats config block is required", http.StatusBadRequest)
+		return
+	}
+
+	natsCfg := conn.NATS
+
+	if strings.TrimSpace(natsCfg.Address) == "" {
 		writeJSONError(w, "address is required", http.StatusBadRequest)
 		return
 	}
 
-	if strings.TrimSpace(conn.Subject) == "" {
+	if strings.TrimSpace(natsCfg.Subject) == "" {
 		writeJSONError(w, "subject is required", http.StatusBadRequest)
 		return
 	}
 
-	if !strings.HasPrefix(conn.Subject, subjectPrefix) {
+	if !strings.HasPrefix(natsCfg.Subject, subjectPrefix) {
 		writeJSONError(w, fmt.Sprintf("subject must start with %q", subjectPrefix), http.StatusBadRequest)
 		return
 	}
 
-	switch conn.AuthType {
+	switch natsCfg.AuthType {
 	case AuthTypeNone, AuthTypeToken, AuthTypeCredentials, "":
 		// valid
 	default:
@@ -84,13 +104,13 @@ func (p *Plugin) handleTestConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if conn.AuthType == AuthTypeToken && strings.TrimSpace(conn.Token) == "" {
+	if natsCfg.AuthType == AuthTypeToken && strings.TrimSpace(natsCfg.Token) == "" {
 		writeJSONError(w, "token is required when auth_type is \"token\"", http.StatusBadRequest)
 		return
 	}
 
-	if conn.AuthType == AuthTypeCredentials {
-		if strings.TrimSpace(conn.Username) == "" || strings.TrimSpace(conn.Password) == "" {
+	if natsCfg.AuthType == AuthTypeCredentials {
+		if strings.TrimSpace(natsCfg.Username) == "" || strings.TrimSpace(natsCfg.Password) == "" {
 			writeJSONError(w, "username and password are required when auth_type is \"credentials\"", http.StatusBadRequest)
 			return
 		}
@@ -104,27 +124,25 @@ func (p *Plugin) handleTestConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nc, err := connectNATS(conn)
+	nc, err := newNATSProviderForTest(*natsCfg)
 	if err != nil {
-		p.API.LogError("NATS connection test failed", "address", conn.Address, "error", err.Error())
+		p.API.LogError("NATS connection test failed", "address", natsCfg.Address, "error", err.Error())
 		writeJSONError(w, "failed to connect to NATS server", http.StatusBadGateway)
 		return
 	}
 	defer nc.Close()
 
-	direction := r.URL.Query().Get("direction")
-
 	switch direction {
 	case "inbound":
-		p.handleTestInbound(w, nc, conn)
+		p.handleTestNATSInbound(w, nc, conn)
 	case "outbound", "":
-		p.handleTestOutbound(w, nc, conn)
+		p.handleTestNATSOutbound(w, nc, conn)
 	default:
 		writeJSONError(w, "direction must be \"inbound\" or \"outbound\"", http.StatusBadRequest)
 	}
 }
 
-func (p *Plugin) handleTestOutbound(w http.ResponseWriter, nc *nats.Conn, conn NATSConnection) {
+func (p *Plugin) handleTestNATSOutbound(w http.ResponseWriter, nc *nats.Conn, conn ConnectionConfig) {
 	format := cgModel.Format(conn.MessageFormat)
 	if format == "" {
 		format = cgModel.FormatJSON
@@ -136,19 +154,19 @@ func (p *Plugin) handleTestOutbound(w http.ResponseWriter, nc *nats.Conn, conn N
 		return
 	}
 
-	if err := nc.Publish(conn.Subject, data); err != nil {
-		p.API.LogError("Failed to publish test message", "subject", conn.Subject, "error", err.Error())
+	if err := nc.Publish(conn.NATS.Subject, data); err != nil {
+		p.API.LogError("Failed to publish test message", "subject", conn.NATS.Subject, "error", err.Error())
 		writeJSONError(w, "failed to publish test message", http.StatusBadGateway)
 		return
 	}
 
 	if err := nc.Flush(); err != nil {
-		p.API.LogError("Failed to flush test message", "subject", conn.Subject, "error", err.Error())
+		p.API.LogError("Failed to flush test message", "subject", conn.NATS.Subject, "error", err.Error())
 		writeJSONError(w, "failed to confirm test message delivery", http.StatusBadGateway)
 		return
 	}
 
-	p.API.LogInfo("Test message sent", "subject", conn.Subject, "msg_id", msgID)
+	p.API.LogInfo("Test message sent", "subject", conn.NATS.Subject, "msg_id", msgID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -159,10 +177,10 @@ func (p *Plugin) handleTestOutbound(w http.ResponseWriter, nc *nats.Conn, conn N
 	})
 }
 
-func (p *Plugin) handleTestInbound(w http.ResponseWriter, nc *nats.Conn, conn NATSConnection) {
-	sub, err := nc.SubscribeSync(conn.Subject)
+func (p *Plugin) handleTestNATSInbound(w http.ResponseWriter, nc *nats.Conn, conn ConnectionConfig) {
+	sub, err := nc.SubscribeSync(conn.NATS.Subject)
 	if err != nil {
-		p.API.LogError("Failed to subscribe for inbound test", "subject", conn.Subject, "error", err.Error())
+		p.API.LogError("Failed to subscribe for inbound test", "subject", conn.NATS.Subject, "error", err.Error())
 		writeJSONError(w, "failed to subscribe to subject", http.StatusBadGateway)
 		return
 	}
@@ -174,13 +192,43 @@ func (p *Plugin) handleTestInbound(w http.ResponseWriter, nc *nats.Conn, conn NA
 		return
 	}
 
-	p.API.LogInfo("Inbound test subscription successful", "subject", conn.Subject)
+	p.API.LogInfo("Inbound test subscription successful", "subject", conn.NATS.Subject)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":  "ok",
 		"message": "Connected and subscribed to subject successfully",
+	})
+}
+
+func (p *Plugin) handleTestAzureConnection(w http.ResponseWriter, conn ConnectionConfig, _ string) {
+	if conn.Azure == nil {
+		writeJSONError(w, "azure config block is required", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(conn.Azure.ConnectionString) == "" {
+		writeJSONError(w, "connection_string is required", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(conn.Azure.QueueName) == "" {
+		writeJSONError(w, "queue_name is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := testAzureConnection(*conn.Azure); err != nil {
+		p.API.LogError("Azure connection test failed", "error", err.Error())
+		writeJSONError(w, "Azure connection test failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"message": "Azure Queue Storage connection test successful",
 	})
 }
 

@@ -2,11 +2,11 @@ import manifest from 'manifest';
 
 import type {PluginRegistry, UniqueIdentifier} from 'types/mattermost-webapp';
 
+import ConnectionSettings from './components/ConnectionSettings';
 import CrossguardChannelIndicator from './components/CrossguardChannelIndicator';
 import CrossguardChannelModal from './components/CrossguardChannelModal';
 import CrossguardTeamModal from './components/CrossguardTeamModal';
 import CrossguardUserPopover from './components/CrossguardUserPopover';
-import NATSConnectionSettings from './components/NATSConnectionSettings';
 import {fetchChannelConnections, setChannelConnections} from './connection_state';
 
 interface ReduxStore {
@@ -37,11 +37,11 @@ export default class Plugin {
 
         registry.registerAdminConsoleCustomSetting(
             'InboundConnections',
-            NATSConnectionSettings,
+            ConnectionSettings,
         );
         registry.registerAdminConsoleCustomSetting(
             'OutboundConnections',
-            NATSConnectionSettings,
+            ConnectionSettings,
         );
         registry.registerRootComponent(CrossguardChannelModal);
         registry.registerRootComponent(CrossguardTeamModal);

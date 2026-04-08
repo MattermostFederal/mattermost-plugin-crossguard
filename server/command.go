@@ -339,12 +339,12 @@ func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandRespo
 	}
 
 	if len(channelConns) > 0 {
-		natsMap := p.getNATSConnectionMap()
+		connMap := p.getConnectionMap()
 		sb.WriteString("\n**Channel Connections:**\n\n")
 		for _, tc := range channelConns {
 			key := connKey(tc)
-			nc := natsMap[key]
-			clabel := connectionLabel(nc.MessageFormat, nc.FileTransferEnabled, nc.FileFilterMode, nc.FileFilterTypes)
+			cc := connMap[key]
+			clabel := connectionLabel(cc.MessageFormat, cc.FileTransferEnabled, cc.FileFilterMode, cc.FileFilterTypes)
 			fmt.Fprintf(&sb, "- `%s` (%s)\n", key, clabel)
 		}
 	}
@@ -387,12 +387,12 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 	fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", channelDisplayName, channelName, channelID, channelStatus)
 
 	if len(channelConns) > 0 {
-		natsMap := p.getNATSConnectionMap()
+		connMap := p.getConnectionMap()
 		sb.WriteString("\n**Channel Connections:**\n\n")
 		for _, tc := range channelConns {
 			key := connKey(tc)
-			nc := natsMap[key]
-			clabel := connectionLabel(nc.MessageFormat, nc.FileTransferEnabled, nc.FileFilterMode, nc.FileFilterTypes)
+			cc := connMap[key]
+			clabel := connectionLabel(cc.MessageFormat, cc.FileTransferEnabled, cc.FileFilterMode, cc.FileFilterTypes)
 			fmt.Fprintf(&sb, "- `%s` (%s)\n", key, clabel)
 		}
 	}

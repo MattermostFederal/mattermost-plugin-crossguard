@@ -1,8 +1,9 @@
 import manifest from 'manifest';
 import React from 'react';
 
-interface NATSConnection {
-    name: string;
+type ProviderType = 'nats' | 'azure';
+
+interface NATSProviderConfig {
     address: string;
     subject: string;
     tls_enabled: boolean;
@@ -13,10 +14,23 @@ interface NATSConnection {
     client_cert: string;
     client_key: string;
     ca_cert: string;
+}
+
+interface AzureProviderConfig {
+    connection_string: string;
+    queue_name: string;
+    blob_container_name: string;
+}
+
+interface Connection {
+    name: string;
+    provider: ProviderType;
     file_transfer_enabled: boolean;
     file_filter_mode: '' | 'allow' | 'deny';
     file_filter_types: string;
     message_format: 'json' | 'xml';
+    nats?: NATSProviderConfig;
+    azure?: AzureProviderConfig;
 }
 
 interface CustomSettingProps {
@@ -46,8 +60,7 @@ function getCSRFToken(): string {
     return match ? match[1] : '';
 }
 
-const emptyConnection: NATSConnection = {
-    name: '',
+const emptyNATSConfig: NATSProviderConfig = {
     address: DEFAULT_NATS_ADDRESS,
     subject: '',
     tls_enabled: false,
@@ -58,11 +71,49 @@ const emptyConnection: NATSConnection = {
     client_cert: '',
     client_key: '',
     ca_cert: '',
+};
+
+const emptyAzureConfig: AzureProviderConfig = {
+    connection_string: '',
+    queue_name: '',
+    blob_container_name: '',
+};
+
+const emptyConnection: Connection = {
+    name: '',
+    provider: 'nats',
     file_transfer_enabled: false,
     file_filter_mode: '',
     file_filter_types: '',
     message_format: 'json',
+    nats: {...emptyNATSConfig},
 };
+
+function normalizeConnection(conn: Record<string, unknown>): Connection {
+    if (conn.provider) {
+        return conn as unknown as Connection;
+    }
+    return {
+        name: (conn.name as string) || '',
+        provider: 'nats',
+        file_transfer_enabled: Boolean(conn.file_transfer_enabled),
+        file_filter_mode: (conn.file_filter_mode as '' | 'allow' | 'deny') || '',
+        file_filter_types: (conn.file_filter_types as string) || '',
+        message_format: (conn.message_format as 'json' | 'xml') || 'json',
+        nats: {
+            address: (conn.address as string) || DEFAULT_NATS_ADDRESS,
+            subject: (conn.subject as string) || '',
+            tls_enabled: Boolean(conn.tls_enabled),
+            auth_type: (conn.auth_type as 'none' | 'token' | 'credentials') || 'none',
+            token: (conn.token as string) || '',
+            username: (conn.username as string) || '',
+            password: (conn.password as string) || '',
+            client_cert: (conn.client_cert as string) || '',
+            client_key: (conn.client_key as string) || '',
+            ca_cert: (conn.ca_cert as string) || '',
+        },
+    };
+}
 
 const colors = {
     primary: '#1C58D9',
@@ -380,23 +431,27 @@ function authLabel(authType: string): string {
     }
 }
 
-const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
+const ConnectionSettings: React.FC<CustomSettingProps> = ({
     id,
     value,
     onChange,
     setSaveNeeded,
     disabled,
 }) => {
-    const [connections, setConnections] = React.useState<NATSConnection[]>([]);
+    const [connections, setConnections] = React.useState<Connection[]>([]);
     const [editingIndex, setEditingIndex] = React.useState<number | null>(null);
-    const [editForm, setEditForm] = React.useState<NATSConnection>({...emptyConnection});
+    const [editForm, setEditForm] = React.useState<Connection>({...emptyConnection});
     const [testStatus, setTestStatus] = React.useState<Record<number, TestStatus>>({});
     const [formError, setFormError] = React.useState<string | null>(null);
 
     React.useEffect(() => {
         try {
             const parsed = value ? JSON.parse(value) : [];
-            setConnections(Array.isArray(parsed) ? parsed : []);
+            if (Array.isArray(parsed)) {
+                setConnections(parsed.map((c: Record<string, unknown>) => normalizeConnection(c)));
+            } else {
+                setConnections([]);
+            }
         } catch {
             setConnections([]);
         }
@@ -417,7 +472,7 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
     };
 
     const handleDelete = (index: number) => {
-        const updated = connections.filter((_, i) => i !== index);
+        const updated: Connection[] = connections.filter((_, i) => i !== index);
         const json = JSON.stringify(updated);
         onChange(id, json);
         setSaveNeeded();
@@ -442,18 +497,8 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
 
     const handleSave = () => {
         const trimmedName = editForm.name.trim();
-        if (!trimmedName || !editForm.address.trim()) {
-            setFormError('Name and Address are required.');
-            return;
-        }
-
-        if (editForm.auth_type === 'token' && !editForm.token.trim()) {
-            setFormError('Token is required when auth type is Token.');
-            return;
-        }
-
-        if (editForm.auth_type === 'credentials' && (!editForm.username.trim() || !editForm.password.trim())) {
-            setFormError('Username and password are required when auth type is Credentials.');
+        if (!trimmedName) {
+            setFormError('Name is required.');
             return;
         }
 
@@ -467,18 +512,61 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
 
         setFormError(null);
 
-        const trimmedSubject = editForm.subject.trim();
-        if (!trimmedSubject) {
-            setFormError('Subject is required.');
-            return;
-        }
-        if (!trimmedSubject.startsWith(SUBJECT_PREFIX)) {
-            setFormError(`Subject must start with "${SUBJECT_PREFIX}".`);
-            return;
+        let cleanedForm: Connection;
+
+        if (editForm.provider === 'nats') {
+            const nats = editForm.nats || emptyNATSConfig;
+            if (!nats.address.trim()) {
+                setFormError('Address is required.');
+                return;
+            }
+
+            if (nats.auth_type === 'token' && !nats.token.trim()) {
+                setFormError('Token is required when auth type is Token.');
+                return;
+            }
+
+            if (nats.auth_type === 'credentials' && (!nats.username.trim() || !nats.password.trim())) {
+                setFormError('Username and password are required when auth type is Credentials.');
+                return;
+            }
+
+            const trimmedSubject = nats.subject.trim();
+            if (!trimmedSubject) {
+                setFormError('Subject is required.');
+                return;
+            }
+            if (!trimmedSubject.startsWith(SUBJECT_PREFIX)) {
+                setFormError(`Subject must start with "${SUBJECT_PREFIX}".`);
+                return;
+            }
+
+            cleanedForm = {
+                ...editForm,
+                name: trimmedName,
+                nats: {...nats, subject: trimmedSubject},
+                azure: undefined,
+            };
+        } else {
+            const azure = editForm.azure || emptyAzureConfig;
+            if (!azure.connection_string.trim()) {
+                setFormError('Connection String is required.');
+                return;
+            }
+            if (!azure.queue_name.trim()) {
+                setFormError('Queue Name is required.');
+                return;
+            }
+
+            cleanedForm = {
+                ...editForm,
+                name: trimmedName,
+                azure: {...azure},
+                nats: undefined,
+            };
         }
 
-        const cleanedForm = {...editForm, name: trimmedName, subject: trimmedSubject};
-        let updated: NATSConnection[];
+        let updated: Connection[];
         if (editingIndex === -1) {
             updated = [...connections, cleanedForm];
         } else if (editingIndex === null) {
@@ -498,21 +586,61 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
         setFormError(null);
     };
 
-    const handleFormChange = (field: keyof NATSConnection, fieldValue: string | boolean) => {
+    const handleFormChange = (field: string, fieldValue: string | boolean) => {
         if (field === 'name' && typeof fieldValue === 'string') {
             const sanitized = fieldValue.toLowerCase().replace(/[^a-z0-9-]/g, '');
             setEditForm((prev) => {
-                const autoSubject = SUBJECT_PREFIX + prev.name;
-                const subjectIsAuto = prev.subject === '' || prev.subject === autoSubject || prev.subject === SUBJECT_PREFIX;
-                return {
-                    ...prev,
-                    name: sanitized,
-                    subject: subjectIsAuto ? SUBJECT_PREFIX + sanitized : prev.subject,
-                };
+                if (prev.provider === 'nats') {
+                    const nats = prev.nats || emptyNATSConfig;
+                    const autoSubject = SUBJECT_PREFIX + prev.name;
+                    const subjectIsAuto = nats.subject === '' || nats.subject === autoSubject || nats.subject === SUBJECT_PREFIX;
+                    return {
+                        ...prev,
+                        name: sanitized,
+                        nats: {
+                            ...nats,
+                            subject: subjectIsAuto ? SUBJECT_PREFIX + sanitized : nats.subject,
+                        },
+                    };
+                }
+                return {...prev, name: sanitized};
+            });
+            return;
+        }
+        if (field === 'provider' && typeof fieldValue === 'string') {
+            setEditForm((prev) => {
+                const updated: Connection = {...prev, provider: fieldValue as ProviderType};
+                if (fieldValue === 'nats') {
+                    if (!prev.nats) {
+                        updated.nats = {...emptyNATSConfig};
+                    }
+                    updated.azure = undefined;
+                }
+                if (fieldValue === 'azure') {
+                    if (!prev.azure) {
+                        updated.azure = {...emptyAzureConfig};
+                    }
+                    updated.nats = undefined;
+                }
+                return updated;
             });
             return;
         }
         setEditForm((prev) => ({...prev, [field]: fieldValue}));
+    };
+
+    const handleNATSChange = (field: keyof NATSProviderConfig, fieldValue: string | boolean) => {
+        setEditForm((prev) => ({
+            ...prev,
+            nats: {...(prev.nats || emptyNATSConfig), [field]: fieldValue},
+        }));
+    };
+
+    const handleAzureChange = (field: keyof AzureProviderConfig, fieldValue: string) => {
+        setEditForm((prev) => ({
+            ...prev,
+            azure: {...(prev.azure || emptyAzureConfig), [field]: fieldValue},
+        }));
     };
 
     const handleTestConnection = async (index: number) => {
@@ -611,38 +739,88 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                                 value={editForm.name}
                                 onChange={(e) => handleFormChange('name', e.target.value)}
                                 disabled={disabled}
-                                placeholder='my-nats-connection'
+                                placeholder='my-connection'
                             />
                             <div style={styles.helpText}>
                                 {'Lowercase letters, numbers, and hyphens only.'}
                             </div>
                         </div>
                         <div style={styles.inputGroup}>
-                            <label style={styles.label}>{'Address'}</label>
-                            <input
-                                style={styles.input}
-                                type='text'
-                                value={editForm.address}
-                                onChange={(e) => handleFormChange('address', e.target.value)}
+                            <label style={styles.label}>{'Provider'}</label>
+                            <select
+                                style={styles.select}
+                                value={editForm.provider}
+                                onChange={(e) => handleFormChange('provider', e.target.value)}
                                 disabled={disabled}
-                                placeholder={DEFAULT_NATS_ADDRESS}
-                            />
+                            >
+                                <option value='nats'>{'NATS'}</option>
+                                <option value='azure'>{'Azure Queue Storage'}</option>
+                            </select>
                         </div>
                     </div>
-                    <div style={styles.inputGroup}>
-                        <label style={styles.label}>{'Subject'}</label>
-                        <input
-                            style={styles.input}
-                            type='text'
-                            value={editForm.subject || SUBJECT_PREFIX}
-                            onChange={(e) => handleFormChange('subject', e.target.value)}
-                            disabled={disabled}
-                            placeholder={SUBJECT_PREFIX + 'my-connection'}
-                        />
-                        <div style={styles.helpText}>
-                            {`Defaults from connection name. Must start with "${SUBJECT_PREFIX}".`}
-                        </div>
-                    </div>
+
+                    {editForm.provider === 'nats' && (
+                        <>
+                            <div style={styles.formRow}>
+                                <div style={styles.inputGroup}>
+                                    <label style={styles.label}>{'Address'}</label>
+                                    <input
+                                        style={styles.input}
+                                        type='text'
+                                        value={editForm.nats?.address || ''}
+                                        onChange={(e) => handleNATSChange('address', e.target.value)}
+                                        disabled={disabled}
+                                        placeholder={DEFAULT_NATS_ADDRESS}
+                                    />
+                                </div>
+                                <div style={styles.inputGroup}>
+                                    <label style={styles.label}>{'Subject'}</label>
+                                    <input
+                                        style={styles.input}
+                                        type='text'
+                                        value={editForm.nats?.subject || SUBJECT_PREFIX}
+                                        onChange={(e) => handleNATSChange('subject', e.target.value)}
+                                        disabled={disabled}
+                                        placeholder={SUBJECT_PREFIX + 'my-connection'}
+                                    />
+                                    <div style={styles.helpText}>
+                                        {`Defaults from connection name. Must start with "${SUBJECT_PREFIX}".`}
+                                    </div>
+                                </div>
+                            </div>
+                        </>
+                    )}
+
+                    {editForm.provider === 'azure' && (
+                        <>
+                            <div style={styles.inputGroup}>
+                                <label style={styles.label}>{'Connection String'}</label>
+                                <input
+                                    style={styles.input}
+                                    type='password'
+                                    value={editForm.azure?.connection_string || ''}
+                                    onChange={(e) => handleAzureChange('connection_string', e.target.value)}
+                                    disabled={disabled}
+                                    placeholder='DefaultEndpointsProtocol=https;AccountName=...'
+                                />
+                                <div style={styles.helpText}>
+                                    {'Azure Storage account connection string.'}
+                                </div>
+                            </div>
+                            <div style={styles.inputGroup}>
+                                <label style={styles.label}>{'Queue Name'}</label>
+                                <input
+                                    style={styles.input}
+                                    type='text'
+                                    value={editForm.azure?.queue_name || ''}
+                                    onChange={(e) => handleAzureChange('queue_name', e.target.value)}
+                                    disabled={disabled}
+                                    placeholder='crossguard-messages'
+                                />
+                            </div>
+                        </>
+                    )}
+
                     {!isInbound && (
                         <div style={styles.inputGroup}>
                             <label style={styles.label}>{'Message Format'}</label>
@@ -662,118 +840,122 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                     )}
                 </div>
 
-                <div style={styles.formSection}>
-                    <div style={styles.formSectionTitle as React.CSSProperties}>{'Authentication'}</div>
-                    <div style={styles.inputGroup}>
-                        <label style={styles.label}>{'Auth Type'}</label>
-                        <select
-                            style={styles.select}
-                            value={editForm.auth_type}
-                            onChange={(e) => handleFormChange('auth_type', e.target.value)}
-                            disabled={disabled}
-                        >
-                            <option value='none'>{'None'}</option>
-                            <option value='token'>{'Token'}</option>
-                            <option value='credentials'>{'Username / Password'}</option>
-                        </select>
-                    </div>
-                    {editForm.auth_type === 'token' && (
-                        <div style={styles.inputGroup}>
-                            <label style={styles.label}>{'Token'}</label>
-                            <input
-                                style={styles.input}
-                                type='password'
-                                value={editForm.token}
-                                onChange={(e) => handleFormChange('token', e.target.value)}
-                                disabled={disabled}
-                                placeholder='Enter token'
-                            />
-                        </div>
-                    )}
-                    {editForm.auth_type === 'credentials' && (
-                        <div style={styles.formRow}>
+                {editForm.provider === 'nats' && (
+                    <>
+                        <div style={styles.formSection}>
+                            <div style={styles.formSectionTitle as React.CSSProperties}>{'Authentication'}</div>
                             <div style={styles.inputGroup}>
-                                <label style={styles.label}>{'Username'}</label>
-                                <input
-                                    style={styles.input}
-                                    type='text'
-                                    value={editForm.username}
-                                    onChange={(e) => handleFormChange('username', e.target.value)}
+                                <label style={styles.label}>{'Auth Type'}</label>
+                                <select
+                                    style={styles.select}
+                                    value={editForm.nats?.auth_type || 'none'}
+                                    onChange={(e) => handleNATSChange('auth_type', e.target.value)}
                                     disabled={disabled}
-                                    placeholder='Enter username'
-                                />
+                                >
+                                    <option value='none'>{'None'}</option>
+                                    <option value='token'>{'Token'}</option>
+                                    <option value='credentials'>{'Username / Password'}</option>
+                                </select>
                             </div>
-                            <div style={styles.inputGroup}>
-                                <label style={styles.label}>{'Password'}</label>
-                                <input
-                                    style={styles.input}
-                                    type='password'
-                                    value={editForm.password}
-                                    onChange={(e) => handleFormChange('password', e.target.value)}
-                                    disabled={disabled}
-                                    placeholder='Enter password'
-                                />
-                            </div>
+                            {editForm.nats?.auth_type === 'token' && (
+                                <div style={styles.inputGroup}>
+                                    <label style={styles.label}>{'Token'}</label>
+                                    <input
+                                        style={styles.input}
+                                        type='password'
+                                        value={editForm.nats?.token || ''}
+                                        onChange={(e) => handleNATSChange('token', e.target.value)}
+                                        disabled={disabled}
+                                        placeholder='Enter token'
+                                    />
+                                </div>
+                            )}
+                            {editForm.nats?.auth_type === 'credentials' && (
+                                <div style={styles.formRow}>
+                                    <div style={styles.inputGroup}>
+                                        <label style={styles.label}>{'Username'}</label>
+                                        <input
+                                            style={styles.input}
+                                            type='text'
+                                            value={editForm.nats?.username || ''}
+                                            onChange={(e) => handleNATSChange('username', e.target.value)}
+                                            disabled={disabled}
+                                            placeholder='Enter username'
+                                        />
+                                    </div>
+                                    <div style={styles.inputGroup}>
+                                        <label style={styles.label}>{'Password'}</label>
+                                        <input
+                                            style={styles.input}
+                                            type='password'
+                                            value={editForm.nats?.password || ''}
+                                            onChange={(e) => handleNATSChange('password', e.target.value)}
+                                            disabled={disabled}
+                                            placeholder='Enter password'
+                                        />
+                                    </div>
+                                </div>
+                            )}
                         </div>
-                    )}
-                </div>
 
-                <div style={styles.formSection}>
-                    <div style={styles.formSectionTitle as React.CSSProperties}>{'Security'}</div>
-                    <div style={styles.inputGroup}>
-                        <label style={styles.checkbox}>
-                            <input
-                                type='checkbox'
-                                checked={editForm.tls_enabled}
-                                onChange={(e) => handleFormChange('tls_enabled', e.target.checked)}
-                                disabled={disabled}
-                            />
-                            {'Enable TLS'}
-                        </label>
-                        <div style={styles.helpText}>
-                            {'Encrypt the connection to the NATS server using TLS.'}
-                        </div>
-                    </div>
-                    {editForm.tls_enabled && (
-                        <>
-                            <div style={styles.formRow}>
-                                <div style={styles.inputGroup}>
-                                    <label style={styles.label}>{'Client Cert Path'}</label>
-                                    <input
-                                        style={styles.input}
-                                        type='text'
-                                        value={editForm.client_cert}
-                                        onChange={(e) => handleFormChange('client_cert', e.target.value)}
-                                        disabled={disabled}
-                                        placeholder='/path/to/client.crt'
-                                    />
-                                </div>
-                                <div style={styles.inputGroup}>
-                                    <label style={styles.label}>{'Client Key Path'}</label>
-                                    <input
-                                        style={styles.input}
-                                        type='text'
-                                        value={editForm.client_key}
-                                        onChange={(e) => handleFormChange('client_key', e.target.value)}
-                                        disabled={disabled}
-                                        placeholder='/path/to/client.key'
-                                    />
-                                </div>
-                            </div>
+                        <div style={styles.formSection}>
+                            <div style={styles.formSectionTitle as React.CSSProperties}>{'Security'}</div>
                             <div style={styles.inputGroup}>
-                                <label style={styles.label}>{'CA Cert Path'}</label>
-                                <input
-                                    style={styles.input}
-                                    type='text'
-                                    value={editForm.ca_cert}
-                                    onChange={(e) => handleFormChange('ca_cert', e.target.value)}
-                                    disabled={disabled}
-                                    placeholder='/path/to/ca.crt'
-                                />
+                                <label style={styles.checkbox}>
+                                    <input
+                                        type='checkbox'
+                                        checked={editForm.nats?.tls_enabled || false}
+                                        onChange={(e) => handleNATSChange('tls_enabled', e.target.checked)}
+                                        disabled={disabled}
+                                    />
+                                    {'Enable TLS'}
+                                </label>
+                                <div style={styles.helpText}>
+                                    {'Encrypt the connection to the NATS server using TLS.'}
+                                </div>
                             </div>
-                        </>
-                    )}
-                </div>
+                            {editForm.nats?.tls_enabled && (
+                                <>
+                                    <div style={styles.formRow}>
+                                        <div style={styles.inputGroup}>
+                                            <label style={styles.label}>{'Client Cert Path'}</label>
+                                            <input
+                                                style={styles.input}
+                                                type='text'
+                                                value={editForm.nats?.client_cert || ''}
+                                                onChange={(e) => handleNATSChange('client_cert', e.target.value)}
+                                                disabled={disabled}
+                                                placeholder='/path/to/client.crt'
+                                            />
+                                        </div>
+                                        <div style={styles.inputGroup}>
+                                            <label style={styles.label}>{'Client Key Path'}</label>
+                                            <input
+                                                style={styles.input}
+                                                type='text'
+                                                value={editForm.nats?.client_key || ''}
+                                                onChange={(e) => handleNATSChange('client_key', e.target.value)}
+                                                disabled={disabled}
+                                                placeholder='/path/to/client.key'
+                                            />
+                                        </div>
+                                    </div>
+                                    <div style={styles.inputGroup}>
+                                        <label style={styles.label}>{'CA Cert Path'}</label>
+                                        <input
+                                            style={styles.input}
+                                            type='text'
+                                            value={editForm.nats?.ca_cert || ''}
+                                            onChange={(e) => handleNATSChange('ca_cert', e.target.value)}
+                                            disabled={disabled}
+                                            placeholder='/path/to/ca.crt'
+                                        />
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    </>
+                )}
 
                 <div style={styles.formSection}>
                     <div style={styles.formSectionTitle as React.CSSProperties}>{'File Transfer'}</div>
@@ -788,9 +970,27 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                             {'Enable File Transfer'}
                         </label>
                         <div style={styles.helpText}>
-                            {'Relay file attachments on posts across this connection. Requires JetStream on the NATS server.'}
+                            {editForm.provider === 'nats' ?
+                                'Relay file attachments on posts across this connection. Requires JetStream on the NATS server.' :
+                                'Relay file attachments on posts across this connection. Files are stored in Azure Blob Storage.'}
                         </div>
                     </div>
+                    {editForm.file_transfer_enabled && editForm.provider === 'azure' && (
+                        <div style={styles.inputGroup}>
+                            <label style={styles.label}>{'Blob Container Name'}</label>
+                            <input
+                                style={styles.input}
+                                type='text'
+                                value={editForm.azure?.blob_container_name || ''}
+                                onChange={(e) => handleAzureChange('blob_container_name', e.target.value)}
+                                disabled={disabled}
+                                placeholder='crossguard-files'
+                            />
+                            <div style={styles.helpText}>
+                                {'Azure Blob Storage container for file attachments.'}
+                            </div>
+                        </div>
+                    )}
                     {editForm.file_transfer_enabled && (
                         <>
                             <div style={styles.inputGroup}>
@@ -845,7 +1045,7 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
         );
     };
 
-    const renderCard = (conn: NATSConnection, index: number) => {
+    const renderCard = (conn: Connection, index: number) => {
         if (editingIndex === index) {
             return (
                 <div key={conn.name || `editing-${index}`}>
@@ -855,6 +1055,7 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
         }
 
         const status = testStatus[index];
+        const providerLabel = conn.provider === 'azure' ? 'Azure' : 'NATS';
 
         return (
             <div
@@ -865,9 +1066,14 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                     <div style={styles.cardTitle}>
                         {conn.name}
                         <span style={{...styles.badge, ...styles.badgeAuth}}>
-                            {authLabel(conn.auth_type)}
+                            {providerLabel}
                         </span>
-                        {conn.tls_enabled && (
+                        {conn.provider === 'nats' && (
+                            <span style={{...styles.badge, ...styles.badgeAuth}}>
+                                {authLabel(conn.nats?.auth_type || 'none')}
+                            </span>
+                        )}
+                        {conn.provider === 'nats' && conn.nats?.tls_enabled && (
                             <span style={{...styles.badge, ...styles.badgeTls}}>
                                 {'TLS'}
                             </span>
@@ -877,7 +1083,7 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                                 {'Files'}
                             </span>
                         )}
-                        {conn.message_format === 'xml' && (
+                        {!isInbound && conn.message_format === 'xml' && (
                             <span style={{...styles.badge, ...styles.badgeTls}}>
                                 {'XML'}
                             </span>
@@ -885,14 +1091,24 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                     </div>
                 </div>
                 <div style={styles.cardMeta}>
-                    <div style={styles.cardMetaItem}>
-                        <span style={styles.cardMetaLabel}>{'Address'}</span>
-                        {conn.address}
-                    </div>
-                    <div style={styles.cardMetaItem}>
-                        <span style={styles.cardMetaLabel}>{'Subject'}</span>
-                        {conn.subject}
-                    </div>
+                    {conn.provider === 'nats' && (
+                        <>
+                            <div style={styles.cardMetaItem}>
+                                <span style={styles.cardMetaLabel}>{'Address'}</span>
+                                {conn.nats?.address}
+                            </div>
+                            <div style={styles.cardMetaItem}>
+                                <span style={styles.cardMetaLabel}>{'Subject'}</span>
+                                {conn.nats?.subject}
+                            </div>
+                        </>
+                    )}
+                    {conn.provider === 'azure' && (
+                        <div style={styles.cardMetaItem}>
+                            <span style={styles.cardMetaLabel}>{'Queue'}</span>
+                            {conn.azure?.queue_name}
+                        </div>
+                    )}
                     {conn.file_transfer_enabled && (
                         <div style={styles.cardMetaItem}>
                             <span style={styles.cardMetaLabel}>{'Files'}</span>
@@ -901,7 +1117,7 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                             {conn.file_filter_mode === '' && 'All types allowed'}
                         </div>
                     )}
-                    {conn.message_format === 'xml' && (
+                    {!isInbound && conn.message_format === 'xml' && (
                         <div style={styles.cardMetaItem}>
                             <span style={styles.cardMetaLabel}>{'Format'}</span>
                             {'XML'}
@@ -948,8 +1164,8 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
 
     const sectionTitle = isInbound ? 'Inbound' : 'Outbound';
     const sectionDesc = isInbound ?
-        'Messages received from NATS and relayed into Mattermost.' :
-        'Messages sent from Mattermost to NATS.';
+        'Messages received from external providers and relayed into Mattermost.' :
+        'Messages sent from Mattermost to external providers.';
     const directionStyle = isInbound ? styles.directionInbound : styles.directionOutbound;
 
     return (
@@ -958,7 +1174,7 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
                 <div style={styles.sectionTitle as React.CSSProperties}>
                     {sectionTitle}
                     <span style={{...styles.directionBadge, ...directionStyle} as React.CSSProperties}>
-                        {isInbound ? 'NATS \u2192 Mattermost' : 'Mattermost \u2192 NATS'}
+                        {isInbound ? 'Provider \u2192 Mattermost' : 'Mattermost \u2192 Provider'}
                     </span>
                 </div>
                 <p style={styles.sectionDesc}>{sectionDesc}</p>
@@ -990,4 +1206,4 @@ const NATSConnectionSettings: React.FC<CustomSettingProps> = ({
     );
 };
 
-export default NATSConnectionSettings;
+export default ConnectionSettings;

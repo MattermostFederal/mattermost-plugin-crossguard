@@ -30,24 +30,24 @@ func TestParseConnections(t *testing.T) {
 	})
 
 	t.Run("valid JSON parses correctly", func(t *testing.T) {
-		input := `[{"name":"test","address":"nats://localhost:4222","subject":"crossguard.test","tls_enabled":false,"auth_type":"none","token":"","username":"","password":"","client_cert":"","client_key":"","ca_cert":""}]`
+		input := `[{"name":"test","provider":"nats","nats":{"address":"nats://localhost:4222","subject":"crossguard.test","tls_enabled":false,"auth_type":"none","token":"","username":"","password":"","client_cert":"","client_key":"","ca_cert":""}}]`
 		conns, err := parseConnections(input)
 		require.NoError(t, err)
 		require.Len(t, conns, 1)
 		assert.Equal(t, "test", conns[0].Name)
-		assert.Equal(t, "nats://localhost:4222", conns[0].Address)
-		assert.Equal(t, "crossguard.test", conns[0].Subject)
+		assert.Equal(t, "nats://localhost:4222", conns[0].NATS.Address)
+		assert.Equal(t, "crossguard.test", conns[0].NATS.Subject)
 	})
 
 	t.Run("multiple connections parse correctly", func(t *testing.T) {
-		input := `[{"name":"first","address":"nats://host1:4222","subject":"crossguard.sub1","auth_type":"none"},{"name":"second","address":"nats://host2:4222","subject":"crossguard.sub2","auth_type":"token","token":"mytoken"}]`
+		input := `[{"name":"first","provider":"nats","nats":{"address":"nats://host1:4222","subject":"crossguard.sub1","auth_type":"none"}},{"name":"second","provider":"nats","nats":{"address":"nats://host2:4222","subject":"crossguard.sub2","auth_type":"token","token":"mytoken"}}]`
 		conns, err := parseConnections(input)
 		require.NoError(t, err)
 		require.Len(t, conns, 2)
 		assert.Equal(t, "first", conns[0].Name)
 		assert.Equal(t, "second", conns[1].Name)
-		assert.Equal(t, "token", conns[1].AuthType)
-		assert.Equal(t, "mytoken", conns[1].Token)
+		assert.Equal(t, "token", conns[1].NATS.AuthType)
+		assert.Equal(t, "mytoken", conns[1].NATS.Token)
 	})
 
 	t.Run("malformed JSON returns error", func(t *testing.T) {
@@ -72,8 +72,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("valid connections pass validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "conn1", Address: "nats://localhost:4222", Subject: "crossguard.test", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "conn1", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.test", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{
@@ -83,8 +83,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("missing name fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "", Address: "nats://localhost:4222", Subject: "crossguard.test", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.test", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -94,8 +94,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("missing address fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "", Subject: "crossguard.test", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", NATS: &NATSProviderConfig{Address: "", Subject: "crossguard.test", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -105,8 +105,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("missing subject fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -116,8 +116,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("subject without required prefix fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "bad.prefix.sub", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "bad.prefix.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -127,9 +127,9 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("duplicate names fail validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "dup", Address: "nats://host1:4222", Subject: "crossguard.sub1", AuthType: "none"},
-			{Name: "dup", Address: "nats://host2:4222", Subject: "crossguard.sub2", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "dup", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://host1:4222", Subject: "crossguard.sub1", AuthType: "none"}},
+			{Name: "dup", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://host2:4222", Subject: "crossguard.sub2", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -139,8 +139,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("invalid auth_type fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "invalid"},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "invalid"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -150,8 +150,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("token auth without token fails", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "token", Token: ""},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "token", Token: ""}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -161,8 +161,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("credentials auth without username fails", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "credentials", Username: "", Password: "pass"},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "credentials", Username: "", Password: "pass"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -172,8 +172,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("credentials auth without password fails", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "credentials", Username: "user", Password: ""},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "credentials", Username: "user", Password: ""}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -183,8 +183,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("valid credentials auth passes", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "credentials", Username: "user", Password: "pass"},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "credentials", Username: "user", Password: "pass"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -192,8 +192,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("valid token auth passes", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "token", Token: "mytoken"},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "token", Token: "mytoken"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -201,8 +201,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("name with uppercase letters fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "MyConn", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "MyConn", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -212,8 +212,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("name with spaces fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "my conn", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "my conn", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -223,8 +223,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("name with special characters fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "my_conn!", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "my_conn!", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -234,8 +234,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("valid name with hyphens passes", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "my-nats-conn", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "my-nats-conn", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -243,8 +243,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("name with leading hyphen fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "-leading", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "-leading", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -254,8 +254,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("name with trailing hyphen fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "trailing-", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "trailing-", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -265,8 +265,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("name with consecutive hyphens fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "my--conn", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"},
+		conns := []ConnectionConfig{
+			{Name: "my--conn", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -276,8 +276,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("empty message_format defaults to json and passes", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", MessageFormat: ""},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", MessageFormat: "", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{OutboundConnections: string(data)}
@@ -285,8 +285,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("xml message_format passes", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", MessageFormat: "xml"},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", MessageFormat: "xml", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{OutboundConnections: string(data)}
@@ -294,8 +294,8 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("invalid message_format fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", MessageFormat: "yaml"},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", MessageFormat: "yaml", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{OutboundConnections: string(data)}
@@ -312,11 +312,11 @@ func TestConfigurationValidate(t *testing.T) {
 	})
 
 	t.Run("duplicate names across inbound and outbound fail validation", func(t *testing.T) {
-		inbound := []NATSConnection{
-			{Name: "shared-name", Address: "nats://host1:4222", Subject: "crossguard.sub1", AuthType: "none"},
+		inbound := []ConnectionConfig{
+			{Name: "shared-name", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://host1:4222", Subject: "crossguard.sub1", AuthType: "none"}},
 		}
-		outbound := []NATSConnection{
-			{Name: "shared-name", Address: "nats://host2:4222", Subject: "crossguard.sub2", AuthType: "none"},
+		outbound := []ConnectionConfig{
+			{Name: "shared-name", Provider: "nats", NATS: &NATSProviderConfig{Address: "nats://host2:4222", Subject: "crossguard.sub2", AuthType: "none"}},
 		}
 		inData, _ := json.Marshal(inbound)
 		outData, _ := json.Marshal(outbound)
@@ -441,59 +441,52 @@ func TestIsTestMessage(t *testing.T) {
 
 func TestIsFileAllowed(t *testing.T) {
 	t.Run("no filter mode allows all files", func(t *testing.T) {
-		conn := NATSConnection{FileFilterMode: ""}
-		assert.True(t, conn.IsFileAllowed("document.pdf"))
-		assert.True(t, conn.IsFileAllowed("image.png"))
-		assert.True(t, conn.IsFileAllowed("noext"))
+		assert.True(t, isFileAllowed("document.pdf", "", ""))
+		assert.True(t, isFileAllowed("image.png", "", ""))
+		assert.True(t, isFileAllowed("noext", "", ""))
 	})
 
 	t.Run("allow mode permits listed types", func(t *testing.T) {
-		conn := NATSConnection{FileFilterMode: "allow", FileFilterTypes: ".pdf,.docx,.png"}
-		assert.True(t, conn.IsFileAllowed("report.pdf"))
-		assert.True(t, conn.IsFileAllowed("doc.docx"))
-		assert.True(t, conn.IsFileAllowed("image.png"))
-		assert.False(t, conn.IsFileAllowed("script.exe"))
-		assert.False(t, conn.IsFileAllowed("noext"))
+		assert.True(t, isFileAllowed("report.pdf", "allow", ".pdf,.docx,.png"))
+		assert.True(t, isFileAllowed("doc.docx", "allow", ".pdf,.docx,.png"))
+		assert.True(t, isFileAllowed("image.png", "allow", ".pdf,.docx,.png"))
+		assert.False(t, isFileAllowed("script.exe", "allow", ".pdf,.docx,.png"))
+		assert.False(t, isFileAllowed("noext", "allow", ".pdf,.docx,.png"))
 	})
 
 	t.Run("deny mode blocks listed types", func(t *testing.T) {
-		conn := NATSConnection{FileFilterMode: "deny", FileFilterTypes: ".exe,.bat"}
-		assert.False(t, conn.IsFileAllowed("virus.exe"))
-		assert.False(t, conn.IsFileAllowed("script.bat"))
-		assert.True(t, conn.IsFileAllowed("document.pdf"))
-		assert.True(t, conn.IsFileAllowed("image.png"))
+		assert.False(t, isFileAllowed("virus.exe", "deny", ".exe,.bat"))
+		assert.False(t, isFileAllowed("script.bat", "deny", ".exe,.bat"))
+		assert.True(t, isFileAllowed("document.pdf", "deny", ".exe,.bat"))
+		assert.True(t, isFileAllowed("image.png", "deny", ".exe,.bat"))
 	})
 
 	t.Run("case insensitive matching", func(t *testing.T) {
-		conn := NATSConnection{FileFilterMode: "allow", FileFilterTypes: ".PDF,.Docx"}
-		assert.True(t, conn.IsFileAllowed("REPORT.pdf"))
-		assert.True(t, conn.IsFileAllowed("doc.DOCX"))
-		assert.False(t, conn.IsFileAllowed("image.png"))
+		assert.True(t, isFileAllowed("REPORT.pdf", "allow", ".PDF,.Docx"))
+		assert.True(t, isFileAllowed("doc.DOCX", "allow", ".PDF,.Docx"))
+		assert.False(t, isFileAllowed("image.png", "allow", ".PDF,.Docx"))
 	})
 
 	t.Run("types without leading dot are normalized", func(t *testing.T) {
-		conn := NATSConnection{FileFilterMode: "allow", FileFilterTypes: "pdf,docx"}
-		assert.True(t, conn.IsFileAllowed("report.pdf"))
-		assert.True(t, conn.IsFileAllowed("doc.docx"))
-		assert.False(t, conn.IsFileAllowed("image.png"))
+		assert.True(t, isFileAllowed("report.pdf", "allow", "pdf,docx"))
+		assert.True(t, isFileAllowed("doc.docx", "allow", "pdf,docx"))
+		assert.False(t, isFileAllowed("image.png", "allow", "pdf,docx"))
 	})
 
 	t.Run("file with no extension in deny mode", func(t *testing.T) {
-		conn := NATSConnection{FileFilterMode: "deny", FileFilterTypes: ".exe"}
-		assert.True(t, conn.IsFileAllowed("Makefile"))
+		assert.True(t, isFileAllowed("Makefile", "deny", ".exe"))
 	})
 
 	t.Run("spaces in filter types are trimmed", func(t *testing.T) {
-		conn := NATSConnection{FileFilterMode: "allow", FileFilterTypes: " .pdf , .docx "}
-		assert.True(t, conn.IsFileAllowed("report.pdf"))
-		assert.True(t, conn.IsFileAllowed("doc.docx"))
+		assert.True(t, isFileAllowed("report.pdf", "allow", " .pdf , .docx "))
+		assert.True(t, isFileAllowed("doc.docx", "allow", " .pdf , .docx "))
 	})
 }
 
 func TestFileFilterValidation(t *testing.T) {
 	t.Run("invalid file_filter_mode fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", FileFilterMode: "invalid"},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", FileFilterMode: "invalid", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -503,8 +496,8 @@ func TestFileFilterValidation(t *testing.T) {
 	})
 
 	t.Run("allow mode without types fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", FileFilterMode: "allow", FileFilterTypes: ""},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", FileFilterMode: "allow", FileFilterTypes: "", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -514,8 +507,8 @@ func TestFileFilterValidation(t *testing.T) {
 	})
 
 	t.Run("deny mode without types fails validation", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", FileFilterMode: "deny", FileFilterTypes: ""},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", FileFilterMode: "deny", FileFilterTypes: "", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -525,8 +518,8 @@ func TestFileFilterValidation(t *testing.T) {
 	})
 
 	t.Run("allow mode with types passes", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", FileFilterMode: "allow", FileFilterTypes: ".pdf"},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", FileFilterMode: "allow", FileFilterTypes: ".pdf", NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -534,8 +527,8 @@ func TestFileFilterValidation(t *testing.T) {
 	})
 
 	t.Run("file transfer enabled without filter passes", func(t *testing.T) {
-		conns := []NATSConnection{
-			{Name: "test", Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none", FileTransferEnabled: true},
+		conns := []ConnectionConfig{
+			{Name: "test", Provider: "nats", FileTransferEnabled: true, NATS: &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.sub", AuthType: "none"}},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{InboundConnections: string(data)}
@@ -570,5 +563,162 @@ func TestBuildTestMessage(t *testing.T) {
 		assert.NotEmpty(t, env.Timestamp)
 		require.NotNil(t, env.TestMessage)
 		assert.Equal(t, msgID, env.TestMessage.ID)
+	})
+}
+
+func TestAzureConfigValidation(t *testing.T) {
+	t.Run("valid azure connection passes", func(t *testing.T) {
+		conns := []ConnectionConfig{
+			{
+				Name:     "az-test",
+				Provider: "azure",
+				Azure: &AzureProviderConfig{
+					ConnectionString: "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc;EndpointSuffix=core.windows.net",
+					QueueName:        "my-queue",
+				},
+			},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{OutboundConnections: string(data)}
+		assert.NoError(t, cfg.validate())
+	})
+
+	t.Run("azure missing connection_string fails", func(t *testing.T) {
+		conns := []ConnectionConfig{
+			{
+				Name:     "az-test",
+				Provider: "azure",
+				Azure: &AzureProviderConfig{
+					ConnectionString: "",
+					QueueName:        "my-queue",
+				},
+			},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{OutboundConnections: string(data)}
+		err := cfg.validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "connection_string is required")
+	})
+
+	t.Run("azure missing queue_name fails", func(t *testing.T) {
+		conns := []ConnectionConfig{
+			{
+				Name:     "az-test",
+				Provider: "azure",
+				Azure: &AzureProviderConfig{
+					ConnectionString: "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc;EndpointSuffix=core.windows.net",
+					QueueName:        "",
+				},
+			},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{OutboundConnections: string(data)}
+		err := cfg.validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "queue_name is required")
+	})
+
+	t.Run("azure missing blob_container_name with file transfer fails", func(t *testing.T) {
+		conns := []ConnectionConfig{
+			{
+				Name:                "az-test",
+				Provider:            "azure",
+				FileTransferEnabled: true,
+				Azure: &AzureProviderConfig{
+					ConnectionString:  "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc;EndpointSuffix=core.windows.net",
+					QueueName:         "my-queue",
+					BlobContainerName: "",
+				},
+			},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{OutboundConnections: string(data)}
+		err := cfg.validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "blob_container_name is required")
+	})
+
+	t.Run("azure with blob_container_name and file transfer passes", func(t *testing.T) {
+		conns := []ConnectionConfig{
+			{
+				Name:                "az-test",
+				Provider:            "azure",
+				FileTransferEnabled: true,
+				Azure: &AzureProviderConfig{
+					ConnectionString:  "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc;EndpointSuffix=core.windows.net",
+					QueueName:         "my-queue",
+					BlobContainerName: "my-container",
+				},
+			},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{OutboundConnections: string(data)}
+		assert.NoError(t, cfg.validate())
+	})
+
+	t.Run("azure missing azure config block fails", func(t *testing.T) {
+		conns := []ConnectionConfig{
+			{
+				Name:     "az-test",
+				Provider: "azure",
+				Azure:    nil,
+			},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{OutboundConnections: string(data)}
+		err := cfg.validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "azure config block is required")
+	})
+
+	t.Run("nats missing nats config block fails", func(t *testing.T) {
+		conns := []ConnectionConfig{
+			{
+				Name:     "nats-test",
+				Provider: "nats",
+				NATS:     nil,
+			},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{OutboundConnections: string(data)}
+		err := cfg.validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "nats config block is required")
+	})
+
+	t.Run("unknown provider fails", func(t *testing.T) {
+		conns := []ConnectionConfig{
+			{
+				Name:     "bad",
+				Provider: "kafka",
+			},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{OutboundConnections: string(data)}
+		err := cfg.validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "provider must be")
+	})
+
+	t.Run("mixed nats and azure connections pass", func(t *testing.T) {
+		conns := []ConnectionConfig{
+			{
+				Name:     "nats-conn",
+				Provider: "nats",
+				NATS:     &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.test", AuthType: "none"},
+			},
+			{
+				Name:     "az-conn",
+				Provider: "azure",
+				Azure: &AzureProviderConfig{
+					ConnectionString: "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc;EndpointSuffix=core.windows.net",
+					QueueName:        "my-queue",
+				},
+			},
+		}
+		data, _ := json.Marshal(conns)
+		cfg := &configuration{OutboundConnections: string(data)}
+		assert.NoError(t, cfg.validate())
 	})
 }

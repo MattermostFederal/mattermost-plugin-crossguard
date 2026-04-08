@@ -101,7 +101,7 @@ Cross Guard is a Mattermost Federal plugin built on the mattermost-plugin-starte
 
 ## Docker Development Environment (Dual-Server)
 
-The dev environment runs two Mattermost servers with a shared NATS bus.
+The dev environment runs two Mattermost servers with a shared NATS bus and an Azurite (Azure Storage Emulator) instance for Azure Queue/Blob testing.
 
 ### Getting Started
 
@@ -117,6 +117,8 @@ After setup:
 - **Server B (High)**: http://high.test:8076 (admin/password, userb/password, Team: Test B)
 - **NATS**: nats://localhost:4222 (monitor: http://localhost:8222)
 - **NATS (from plugins)**: nats://nats:4222
+- **Azurite Queue**: http://localhost:10001
+- **Azurite Blob**: http://localhost:10000
 
 ### Common Commands
 
@@ -141,7 +143,8 @@ After setup:
 | `make docker-logs` | Follow Server A logs |
 | `make docker-logs-b` | Follow Server B logs |
 | `make docker-reset` | Disable and re-enable plugin on both servers |
-| `make docker-smoke-test` | Run end-to-end relay smoke test (init, post, verify) |
+| `make docker-smoke-test` | Run end-to-end NATS relay smoke test (init, post, verify) |
+| `make docker-azure-smoke-test` | Run Azure Queue/Blob relay smoke test via Azurite |
 | `make docker-disable` | Disable plugin on both servers |
 | `make docker-enable` | Enable plugin on both servers |
 | `make docker-plugin-list` | List installed plugins on both servers |

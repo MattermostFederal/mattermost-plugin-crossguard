@@ -160,7 +160,7 @@ After setup:
 ## Technology Stack
 
 ### Backend
-- Go 1.24
+- Go 1.26
 - Mattermost Plugin API
 - Gorilla Mux (routing)
 

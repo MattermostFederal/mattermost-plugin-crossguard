@@ -6,7 +6,7 @@ Cross Guard plugin for Mattermost Federal. Enables cross-domain message relay be
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.26+
 - Node.js 20+
 - Docker (for local development environment)
 
@@ -49,13 +49,17 @@ Once the plugin is deployed, use `/crossguard` to manage cross-domain relay:
 
 | Command | Description |
 |---------|-------------|
-| `/crossguard init-team` | Initialize Cross Guard for the current team (requires team or system admin) |
-| `/crossguard init-channel` | Enable relay for the current channel (requires channel admin or higher) |
-| `/crossguard teardown-channel` | Disable relay for the current channel |
-| `/crossguard teardown-team` | Remove Cross Guard from the current team |
-| `/crossguard status` | Show initialization status for the current team |
+| `/crossguard init-team [connection-name]` | Link a NATS connection to this team (requires team admin or system admin) |
+| `/crossguard init-channel [connection-name]` | Link a NATS connection to this channel (requires channel admin or higher) |
+| `/crossguard teardown-team [connection-name]` | Unlink a NATS connection from this team (requires team admin or system admin) |
+| `/crossguard teardown-channel [connection-name]` | Unlink a NATS connection from this channel (requires channel admin or higher) |
+| `/crossguard reset-prompt <connection-name>` | Clear a pending team connection prompt (requires team admin) |
+| `/crossguard reset-channel-prompt <connection-name>` | Clear a pending channel connection prompt (requires team admin) |
+| `/crossguard rewrite-team [name] [team]` | Set or clear a remote team name rewrite for an inbound connection (requires team admin) |
+| `/crossguard status` | Show Cross Guard status for this team |
+| `/crossguard help` | Show detailed help for all Cross Guard commands |
 
-Typical workflow: `init-team` first, then `init-channel` on each channel you want relayed.
+Typical workflow: `init-team <connection-name>` first, then `init-channel <connection-name>` on each channel you want relayed.
 
 ### Common Commands
 
@@ -84,6 +88,7 @@ Typical workflow: `init-team` first, then `init-channel` on each channel you wan
 | `make docker-disable` | Disable plugin on both servers |
 | `make docker-enable` | Enable plugin on both servers |
 | `make docker-plugin-list` | List installed plugins on both servers |
+| `make docker-smoke-test` | Run end-to-end relay smoke test (init, post, verify) |
 | `make docker-kill-orphans` | Kill orphaned containers on MM ports |
 
 ### Release

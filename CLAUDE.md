@@ -98,6 +98,20 @@ Cross Guard is a Mattermost Federal plugin built on the mattermost-plugin-starte
 - `go.mod` - Go dependencies
 - `Makefile` - Build commands
 - `.golangci.yml` - Go linter configuration
+- `docker-compose.dev.yml` - Docker development environment
+- `.nvmrc` - Node.js version (20.11)
+- `CHANGELOG.md` - Version history
+
+## Project Structure
+
+- `server/` - Go backend (plugin API, providers, store, model)
+- `webapp/` - React/TypeScript frontend (admin console components)
+- `build/` - Build tooling (manifest generation, deployment scripts)
+- `docker/` - Docker compose config and plugin volumes
+- `schema/` - Data schemas (XSD)
+- `implementation-plans/` - Feature planning documents
+- `assets/` - Plugin icon assets
+- `public/` - Static assets
 
 ## Docker Development Environment (Dual-Server)
 
@@ -159,13 +173,17 @@ After setup:
 | `make sbom-audit` | Generate SBOMs and scan for vulnerabilities |
 | `make codeql-analyze` | Run CodeQL security analysis on all code |
 | `make security-gate` | Check scan results for critical/high issues |
+| `make virus-scan` | Run ClamAV virus scan on built artifacts |
+| `make generate-pdfs` | Generate PDF documentation |
 
 ## Technology Stack
 
 ### Backend
-- Go 1.26
+- Go 1.26.1
 - Mattermost Plugin API
 - Gorilla Mux (routing)
+- NATS (nats.go v1.49.0) for message relay
+- Azure SDK (azqueue v1.0.1, azblob v1.6.4) for Azure Queue/Blob provider
 
 ### Frontend
 - React 18.2
@@ -173,10 +191,11 @@ After setup:
 - Redux 5.0
 - Webpack 5.105
 - Mattermost Redux
+- Node.js 20.11
 
 ### Testing
 - Go: `stretchr/testify`
-- Frontend: Playwright
+- Frontend: Playwright 1.59.1 (E2E and component testing)
 
 ## Go Files
 

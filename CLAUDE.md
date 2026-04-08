@@ -122,7 +122,7 @@ The dev environment runs two Mattermost servers with a shared NATS bus and an Az
 ```bash
 make hosts-setup    # Add low.test and high.test to /etc/hosts (one-time, requires sudo)
 make docker-setup   # Start containers, create users and teams
-make deploy         # Build and deploy plugin to both servers
+make deploy         # Build, deploy, and run quick NATS smoke test
 ```
 
 After setup:
@@ -140,7 +140,7 @@ After setup:
 |---------|-------------|
 | `make hosts-setup` | Add low.test/high.test to /etc/hosts (requires sudo) |
 | `make docker-setup` | First-time setup: start containers, create users and teams |
-| `make deploy` | Build and deploy plugin to both Docker servers |
+| `make deploy` | Build, deploy plugin, and run quick NATS smoke test |
 | `make dist` | Build plugin bundle only |
 | `make test` | Run all tests |
 | `make check-style` | Lint code |
@@ -157,7 +157,8 @@ After setup:
 | `make docker-logs` | Follow Server A logs |
 | `make docker-logs-b` | Follow Server B logs |
 | `make docker-reset` | Disable and re-enable plugin on both servers |
-| `make docker-smoke-test` | Run end-to-end NATS relay smoke test (init, post, verify) |
+| `make docker-smoke-test` | Quick NATS relay smoke test (single low-to-high message) |
+| `make docker-integration-test` | Full integration suite (loopback, files, XML, Azure) |
 | `make docker-azure-smoke-test` | Run Azure Queue/Blob relay smoke test via Azurite |
 | `make docker-disable` | Disable plugin on both servers |
 | `make docker-enable` | Enable plugin on both servers |

@@ -623,6 +623,10 @@ docker-smoke-test: docker-check
 		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$SMOKE_ID';found=any('smoke-test:'+sid in p.get('message','') for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
 	echo "Smoke test result: $$FOUND" || \
 	{ echo "Smoke test FAILED: message smoke-test:$$SMOKE_ID not found on Server B low-to-high"; exit 1; }
+
+## Full integration test suite (loopback, file relay, XML, Azure)
+.PHONY: docker-integration-test
+docker-integration-test: docker-check
 	@echo ""
 	@echo "Running loopback rewrite-team test..."
 	@TOKEN_A=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
@@ -834,6 +838,9 @@ docker-smoke-test: docker-check
 		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$XML_ID';found=any('xml-smoke-test:'+sid in p.get('message','') for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
 	echo "XML loopback test result: $$XML_FOUND" || \
 	{ echo "XML loopback test FAILED: message xml-smoke-test:$$XML_ID not found on Server A test/xml-loopback"; exit 1; }
+	@echo ""
+	@echo "Running Azure integration tests..."
+	@$(MAKE) docker-azure-smoke-test
 
 ## Azure Queue Storage smoke test using Azurite (local emulator)
 ## Configures an Azure loopback on Server A: outbound -> azurite queue -> inbound
@@ -999,7 +1006,7 @@ docker-plugin-list: docker-check
 
 ## Convenience alias: deploy plugin to Docker and run smoke test
 .PHONY: deploy
-deploy: docker-deploy docker-smoke-test docker-azure-smoke-test
+deploy: docker-deploy docker-smoke-test
 
 ## Print /etc/hosts entries needed for dual-server setup
 .PHONY: hosts-setup

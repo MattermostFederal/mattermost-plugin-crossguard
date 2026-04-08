@@ -46,3 +46,45 @@ jobs:
           name: plugin-dist
           path: dist/*.tar.gz
           retention-days: 7
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install Go tools
+        run: make install-go-tools
+
+      - name: Install webapp dependencies
+        run: cd webapp && npm install
+
+      - name: Setup hosts
+        run: echo '127.0.0.1 low.test high.test' | sudo tee -a /etc/hosts
+
+      - name: Start Docker environment
+        run: make docker-setup
+
+      - name: Deploy plugin
+        run: make docker-deploy
+
+      - name: Run smoke test
+        run: make docker-smoke-test
+
+      - name: Run integration tests
+        run: make docker-integration-test

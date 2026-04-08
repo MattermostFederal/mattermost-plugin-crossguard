@@ -43,7 +43,7 @@ After `make docker-setup`:
 - **Azurite Queue**: `http://localhost:10001`
 - **Azurite Blob**: `http://localhost:10000`
 
-`make deploy` automatically configures Server A with an outbound connection and Server B with an inbound connection.
+`make deploy` automatically configures Server A with an outbound connection and Server B with an inbound connection, then runs a quick NATS smoke test. Use `make docker-integration-test` for the full test suite (loopback, file relay, XML, Azure).
 
 ### Transport Providers
 
@@ -80,7 +80,7 @@ Typical workflow: `init-team <connection-name>` first, then `init-channel <conne
 |---------|-------------|
 | `make hosts-setup` | Add `low.test` and `high.test` to /etc/hosts (requires sudo) |
 | `make docker-setup` | First-time setup: start containers, create users and teams |
-| `make deploy` | Build and deploy plugin to both Docker servers |
+| `make deploy` | Build, deploy plugin, and run quick NATS smoke test |
 | `make dist` | Build plugin bundle only |
 | `make test` | Run all tests |
 | `make check-style` | Lint code |
@@ -101,7 +101,8 @@ Typical workflow: `init-team <connection-name>` first, then `init-channel <conne
 | `make docker-disable` | Disable plugin on both servers |
 | `make docker-enable` | Enable plugin on both servers |
 | `make docker-plugin-list` | List installed plugins on both servers |
-| `make docker-smoke-test` | Run end-to-end NATS relay smoke test (init, post, verify) |
+| `make docker-smoke-test` | Quick NATS relay smoke test (single low-to-high message) |
+| `make docker-integration-test` | Full integration suite (loopback, files, XML, Azure) |
 | `make docker-azure-smoke-test` | Run Azure Queue/Blob relay smoke test via Azurite |
 | `make docker-kill-orphans` | Kill orphaned containers on MM ports |
 

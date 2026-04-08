@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	mmModel "github.com/mattermost/mattermost/server/public/model"
@@ -169,20 +170,55 @@ func (p *Plugin) publishToOutbound(ctx context.Context, env *model.Envelope, con
 			continue
 		}
 
-		// Check message size limit and truncate if needed.
+		// Check message size limit and split if needed.
 		maxSize := oc.provider.MaxMessageSize()
 		if maxSize > 0 && len(data) > maxSize && env.PostMessage != nil {
-			originalText := env.PostMessage.MessageText
-			env.PostMessage.MessageText = truncateToFit(env, format, maxSize)
-			p.API.LogWarn("Message truncated to fit provider size limit",
-				"connection", oc.name, "maxSize", maxSize, "originalSize", len(data))
-			data, err = model.Marshal(env, format)
-			env.PostMessage.MessageText = originalText
-			if err != nil {
-				p.API.LogError("Failed to serialize truncated message",
-					"name", oc.name, "error", err.Error())
-				continue
+			parts := splitMessage(env, format, maxSize)
+
+			if len(parts) > 1 {
+				p.API.LogInfo("Message split into parts for provider size limit",
+					"connection", oc.name, "parts", len(parts), "originalSize", len(data))
 			}
+
+			// Determine the root ID for continuation parts.
+			rootID := env.PostMessage.RootID
+			if rootID == "" {
+				rootID = env.PostMessage.PostID
+			}
+
+			originalText := env.PostMessage.MessageText
+			originalPostID := env.PostMessage.PostID
+			originalRootID := env.PostMessage.RootID
+
+			for partIdx, partText := range parts {
+				env.PostMessage.MessageText = partText
+
+				if partIdx > 0 {
+					env.PostMessage.PostID = fmt.Sprintf("%s_part%d", originalPostID, partIdx+1)
+					env.PostMessage.RootID = rootID
+				}
+
+				partData, marshalErr := model.Marshal(env, format)
+				if marshalErr != nil {
+					p.API.LogError("Failed to serialize message part",
+						"name", oc.name, "part", partIdx+1, "error", marshalErr.Error())
+					break
+				}
+
+				if pubErr := oc.provider.Publish(ctx, partData); pubErr != nil {
+					p.API.LogError("Failed to publish message part",
+						"name", oc.name, "part", partIdx+1, "error", pubErr.Error())
+					p.updateOutboundHealth(i, false)
+					break
+				}
+			}
+
+			// Restore original envelope state for next connection in the loop.
+			env.PostMessage.MessageText = originalText
+			env.PostMessage.PostID = originalPostID
+			env.PostMessage.RootID = originalRootID
+			p.updateOutboundHealth(i, true)
+			continue
 		}
 
 		if err := oc.provider.Publish(ctx, data); err != nil {
@@ -309,34 +345,66 @@ func (p *Plugin) createProvider(cfg ConnectionConfig, direction string) (QueuePr
 
 const safetyMargin = 500
 
-// truncateToFit truncates the message text to fit within the provider's size limit.
-func truncateToFit(env *model.Envelope, format model.Format, maxSize int) string {
-	// Measure overhead by marshaling with empty message text.
+// splitMessage splits the message text into parts that each fit within the
+// provider's size limit. Returns a single-element slice (with no label) if the
+// message already fits. Otherwise returns N parts each prefixed with
+// "[Part X/N] ".
+func splitMessage(env *model.Envelope, format model.Format, maxSize int) []string {
 	originalText := env.PostMessage.MessageText
+
+	// Measure envelope overhead with empty text.
 	env.PostMessage.MessageText = ""
 	overhead, err := model.Marshal(env, format)
 	env.PostMessage.MessageText = originalText
 	if err != nil {
-		return originalText
+		return []string{originalText}
 	}
 
 	available := maxSize - len(overhead) - safetyMargin
 	if available <= 0 {
-		return "\n[message truncated]"
+		available = 1
 	}
 
-	text := originalText
-	if len(text) > available {
-		// Truncate at a UTF-8 safe boundary.
-		text = text[:available]
-		// Find the last valid UTF-8 boundary.
-		for len(text) > 0 && text[len(text)-1]&0xC0 == 0x80 {
-			text = text[:len(text)-1]
-		}
-		if len(text) > 0 && text[len(text)-1]&0x80 != 0 {
-			text = text[:len(text)-1]
-		}
+	// If text fits, return as-is (no label).
+	if len(originalText) <= available {
+		return []string{originalText}
 	}
 
-	return text + "\n[message truncated]"
+	// First pass: estimate part count to know label size.
+	// Label format: "[Part NN/MM] " is at most 15 bytes.
+	const maxLabelLen = 15
+	textAvailable := available - maxLabelLen
+	if textAvailable <= 0 {
+		textAvailable = 1
+	}
+
+	// Split text into chunks at UTF-8 safe boundaries.
+	var rawChunks []string
+	remaining := originalText
+	for len(remaining) > 0 {
+		chunkSize := min(textAvailable, len(remaining))
+		chunk := remaining[:chunkSize]
+		// Ensure UTF-8 safe boundary.
+		for len(chunk) > 0 && chunk[len(chunk)-1]&0xC0 == 0x80 {
+			chunk = chunk[:len(chunk)-1]
+		}
+		if len(chunk) > 0 && chunk[len(chunk)-1]&0x80 != 0 {
+			chunk = chunk[:len(chunk)-1]
+		}
+		if len(chunk) == 0 {
+			// Safety valve: advance by one byte to avoid infinite loop.
+			chunk = remaining[:1]
+		}
+		rawChunks = append(rawChunks, chunk)
+		remaining = remaining[len(chunk):]
+	}
+
+	// Second pass: add labels now that we know total count.
+	total := len(rawChunks)
+	parts := make([]string, total)
+	for i, chunk := range rawChunks {
+		parts[i] = fmt.Sprintf("[Part %d/%d] %s", i+1, total, chunk)
+	}
+
+	return parts
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -40,39 +41,42 @@ func measureOverhead(t *testing.T, env *model.Envelope, format model.Format) int
 	return len(data)
 }
 
-func TestTruncateToFit(t *testing.T) {
-	const indicator = "\n[message truncated]"
-
-	t.Run("short message fits within limit", func(t *testing.T) {
+func TestSplitMessage(t *testing.T) {
+	t.Run("short message returns single part without label", func(t *testing.T) {
 		text := "hello world"
 		env := makeEnvelope(text)
 		overhead := measureOverhead(t, env, model.FormatJSON)
-
-		// Provide enough room for the message text.
 		maxSize := overhead + safetyMargin + len(text) + 100
 
-		result := truncateToFit(env, model.FormatJSON, maxSize)
+		parts := splitMessage(env, model.FormatJSON, maxSize)
 
-		assert.Equal(t, text+indicator, result)
-		assert.Contains(t, result, text)
-		assert.True(t, strings.HasSuffix(result, indicator))
+		require.Len(t, parts, 1)
+		assert.Equal(t, text, parts[0])
 	})
 
-	t.Run("long message is truncated", func(t *testing.T) {
+	t.Run("long message splits into labeled parts", func(t *testing.T) {
 		text := strings.Repeat("a", 5000)
 		env := makeEnvelope(text)
 		overhead := measureOverhead(t, env, model.FormatJSON)
-
-		// Allow only 200 bytes for text (well under the 5000 byte message).
+		// Allow ~200 bytes for text per part.
 		maxSize := overhead + safetyMargin + 200
 
-		result := truncateToFit(env, model.FormatJSON, maxSize)
+		parts := splitMessage(env, model.FormatJSON, maxSize)
 
-		assert.True(t, len(result) < len(text), "result should be shorter than original")
-		assert.True(t, strings.HasSuffix(result, indicator))
-		// The text portion (before indicator) must be at most 200 bytes.
-		textPortion := strings.TrimSuffix(result, indicator)
-		assert.LessOrEqual(t, len(textPortion), 200)
+		require.Greater(t, len(parts), 1)
+		// Every part should have a label.
+		for i, p := range parts {
+			assert.Contains(t, p, fmt.Sprintf("[Part %d/%d]", i+1, len(parts)))
+		}
+		// Reconstruct: strip labels and rejoin should equal original.
+		var rebuilt strings.Builder
+		for _, p := range parts {
+			// Strip the "[Part N/M] " prefix.
+			if _, after, ok := strings.Cut(p, "] "); ok {
+				rebuilt.WriteString(after)
+			}
+		}
+		assert.Equal(t, text, rebuilt.String())
 	})
 
 	t.Run("UTF-8 multibyte boundary is safe", func(t *testing.T) {
@@ -80,42 +84,38 @@ func TestTruncateToFit(t *testing.T) {
 		text := strings.Repeat("\U0001F600", 300) + strings.Repeat("\u4e16", 300) + "end"
 		env := makeEnvelope(text)
 		overhead := measureOverhead(t, env, model.FormatJSON)
-
-		// Force truncation somewhere in the middle of the multibyte sequence.
 		maxSize := overhead + safetyMargin + 500
 
-		result := truncateToFit(env, model.FormatJSON, maxSize)
+		parts := splitMessage(env, model.FormatJSON, maxSize)
 
-		assert.True(t, utf8.ValidString(result), "result must be valid UTF-8")
-		assert.True(t, strings.HasSuffix(result, indicator))
+		require.Greater(t, len(parts), 1)
+		for _, p := range parts {
+			assert.True(t, utf8.ValidString(p), "each part must be valid UTF-8")
+		}
 	})
 
-	t.Run("very small maxSize returns only indicator", func(t *testing.T) {
-		text := "some message"
+	t.Run("very small maxSize still produces parts", func(t *testing.T) {
+		text := "some message that should still work"
 		env := makeEnvelope(text)
 
-		// maxSize smaller than overhead + safetyMargin, so available <= 0.
-		result := truncateToFit(env, model.FormatJSON, 10)
+		// maxSize barely larger than overhead.
+		parts := splitMessage(env, model.FormatJSON, 10)
 
-		assert.Equal(t, indicator, result)
+		require.Greater(t, len(parts), 0)
 	})
 
-	t.Run("exact fit message", func(t *testing.T) {
-		env := makeEnvelope("")
+	t.Run("already-threaded message preserves original text in parts", func(t *testing.T) {
+		text := strings.Repeat("b", 3000)
+		env := makeEnvelope(text)
+		env.PostMessage.RootID = "existing-root-id"
 		overhead := measureOverhead(t, env, model.FormatJSON)
+		maxSize := overhead + safetyMargin + 200
 
-		// Create a message that is exactly the available size.
-		available := 150
-		text := strings.Repeat("x", available)
-		env.PostMessage.MessageText = text
+		parts := splitMessage(env, model.FormatJSON, maxSize)
 
-		maxSize := overhead + safetyMargin + available
-
-		result := truncateToFit(env, model.FormatJSON, maxSize)
-
-		assert.Equal(t, text+indicator, result)
-		// Verify the full text is preserved (not truncated).
-		textPortion := strings.TrimSuffix(result, indicator)
-		assert.Equal(t, text, textPortion)
+		require.Greater(t, len(parts), 1)
+		for i, p := range parts {
+			assert.Contains(t, p, fmt.Sprintf("[Part %d/%d]", i+1, len(parts)))
+		}
 	})
 }

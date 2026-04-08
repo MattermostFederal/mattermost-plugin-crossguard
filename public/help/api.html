@@ -19,7 +19,7 @@
             <a href="commands.html">Slash Commands</a>
             <a href="admin.html">Admin Configuration</a>
             <a href="api.html" class="active">REST API</a>
-            <a href="nats-interface.html">NATS Interface</a>
+            <a href="transport-interface.html">Transport Interface</a>
             <a href="threatmodel.html">Threat Model</a>
             <a href="whitepaper.html">Whitepaper</a>
         </nav>
@@ -57,32 +57,51 @@
                 <span class="permission-tag permission-sysadmin">System Admin</span>
             </div>
             <div class="endpoint-card-body">
-                <p>Test a NATS connection configuration before saving.</p>
+                <p>Test a connection configuration before saving. Supports both NATS and Azure providers.</p>
 
                 <h4>Query Parameters</h4>
                 <table class="field-table">
                     <tbody>
-                        <tr><td><code>direction</code></td><td>Optional. <code>inbound</code> or <code>outbound</code> (defaults to <code>outbound</code>).</td></tr>
+                        <tr><td><code>direction</code></td><td>Optional. <code>inbound</code> or <code>outbound</code> (defaults to <code>outbound</code>). NATS-specific; ignored for Azure connections.</td></tr>
                     </tbody>
                 </table>
 
-                <h4>Request Body</h4>
+                <h4>Request Body (NATS)</h4>
 <pre><code>{
   "name": "relay-to-b",
-  "address": "nats://nats.example.com:4222",
-  "subject": "crossguard.relay.messages",
-  "tls_enabled": false,
-  "auth_type": "token",
-  "token": "my-secret-token"
+  "provider": "nats",
+  "nats": {
+    "address": "nats://nats.example.com:4222",
+    "subject": "crossguard.relay.messages",
+    "tls_enabled": false,
+    "auth_type": "token",
+    "token": "my-secret-token"
+  }
+}</code></pre>
+
+                <h4>Request Body (Azure)</h4>
+<pre><code>{
+  "name": "azure-relay",
+  "provider": "azure",
+  "azure": {
+    "connection_string": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
+    "queue_name": "crossguard-relay"
+  }
 }</code></pre>
 
                 <h4>Validation</h4>
+                <h5>NATS</h5>
                 <ul>
-                    <li><code>address</code> required</li>
-                    <li><code>subject</code> required and must start with <code>crossguard.</code></li>
-                    <li><code>auth_type</code> must be <code>none</code>, <code>token</code>, <code>credentials</code>, or empty</li>
-                    <li><code>token</code> required if auth_type is <code>token</code></li>
-                    <li><code>username</code> + <code>password</code> required if auth_type is <code>credentials</code></li>
+                    <li><code>nats.address</code> required</li>
+                    <li><code>nats.subject</code> required and must start with <code>crossguard.</code></li>
+                    <li><code>nats.auth_type</code> must be <code>none</code>, <code>token</code>, <code>credentials</code>, or empty</li>
+                    <li><code>nats.token</code> required if auth_type is <code>token</code></li>
+                    <li><code>nats.username</code> + <code>nats.password</code> required if auth_type is <code>credentials</code></li>
+                </ul>
+                <h5>Azure</h5>
+                <ul>
+                    <li><code>azure.connection_string</code> required</li>
+                    <li><code>azure.queue_name</code> required</li>
                 </ul>
 
                 <h4>Success Response (outbound) - 200</h4>
@@ -91,6 +110,9 @@
                 <h4>Success Response (inbound) - 200</h4>
 <pre><code>{"status": "ok", "message": "Connected and subscribed to subject successfully"}</code></pre>
 
+                <h4>Success Response (Azure) - 200</h4>
+<pre><code>{"status": "ok", "message": "Azure Queue Storage connection test successful"}</code></pre>
+
                 <h4>Error Responses</h4>
                 <table>
                     <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
@@ -98,7 +120,7 @@
                         <tr><td><code>400</code></td><td>Validation error</td></tr>
                         <tr><td><code>401</code></td><td>Not authenticated</td></tr>
                         <tr><td><code>403</code></td><td>Not system admin</td></tr>
-                        <tr><td><code>502</code></td><td>NATS connection failed</td></tr>
+                        <tr><td><code>502</code></td><td>Transport connection failed (NATS unreachable or Azure connection string invalid)</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -271,7 +293,7 @@
                 <span class="permission-tag permission-sysadmin">System Admin</span>
             </div>
             <div class="endpoint-card-body">
-                <p>Global status of all initialized teams and NATS connections.</p>
+                <p>Global status of all initialized teams and transport connections.</p>
 
                 <h4>Response - 200</h4>
 <pre><code>{
@@ -289,12 +311,24 @@
     {
       "name": "relay-to-b",
       "direction": "outbound",
+      "provider": "nats",
       "address": "nats://nats:4222",
       "auth_type": "token",
-      "subject": "crossguard.relay.messages"
+      "subject": "crossguard.relay.messages",
+      "file_transfer_enabled": true,
+      "file_filter_mode": "allow",
+      "file_filter_types": ".pdf,.docx",
+      "message_format": "json"
+    },
+    {
+      "name": "azure-relay",
+      "direction": "outbound",
+      "provider": "azure",
+      "queue_name": "crossguard-relay",
+      "file_transfer_enabled": false,
+      "message_format": "json"
     }
-  ],
-  "warnings": []
+  ]
 }</code></pre>
 
                 <div class="alert alert-info">
@@ -328,7 +362,10 @@
       "direction": "outbound",
       "linked": true,
       "orphaned": false,
-      "remote_team_name": ""
+      "file_transfer_enabled": true,
+      "file_filter_mode": "allow",
+      "file_filter_types": ".pdf,.docx",
+      "message_format": "json"
     }
   ]
 }</code></pre>
@@ -363,14 +400,18 @@
       "name": "relay-to-b",
       "direction": "outbound",
       "linked": true,
-      "orphaned": false
+      "orphaned": false,
+      "file_transfer_enabled": true,
+      "file_filter_mode": "allow",
+      "file_filter_types": ".pdf,.docx",
+      "message_format": "json"
     }
   ]
 }</code></pre>
 
                 <div class="alert alert-warning">
                     <p class="alert-title">Note</p>
-                    <p>Returns an error for DM and group message channels: "Cross Guard is not available for direct or group messages."</p>
+                    <p>Returns an error for DM and group message channels: "Cross Guard is not available for direct or group messages"</p>
                 </div>
             </div>
         </div>
@@ -387,7 +428,7 @@
                 <h4>Query Parameters</h4>
                 <table class="field-table">
                     <tbody>
-                        <tr><td><code>ids</code></td><td>Required. Comma-separated channel IDs (max 2048 characters).</td></tr>
+                        <tr><td><code>ids</code></td><td>Required. Comma-separated channel IDs (max 2048 IDs).</td></tr>
                     </tbody>
                 </table>
 
@@ -595,15 +636,15 @@
             </div>
         </div>
 
-        <!-- NATS Interface -->
-        <h2>NATS Message Interface</h2>
+        <!-- Transport Interface -->
+        <h2>Message Transport Interface</h2>
 
         <p>
-            Cross Guard uses NATS as its transport layer for relaying messages between Mattermost
-            instances. For the complete wire protocol reference, including all message envelope
-            schemas, payload definitions, connection configuration, data flow diagrams, and
-            full wire format examples, see the dedicated
-            <a href="nats-interface.html">NATS Interface Reference</a>.
+            Cross Guard supports NATS and Azure Queue Storage as transport layers for relaying
+            messages between Mattermost instances. For the complete wire protocol reference,
+            including all message envelope schemas, payload definitions, connection configuration,
+            data flow diagrams, and full wire format examples, see the dedicated
+            <a href="transport-interface.html">Transport Interface Reference</a>.
         </p>
     </main>
 </div>

@@ -19,7 +19,7 @@
             <a href="commands.html">Slash Commands</a>
             <a href="admin.html">Admin Configuration</a>
             <a href="api.html">REST API</a>
-            <a href="nats-interface.html">NATS Interface</a>
+            <a href="transport-interface.html">Transport Interface</a>
             <a href="threatmodel.html">Threat Model</a>
             <a href="whitepaper.html" class="active">Whitepaper</a>
         </nav>
@@ -39,7 +39,7 @@
         <h2>1. Executive Summary</h2>
         <p>
             Cross Guard is a Mattermost plugin that bridges isolated Mattermost instances across security
-            domain boundaries using NATS as a lightweight, high-performance message bus. It is designed
+            domain boundaries using NATS or Azure Queue Storage as the transport layer. It is designed
             for environments where servers cannot share databases, APIs, or network access, including
             air-gapped networks, multi-classification deployments, and multi-tenant architectures.
         </p>
@@ -48,7 +48,7 @@
             Mattermost server fully independent. No database synchronization, no direct API calls between
             servers, and no shared authentication. Each server maintains its own users, teams, channels,
             and data store. Cross Guard operates purely at the message level, publishing serialized
-            envelopes to NATS subjects and consuming them on the other side.
+            envelopes to NATS subjects (or Azure queues) and consuming them on the other side.
         </p>
         <p>
             Administrative controls enforce explicit opt-in at both the team and channel level. No
@@ -58,7 +58,8 @@
         </p>
         <p>
             Transport security supports TLS 1.2+, mutual certificate authentication (mTLS), NATS
-            authentication (token or credentials), NATS ACLs for subject-level access control, and
+            authentication (token or credentials), NATS ACLs for subject-level access control,
+            Azure Storage connection string authentication with TLS-always endpoints, and
             configurable permission lockdown via the <code>RestrictToSystemAdmins</code> setting.
         </p>
         <p>
@@ -138,16 +139,25 @@
         </p>
         <ul>
             <li><strong>Message-level relay, not database sync:</strong> Only individual post events (create, edit, delete, react) cross the boundary. No bulk data transfer, no schema coupling, no shared state.</li>
-            <li><strong>Asynchronous, decoupled architecture via pub/sub:</strong> The two Mattermost servers never communicate directly. A NATS message bus sits between them. Publishers and subscribers interact only with NATS, not with each other.</li>
+            <li><strong>Asynchronous, decoupled architecture:</strong> The two Mattermost servers never communicate directly. A NATS message bus or Azure Storage account sits between them. Publishers and subscribers interact only with the transport layer, not with each other.</li>
             <li><strong>Full server independence:</strong> Each server maintains its own users, teams, channels, database, authentication, and administration. Cross Guard adds relay capability without modifying any of these.</li>
             <li><strong>Opt-in at every level:</strong> Relay is not automatic. Administrators must explicitly link connections to teams, then to individual channels. Inbound connections require interactive acceptance before any messages flow.</li>
-            <li><strong>Minimal data crossing the boundary:</strong> Only text content, routing metadata, and optionally file attachments transit the NATS bus. File transfer is disabled by default and must be explicitly enabled per connection with configurable type filtering and size limits. User metadata, channel properties, post properties, and interactive message elements are intentionally excluded.</li>
+            <li><strong>Minimal data crossing the boundary:</strong> Only text content, routing metadata, and optionally file attachments transit the transport layer. File transfer is disabled by default and must be explicitly enabled per connection with configurable type filtering and size limits. User metadata, channel properties, post properties, and interactive message elements are intentionally excluded.</li>
         </ul>
 
-        <!-- Section 3: Why NATS as the Transport Layer -->
-        <h2>3. Why NATS as the Transport Layer</h2>
+        <!-- Section 3: Transport Layer Options -->
+        <h2>3. Transport Layer Options</h2>
+        <p>
+            Cross Guard supports two transport providers: NATS (pub/sub) and Azure Queue Storage
+            (polling-based). Administrators select a provider per connection in the System Console.
+            Both providers carry the same serialized envelope format (JSON or XML) and support the
+            same message types. The choice depends on infrastructure, latency requirements, and
+            operational preferences.
+        </p>
 
-        <h3>What is NATS?</h3>
+        <h3>NATS</h3>
+
+        <h4>What is NATS?</h4>
         <p>
             <a href="https://nats.io">NATS</a> is a lightweight, high-performance messaging system
             written in Go. It provides core pub/sub semantics: publishers send messages to named
@@ -158,14 +168,16 @@
         <p>
             For message relay, Cross Guard uses NATS core pub/sub, which is fire-and-forget:
             messages are delivered to connected subscribers in real time, with no message persistence
-            or replay. For optional file transfer, Cross Guard uses NATS JetStream Object Store.
+            or replay. For optional file transfer, Cross Guard uses NATS JetStream Object Store
+            with a hardcoded bucket name of <code>crossguard-files</code> (not user-configurable,
+            unlike Azure's <code>blob_container_name</code>).
             This maps directly to Cross Guard's relay model, where messages are relayed as they
             occur and not queued for later delivery.
         </p>
 
-        <h3>Why NATS Fits the CDS Model</h3>
+        <h4>Why NATS Fits the CDS Model</h4>
 
-        <h4>1. Decoupled Architecture</h4>
+        <h5>1. Decoupled Architecture</h5>
         <p>
             Publishers and subscribers never communicate directly. The NATS server mediates all
             traffic. Neither the publisher nor the subscriber needs to know the other's network
@@ -173,7 +185,7 @@
             the transport sits between domains and neither domain has direct access to the other.
         </p>
 
-        <h4>2. Subject-Based Routing</h4>
+        <h5>2. Subject-Based Routing</h5>
         <p>
             Messages are published to named subjects (e.g., <code>crossguard.relay.a-to-b</code>).
             Subscribers filter by subject. This provides natural channel isolation: different
@@ -182,7 +194,7 @@
             subject names.
         </p>
 
-        <h4>3. Lightweight Protocol</h4>
+        <h5>3. Lightweight Protocol</h5>
         <p>
             NATS uses a text-based protocol with minimal overhead. A typical Cross Guard message
             envelope is a few hundred bytes (JSON or XML). NATS adds negligible framing. The result is
@@ -190,14 +202,14 @@
             expect near-instant delivery.
         </p>
 
-        <h4>4. TLS and Authentication</h4>
+        <h5>4. TLS and Authentication</h5>
         <p>
             NATS has native support for TLS 1.2+, token authentication, username/password
             authentication, and client certificate authentication (mTLS). These map directly to
             CDS transport security requirements. No additional proxy or TLS terminator is needed.
         </p>
 
-        <h4>5. Network Placement Flexibility</h4>
+        <h5>5. Network Placement Flexibility</h5>
         <p>
             A NATS server can be deployed in a DMZ, an enclave, a guard network, or any controlled
             network segment between domains. The Mattermost servers only need to reach the NATS
@@ -205,7 +217,7 @@
             that enables CDS deployment.
         </p>
 
-        <h4>6. Resilience</h4>
+        <h5>6. Resilience</h5>
         <p>
             NATS clients have built-in reconnection with configurable retry behavior. Cross Guard
             configures unlimited reconnects with a 2-second wait, so temporary network interruptions
@@ -213,7 +225,7 @@
             Disconnect and reconnect events are logged for operational visibility.
         </p>
 
-        <h4>7. ACL Support</h4>
+        <h5>7. ACL Support</h5>
         <p>
             NATS server authorization rules can restrict which clients can publish or subscribe to
             which subjects. In a CDS deployment, this means the NATS administrator can enforce
@@ -222,7 +234,7 @@
             control independent of the plugin's own authorization.
         </p>
 
-        <h3>How Cross Guard Uses NATS</h3>
+        <h4>How Cross Guard Uses NATS</h4>
         <p>
             Each Cross Guard connection (inbound or outbound) maps to exactly one NATS subject.
             Outbound connections publish serialized message envelopes to their configured subject.
@@ -242,7 +254,7 @@
             subject are not received on a different subject.
         </p>
 
-        <h3>NATS Deployment Topologies for CDS</h3>
+        <h4>NATS Deployment Topologies for CDS</h4>
 
         <div class="diagram-box">
 <pre>Topology 1: Shared Network (Development)
@@ -273,6 +285,87 @@ Topology 3: Guard Network (Classified)
      Dedicated hardware, strict firewall rules, physical separation</pre>
         </div>
 
+        <h3>Azure Queue Storage</h3>
+
+        <h4>What is Azure Queue Storage?</h4>
+        <p>
+            <a href="https://learn.microsoft.com/en-us/azure/storage/queues/storage-queues-introduction">Azure Queue Storage</a>
+            is a fully managed message queuing service provided by Microsoft Azure. It stores
+            messages in queues that can be read by any client with a valid connection string or
+            SAS token. Unlike NATS (which uses real-time pub/sub), Azure Queue Storage uses a
+            polling model where consumers periodically check for new messages.
+        </p>
+
+        <h4>Why Azure Queue Storage Fits the CDS Model</h4>
+
+        <h5>1. Polling-Based Delivery</h5>
+        <p>
+            The plugin polls the Azure queue on a configurable interval (default 5 seconds for
+            messages, 15 seconds for blob/file transfers). Messages are dequeued in batches of
+            up to 32 with a 5-minute visibility timeout. This polling model is well-suited for
+            environments where persistent connections are difficult to maintain or where
+            store-and-forward semantics are preferred over real-time delivery.
+        </p>
+
+        <h5>2. At-Least-Once Delivery</h5>
+        <p>
+            Azure Queue Storage provides at-least-once delivery semantics. Messages remain in the
+            queue until explicitly deleted after successful processing. If the consumer crashes
+            before acknowledging, the message becomes visible again after the visibility timeout
+            expires. This is more durable than NATS core pub/sub, which drops messages if no
+            subscriber is connected.
+        </p>
+
+        <h5>3. Managed Service</h5>
+        <p>
+            Azure Queue Storage is a fully managed service. There is no NATS cluster to deploy,
+            patch, monitor, or scale. The Azure Storage account handles availability, replication,
+            and maintenance. This reduces operational overhead, especially in environments where
+            infrastructure teams prefer managed services over self-hosted components.
+        </p>
+
+        <h5>4. Connection String Authentication</h5>
+        <p>
+            Authentication uses an Azure Storage connection string, which contains the account
+            name and key. The connection string is stored in the Mattermost plugin configuration
+            (encrypted at rest by Mattermost). No separate TLS certificate management is required
+            because all Azure Storage endpoints use TLS by default.
+        </p>
+
+        <h5>5. Auto-Provisioning</h5>
+        <p>
+            The plugin automatically creates the queue and blob container (as configured in
+            <code>queue_name</code> and <code>blob_container_name</code>) on startup if they do
+            not exist. No manual Azure resource provisioning is needed beyond creating the Storage
+            account itself.
+        </p>
+
+        <h4>How Cross Guard Uses Azure Queue Storage</h4>
+        <p>
+            Each outbound connection enqueues serialized message envelopes (JSON or XML) to the
+            configured Azure queue. File attachments (when enabled) are uploaded to
+            the configured blob container with a key in the format <code>{postId}/{randomId}</code>, referenced
+            in the envelope. The inbound side polls the queue, processes each message, and deletes
+            it after successful handling. For files, the inbound side downloads the blob and
+            deletes it after processing.
+        </p>
+
+        <h3>Transport Comparison</h3>
+        <table>
+            <thead>
+                <tr><th>Aspect</th><th>NATS</th><th>Azure Queue Storage</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Latency</td><td>Sub-millisecond (pub/sub)</td><td>5-15 seconds (polling)</td></tr>
+                <tr><td>Delivery</td><td>At-most-once</td><td>At-least-once</td></tr>
+                <tr><td>Message Size</td><td>1 MB default (NATS server configurable)</td><td>48,000 bytes (before Base64)</td></tr>
+                <tr><td>Infrastructure</td><td>Self-hosted NATS cluster</td><td>Azure managed service</td></tr>
+                <tr><td>Encryption</td><td>TLS (opt-in)</td><td>TLS always (Azure endpoint)</td></tr>
+                <tr><td>File Transfer</td><td>JetStream Object Store (1h TTL)</td><td>Blob Storage (deleted after processing)</td></tr>
+                <tr><td>Best For</td><td>Low-latency, high-throughput environments</td><td>Azure-native environments, simplicity</td></tr>
+            </tbody>
+        </table>
+
         <!-- Section 4: System Architecture -->
         <h2>4. System Architecture</h2>
 
@@ -286,16 +379,22 @@ Topology 3: Guard Network (Classified)
 |                              |               |     |           |                                  |
 |                    [Outbound Engine]          |     |  [Team/Channel Resolution]                   |
 |                         |                    |     |           |                                  |
-|              [NATS Publisher]                 |     |  [User Sync Engine]                          |
+|            [Transport Publisher]              |     |  [User Sync Engine]                          |
 |                    |                         |     |           |                                  |
 |           [TLS + Auth]                       |     |      [TLS + Auth]                            |
 +-----------|----------------------------------+     +-----------|----------------------------------+
             |                                                   |
             v                                                   ^
       +-----|---------------------------------------------------|-----+
-      |                        NATS Server                            |
-      |  Subject: crossguard.a-to-b  --&gt;  Subject: crossguard.a-to-b |
+      |                    Transport Layer                             |
+      |  Transport Channel  --&gt;  Transport Channel                    |
       +---------------------------------------------------------------+</pre>
+        </div>
+        <p>
+            <em>Note:</em> The specific transport mechanism depends on the configured provider.
+            For NATS, messages flow over a NATS subject (e.g., <code>crossguard.a-to-b</code>).
+            For Azure Queue Storage, messages flow through an Azure Storage queue.
+        </p>
         </div>
 
         <h3>Plugin Internal Architecture</h3>
@@ -307,19 +406,19 @@ Topology 3: Guard Network (Classified)
         <ul>
             <li>
                 <strong><code>Plugin</code> struct:</strong> The central struct that holds the bot
-                user ID, KV store reference, NATS connection pools, relay semaphore, wait group for
-                goroutine lifecycle tracking, and a context for graceful shutdown.
+                user ID, KV store reference, transport provider connections (NATS or Azure), relay
+                semaphore, wait group for goroutine lifecycle tracking, and a context for graceful shutdown.
             </li>
             <li>
                 <strong>Outbound pool:</strong> A slice of <code>outboundConn</code> structs, each
-                holding a persistent NATS connection and its configured subject. Protected by a
-                <code>sync.RWMutex</code> to allow concurrent reads (publishing) with exclusive
-                writes (reconnection on config change).
+                holding a <code>QueueProvider</code> (NATS connection or Azure client) and its
+                configuration. Protected by a <code>sync.RWMutex</code> to allow concurrent reads
+                (publishing) with exclusive writes (reconnection on config change).
             </li>
             <li>
                 <strong>Inbound pool:</strong> A slice of <code>inboundConn</code> structs, each
-                holding a persistent NATS connection and an active subscription. Protected by a
-                <code>sync.RWMutex</code> with the same read/write concurrency model.
+                holding a <code>QueueProvider</code> (NATS subscription or Azure queue poller).
+                Protected by a <code>sync.RWMutex</code> with the same read/write concurrency model.
             </li>
             <li>
                 <strong>Relay semaphore:</strong> A buffered channel of capacity 256, shared by
@@ -346,11 +445,11 @@ Topology 3: Guard Network (Classified)
             <tbody>
                 <tr>
                     <td><strong>OnActivate</strong></td>
-                    <td>Creates bot user, initializes KV store and caching layer, registers the <code>/crossguard</code> slash command, initializes HTTP router for REST API and interactive prompts, creates context for shutdown signaling, spawns relay semaphore, connects all configured outbound and inbound NATS connections.</td>
+                    <td>Creates bot user, initializes KV store and caching layer, registers the <code>/crossguard</code> slash command, initializes HTTP router for REST API and interactive prompts, creates context for shutdown signaling, spawns relay semaphore, connects all configured outbound and inbound connections (NATS or Azure Queue Storage depending on provider setting).</td>
                 </tr>
                 <tr>
                     <td><strong>OnConfigurationChange</strong></td>
-                    <td>Validates new configuration, closes existing NATS connections, opens new connections with updated settings. Live reconnection with no plugin restart required.</td>
+                    <td>Validates new configuration, closes existing transport connections, opens new connections with updated settings. Live reconnection with no plugin restart required.</td>
                 </tr>
                 <tr>
                     <td><strong>OnDeactivate</strong></td>
@@ -363,7 +462,7 @@ Topology 3: Guard Network (Classified)
         <h2>5. Message Relay Lifecycle (Outbound)</h2>
         <p>
             This section traces the complete path of a message from the moment a user posts in a
-            channel on Server A to the moment it is published to NATS.
+            channel on Server A to the moment it is published to the transport layer (NATS or Azure Queue Storage).
         </p>
 
         <h3>Step 1: Post Lifecycle Hook Fires</h3>
@@ -485,17 +584,16 @@ Topology 3: Guard Network (Classified)
             <li>If a slot is acquired: increment the WaitGroup counter and spawn a goroutine for the publish operation</li>
         </ol>
 
-        <h3>Step 6: Publish to NATS</h3>
+        <h3>Step 6: Publish to Transport</h3>
         <p>
             Inside the goroutine, for each outbound connection whose name matches a linked
             connection from Step 3:
         </p>
         <ol>
-            <li>Check connection state: <code>IsConnected()</code> or <code>IsReconnecting()</code>. If neither, skip with a warning log.</li>
-            <li>Publish the serialized bytes (JSON or XML, per connection config) to the connection's configured subject</li>
-            <li>Flush to confirm delivery to the NATS server</li>
-            <li>On failure: retry up to 3 times with exponential backoff (500ms, 1s, 2s, capped at 5s)</li>
-            <li>On retry exhaustion: log an error and drop the message (no queuing)</li>
+            <li>Check connection health via application-level tracking (success/failure of recent publishes, rechecked every 30 seconds). If unhealthy, skip the connection silently.</li>
+            <li>Call <code>provider.Publish(ctx, data)</code> with the serialized bytes (JSON or XML, per connection config)</li>
+            <li>Provider-specific behavior: NATS checks <code>IsConnected()</code>/<code>IsReconnecting()</code>, retries up to 3 times with exponential backoff (500ms, 1s, 2s), and flushes. Azure enqueues as Base64 without application-level retries.</li>
+            <li>On failure: log an error and drop the message (no queuing)</li>
             <li>Context cancellation is respected during backoff waits for graceful shutdown</li>
         </ol>
         <p>
@@ -506,21 +604,23 @@ Topology 3: Guard Network (Classified)
         <!-- Section 6: Message Relay Lifecycle (Inbound) -->
         <h2>6. Message Relay Lifecycle (Inbound)</h2>
         <p>
-            This section traces the complete path of a message from the moment it arrives on a
-            NATS subject to the moment it appears as a local post on Server B.
+            This section traces the complete path of a message from the moment it arrives via
+            the transport layer (NATS subject or Azure queue) to the moment it appears as a
+            local post on Server B.
         </p>
 
-        <h3>Step 1: NATS Subscription Callback Fires</h3>
+        <h3>Step 1: Transport Delivers Message</h3>
         <p>
-            The <code>handleInboundMessage()</code> closure receives a <code>nats.Msg</code> from
-            the subscribed subject. Like outbound, it performs a non-blocking semaphore acquisition
-            from the same 256-slot pool. If the semaphore is full, the message is dropped with a
-            warning log. If a slot is acquired, a goroutine is spawned.
+            The <code>handleInboundMessage()</code> closure receives raw bytes (<code>[]byte</code>)
+            from the transport provider (NATS subscription callback or Azure queue poller). Like
+            outbound, it performs a non-blocking semaphore acquisition from the same 256-slot pool.
+            If the semaphore is full, the message is dropped with a warning log. If a slot is
+            acquired, a goroutine is spawned.
         </p>
 
         <h3>Step 2: Envelope Deserialization</h3>
         <p>
-            <code>model.DetectFormat(msg.Data)</code> auto-detects the wire format (JSON or XML)
+            <code>model.DetectFormat(data)</code> auto-detects the wire format (JSON or XML)
             by inspecting the first non-whitespace byte, then <code>model.Unmarshal()</code>
             decodes the envelope. The handler dispatches by <code>envelope.Type</code>:
         </p>
@@ -646,11 +746,12 @@ Topology 3: Guard Network (Classified)
         <h2>7. Data Boundary Control</h2>
         <p>
             Understanding exactly what data crosses the domain boundary is critical for CDS
-            evaluation. This section documents every field in the NATS envelope, its source,
-            whether it is user-controlled, and how it is used on the receiving side.
+            evaluation. This section documents every field in the transport envelope, its source,
+            whether it is user-controlled, and how it is used on the receiving side. The envelope
+            format is identical for NATS and Azure Queue Storage providers.
         </p>
 
-        <h3>Data That Crosses the Boundary (NATS Envelope)</h3>
+        <h3>Data That Crosses the Boundary (Transport Envelope)</h3>
 
         <h4>Envelope Fields</h4>
         <p>
@@ -814,7 +915,7 @@ Topology 3: Guard Network (Classified)
             <tbody>
                 <tr>
                     <td>File attachments (<code>post.FileIds</code>)</td>
-                    <td>File transfer is disabled by default. When enabled per connection, files are uploaded to a NATS JetStream Object Store and downloaded by the receiving side. Administrators can restrict transfers using allow/deny file type filtering and a 100 MB size limit. Files may contain embedded metadata or classified content, so explicit opt-in and filtering are required.</td>
+                    <td>File transfer is disabled by default. When enabled per connection, files are uploaded to a NATS JetStream Object Store (NATS provider) or Azure Blob Storage (Azure provider) and downloaded by the receiving side. For Azure Blob Storage, blobs are stored with the key format <code>{postId}/{randomId}</code>, where <code>postId</code> is the Mattermost post ID and <code>randomId</code> is a newly generated unique identifier. Administrators can restrict transfers using allow/deny file type filtering and a 100 MB size limit. Files may contain embedded metadata or classified content, so explicit opt-in and filtering are required.</td>
                 </tr>
                 <tr>
                     <td>Post properties (<code>post.Props</code>)</td>
@@ -885,19 +986,30 @@ Topology 3: Guard Network (Classified)
 
         <h3>Connection Configuration (System Console)</h3>
         <p>
-            NATS connections are configured in the Mattermost System Console under
+            Transport connections are configured in the Mattermost System Console under
             <strong>Plugins &gt; Cross Guard</strong>. Inbound and outbound connections are
-            configured as JSON arrays, with each connection specifying:
+            configured as JSON arrays. Each connection specifies a provider type (NATS or Azure
+            Queue Storage) along with provider-specific settings:
         </p>
         <ul>
             <li><strong>name:</strong> Unique identifier, lowercase alphanumeric with hyphens (e.g., <code>relay-to-server-b</code>)</li>
+            <li><strong>provider:</strong> Transport provider type (<code>"nats"</code> or <code>"azure"</code>). Provider-specific fields are nested under the corresponding key.</li>
+        </ul>
+        <h4>NATS Provider Fields (nested under <code>"nats"</code>)</h4>
+        <ul>
             <li><strong>address:</strong> NATS server address (e.g., <code>nats://nats:4222</code>)</li>
             <li><strong>subject:</strong> NATS subject to publish/subscribe (must start with <code>crossguard.</code>)</li>
             <li><strong>TLS settings:</strong> <code>tls_enabled</code>, <code>client_cert</code>, <code>client_key</code>, <code>ca_cert</code></li>
             <li><strong>Auth settings:</strong> <code>auth_type</code> (<code>none</code>, <code>token</code>, or <code>credentials</code>), plus type-specific fields</li>
         </ul>
+        <h4>Azure Provider Fields (nested under <code>"azure"</code>)</h4>
+        <ul>
+            <li><strong>connection_string:</strong> Azure Storage connection string (contains the account name and key; treated as a secret, encrypted at rest by Mattermost)</li>
+            <li><strong>queue_name:</strong> Name of the Azure Storage queue (user-configurable, created automatically if it does not exist)</li>
+            <li><strong>blob_container_name:</strong> Name of the Azure Blob container for file transfers (user-configurable, created automatically if it does not exist)</li>
+        </ul>
         <p>
-            Configuration changes trigger live reconnection. The plugin closes existing NATS
+            Configuration changes trigger live reconnection. The plugin closes existing transport
             connections and opens new ones with the updated settings. No plugin restart is required.
         </p>
 
@@ -926,8 +1038,8 @@ Topology 3: Guard Network (Classified)
         <ol class="steps">
             <li>
                 <strong>Admin runs <code>/crossguard init-channel [connection-name]</code></strong>
-                in the channel. The parent team must already be initialized with this connection
-                (if the team has the connection but the channel does not, the team is auto-initialized).
+                in the channel. The slash command requires the team to be initialized first via
+                <code>/crossguard init-team</code>. The REST API auto-links the team if needed.
             </li>
             <li>
                 <strong>Connection linked to channel:</strong> Stored in KV store via CAS operation.
@@ -989,10 +1101,10 @@ Topology 3: Guard Network (Classified)
         </p>
         <ol>
             <li>Server A user posts a message</li>
-            <li>Cross Guard on Server A relays the message to Server B via NATS</li>
+            <li>Cross Guard on Server A relays the message to Server B via the transport layer</li>
             <li>Cross Guard on Server B creates the post locally via the Plugin API</li>
             <li>This triggers Server B's <code>MessageHasBeenPosted</code> hook</li>
-            <li>Without prevention: Server B would relay the message back to Server A via NATS</li>
+            <li>Without prevention: Server B would relay the message back to Server A via the transport layer</li>
             <li>Server A receives it, creates it locally, triggering its own hook</li>
             <li>Infinite loop: messages multiply exponentially</li>
         </ol>
@@ -1043,10 +1155,12 @@ Topology 3: Guard Network (Classified)
             </p>
         </div>
 
-        <!-- Section 11: NATS Transport Security Configuration -->
-        <h2>11. NATS Transport Security Configuration</h2>
+        <!-- Section 11: Transport Security Configuration -->
+        <h2>11. Transport Security Configuration</h2>
 
-        <h3>TLS Configuration</h3>
+        <h3>NATS Transport Security</h3>
+
+        <h4>TLS Configuration</h4>
         <ul>
             <li>Minimum TLS 1.2 enforced (hardcoded <code>tls.VersionTLS12</code> in the NATS connection options)</li>
             <li>Connection fields: <code>tls_enabled</code> (boolean), <code>client_cert</code> (file path), <code>client_key</code> (file path), <code>ca_cert</code> (file path)</li>
@@ -1054,7 +1168,7 @@ Topology 3: Guard Network (Classified)
             <li>CA certificate enables server certificate verification (the plugin verifies the NATS server's identity)</li>
         </ul>
 
-        <h3>Authentication Options</h3>
+        <h4>Authentication Options</h4>
         <table>
             <thead>
                 <tr>
@@ -1086,7 +1200,7 @@ Topology 3: Guard Network (Classified)
             </tbody>
         </table>
 
-        <h3>Connection Resilience</h3>
+        <h4>Connection Resilience</h4>
         <ul>
             <li>Persistent connections with unlimited reconnects (<code>MaxReconnects = -1</code>)</li>
             <li>2-second reconnect wait between attempts</li>
@@ -1094,7 +1208,7 @@ Topology 3: Guard Network (Classified)
             <li>Context-aware cancellation: reconnection attempts are abandoned during graceful plugin shutdown</li>
         </ul>
 
-        <h3>Outbound Publish Reliability</h3>
+        <h4>Outbound Publish Reliability</h4>
         <ul>
             <li>3 retry attempts with exponential backoff (500ms, 1s, 2s)</li>
             <li>Each publish followed by a flush call to confirm delivery to the NATS server</li>
@@ -1102,7 +1216,7 @@ Topology 3: Guard Network (Classified)
             <li>Context cancellation is respected during backoff waits</li>
         </ul>
 
-        <h3>Configuration Validation</h3>
+        <h4>Configuration Validation</h4>
         <ul>
             <li><strong>Connection names:</strong> lowercase alphanumeric with hyphens, unique across all connections (both inbound and outbound)</li>
             <li><strong>Subject:</strong> must start with <code>crossguard.</code> prefix (prevents accidental subscription to unrelated NATS traffic)</li>
@@ -1110,7 +1224,7 @@ Topology 3: Guard Network (Classified)
             <li><strong>Conditional fields:</strong> token required for token auth, username and password required for credentials auth</li>
         </ul>
 
-        <h3>Deployment Sensitivity Guide</h3>
+        <h4>Deployment Sensitivity Guide</h4>
         <table>
             <thead>
                 <tr>
@@ -1150,11 +1264,21 @@ Topology 3: Guard Network (Classified)
             </tbody>
         </table>
 
+        <h3>Azure Transport Security</h3>
+        <ul>
+            <li><strong>Connection String:</strong> The connection string contains the account key and must be treated as a secret. It is stored in the Mattermost plugin configuration (encrypted at rest by Mattermost).</li>
+            <li><strong>Network Security:</strong> Azure Storage supports Virtual Network service endpoints and private endpoints to restrict access to specific networks.</li>
+            <li><strong>Encryption:</strong> All Azure Storage traffic uses TLS. Data at rest is encrypted by Azure Storage Service Encryption (SSE).</li>
+            <li><strong>Access Control:</strong> Use Azure RBAC or shared access signatures (SAS) for fine-grained access control in production. The plugin currently uses connection string (shared key) authentication.</li>
+        </ul>
+
         <!-- Section 12: Deployment Topologies -->
         <h2>12. Deployment Topologies</h2>
         <p>
             Cross Guard supports multiple deployment topologies depending on the number of servers,
-            the direction of message flow, and the network architecture between domains.
+            the direction of message flow, the transport provider, and the network architecture
+            between domains. The NATS topologies below apply to NATS-based deployments. Azure
+            Queue Storage topology follows.
         </p>
 
         <h3>Topology 1: Unidirectional Relay (Low-to-High)</h3>
@@ -1259,6 +1383,23 @@ Server B acts as a relay point. Each hop is independent.</pre>
             <li>Messages on Server B are full local posts (editable, deletable, visible to Server B users)</li>
             <li>Use case: cascading classification levels (e.g., Unclassified to Secret to Top Secret)</li>
         </ul>
+
+        <h3>Azure Queue Storage Topology</h3>
+        <p>
+            In Azure-native deployments, both Mattermost instances connect to a shared Azure Storage
+            account. The outbound server enqueues messages and uploads file blobs. The inbound server
+            polls the queue and blob container. No additional infrastructure (NATS cluster, JetStream)
+            is required.
+        </p>
+        <div class="diagram-box">
+<pre>Server A (Low Side)          Azure Storage Account       Server B (High Side)
++------------------+    +---------------------------+    +------------------+
+|                  |    | Queue: (configured)        |    |                  |
+| Enqueue message  |--->|                           |--->| Poll queue (5s)  |
+|                  |    | Blob: (configured)         |    |                  |
+| Upload blob      |--->|                           |--->| Poll blobs (15s) |
++------------------+    +---------------------------+    +------------------+</pre>
+        </div>
 
         <!-- Section 13: State Management and Persistence -->
         <h2>13. State Management and Persistence</h2>
@@ -1391,6 +1532,18 @@ Server B acts as a relay point. Each hop is independent.</pre>
             <li>The drop-when-full policy ensures the Mattermost server process is never starved of resources by relay operations</li>
         </ul>
 
+        <h3>File Transfer Semaphore</h3>
+        <p>
+            A separate file transfer semaphore (buffered channel of capacity 32) controls
+            concurrent file upload and download operations. This prevents file transfers from
+            consuming excessive bandwidth or memory:
+        </p>
+        <ul>
+            <li>Outbound file uploads use non-blocking acquisition: if all 32 slots are in use, the file upload is skipped for that message</li>
+            <li>Inbound file downloads use blocking acquisition: the goroutine waits until a slot becomes available before downloading</li>
+            <li>This asymmetry ensures inbound files are reliably downloaded while outbound uploads do not block message relay</li>
+        </ul>
+
         <h3>Goroutine Lifecycle</h3>
         <ul>
             <li>All relay goroutines are tracked via a <code>sync.WaitGroup</code></li>
@@ -1461,9 +1614,9 @@ Server B acts as a relay point. Each hop is independent.</pre>
                 </tr>
                 <tr>
                     <td><span class="permission-tag permission-teamadmin">WARN</span></td>
-                    <td>"Outbound NATS not connected, skipping"</td>
-                    <td>NATS connection is down</td>
-                    <td>Check NATS server health and network connectivity</td>
+                    <td>(no log message, connection silently skipped)</td>
+                    <td>Outbound connection is unhealthy (health check failed)</td>
+                    <td>Check transport server health and network connectivity. The connection will be rechecked after 30 seconds.</td>
                 </tr>
                 <tr>
                     <td><span class="permission-tag permission-teamadmin">WARN</span></td>
@@ -1479,26 +1632,26 @@ Server B acts as a relay point. Each hop is independent.</pre>
                 </tr>
                 <tr>
                     <td><span class="permission-tag permission-sysadmin">ERROR</span></td>
-                    <td>"Failed to publish to outbound NATS after retries"</td>
-                    <td>NATS unreachable after 3 retry attempts</td>
-                    <td>Check NATS server, network, TLS certificates</td>
+                    <td>"Failed to publish to outbound after retries"</td>
+                    <td>Transport unreachable after retry attempts</td>
+                    <td>Check transport server, network, TLS certificates</td>
                 </tr>
                 <tr>
                     <td><span class="permission-tag permission-sysadmin">ERROR</span></td>
-                    <td>"Failed to create post"</td>
+                    <td>"Inbound post: create failed"</td>
                     <td>Mattermost API rejected the post creation</td>
                     <td>Check post content, channel permissions, server health</td>
                 </tr>
                 <tr>
                     <td><span class="permission-tag permission-channeladmin">INFO</span></td>
                     <td>"Inbound NATS reconnected"</td>
-                    <td>NATS connection recovered after interruption</td>
+                    <td>NATS connection recovered after interruption (NATS provider only; Azure uses polling, so there are no reconnect events)</td>
                     <td>Normal recovery, verify message flow resumed</td>
                 </tr>
                 <tr>
                     <td><span class="permission-tag permission-channeladmin">INFO</span></td>
                     <td>"Outbound NATS reconnected"</td>
-                    <td>NATS connection recovered after interruption</td>
+                    <td>NATS connection recovered after interruption (NATS provider only; Azure uses polling, so there are no reconnect events)</td>
                     <td>Normal recovery, verify message flow resumed</td>
                 </tr>
             </tbody>
@@ -1539,7 +1692,7 @@ Server B acts as a relay point. Each hop is independent.</pre>
 
         <h3>Connection Testing</h3>
         <p>
-            <code>POST /api/v1/test-connection</code> (System Admin only) tests NATS connectivity
+            <code>POST /api/v1/test-connection</code> (System Admin only) tests transport connectivity
             without affecting running connections:
         </p>
         <ul>
@@ -1562,7 +1715,7 @@ Server B acts as a relay point. Each hop is independent.</pre>
             <thead>
                 <tr>
                     <th>Capability</th>
-                    <th>Cross Guard + NATS</th>
+                    <th>Cross Guard (NATS / Azure)</th>
                     <th>Shared Database</th>
                     <th>Direct API</th>
                     <th>Email Bridge</th>
@@ -1580,7 +1733,7 @@ Server B acts as a relay point. Each hop is independent.</pre>
                 </tr>
                 <tr>
                     <td><strong>Network isolation</strong></td>
-                    <td>Yes (NATS in DMZ)</td>
+                    <td>Yes (NATS in DMZ / Azure private endpoint)</td>
                     <td>No (DB access)</td>
                     <td>No (HTTP access)</td>
                     <td>Yes</td>
@@ -1588,7 +1741,7 @@ Server B acts as a relay point. Each hop is independent.</pre>
                 </tr>
                 <tr>
                     <td><strong>Real-time messaging</strong></td>
-                    <td>Yes (sub-ms latency)</td>
+                    <td>Yes (sub-ms NATS / 5-15s Azure)</td>
                     <td>N/A</td>
                     <td>Yes</td>
                     <td>No (minutes)</td>
@@ -1628,7 +1781,7 @@ Server B acts as a relay point. Each hop is independent.</pre>
                 </tr>
                 <tr>
                     <td><strong>Transport security</strong></td>
-                    <td>TLS 1.2+, mTLS, ACLs</td>
+                    <td>TLS 1.2+, mTLS, ACLs (NATS) / TLS always, RBAC (Azure)</td>
                     <td>DB TLS</td>
                     <td>HTTPS</td>
                     <td>SMTP TLS</td>
@@ -1636,7 +1789,7 @@ Server B acts as a relay point. Each hop is independent.</pre>
                 </tr>
                 <tr>
                     <td><strong>Message authentication</strong></td>
-                    <td>NATS auth (transport)</td>
+                    <td>NATS auth / Azure connection string</td>
                     <td>DB auth</td>
                     <td>API auth</td>
                     <td>DKIM/SPF</td>
@@ -1652,7 +1805,7 @@ Server B acts as a relay point. Each hop is independent.</pre>
                 </tr>
                 <tr>
                     <td><strong>Data minimization</strong></td>
-                    <td>Text + optional files (disabled by default, per-connection toggle, type filtering)</td>
+                    <td>Text + optional files (disabled by default, per-connection toggle, type filtering). Azure blobs deleted after processing.</td>
                     <td>Full DB access</td>
                     <td>Full API access</td>
                     <td>Full email</td>
@@ -1693,30 +1846,36 @@ Server B acts as a relay point. Each hop is independent.</pre>
                 (<a href="threatmodel.html#t-spoof-1">T-SPOOF-1</a>).
             </li>
             <li>
-                <strong>Enable TLS with mutual certificate authentication</strong>: Configure
-                <code>tls_enabled</code>, <code>client_cert</code>, <code>client_key</code>,
-                and <code>ca_cert</code> on all NATS connections. Ensures both the plugin and
-                the NATS server verify each other's identity.
+                <strong>Enable TLS with mutual certificate authentication (NATS)</strong>: For NATS
+                connections, configure <code>tls_enabled</code>, <code>client_cert</code>,
+                <code>client_key</code>, and <code>ca_cert</code>. Ensures both the plugin and
+                the NATS server verify each other's identity. For Azure connections, TLS is
+                always enabled by the Azure endpoint.
             </li>
             <li>
-                <strong>Deploy a dedicated NATS server</strong>: Do not share the NATS server
-                with other applications. Reduces the risk of message content exposure
+                <strong>Deploy a dedicated transport endpoint</strong>: For NATS, do not share
+                the NATS server with other applications. For Azure, use a dedicated Storage
+                account for Cross Guard traffic. Reduces the risk of message content exposure
                 (<a href="threatmodel.html#t-info-1">T-INFO-1</a>).
             </li>
             <li>
-                <strong>Configure NATS ACLs</strong>: Restrict publish and subscribe permissions
-                per subject per client. Ensure each plugin instance can only access the subjects
-                it is configured for.
+                <strong>Configure transport-level access control</strong>: For NATS, restrict
+                publish and subscribe permissions per subject per client via NATS ACLs. For Azure,
+                use Azure RBAC or SAS tokens to restrict access to the storage account. Ensure
+                each plugin instance can only access the resources it is configured for.
             </li>
             <li>
-                <strong>Use separate subjects per relay direction</strong>: Configure different
-                NATS subjects for each direction (e.g., <code>crossguard.a-to-b</code> and
-                <code>crossguard.b-to-a</code>). Prevents transport-level echo.
+                <strong>Use separate subjects per relay direction (NATS)</strong>: For NATS,
+                configure different subjects for each direction (e.g., <code>crossguard.a-to-b</code>
+                and <code>crossguard.b-to-a</code>). Prevents transport-level echo. For Azure,
+                use separate queues or storage accounts per direction.
             </li>
             <li>
-                <strong>Place NATS in a controlled network segment</strong>: Deploy the NATS
-                server in a DMZ, enclave, or guard network between the two domains. Firewall
-                rules should allow only NATS traffic (port 4222) between segments.
+                <strong>Place the transport endpoint in a controlled network segment</strong>:
+                For NATS, deploy the server in a DMZ, enclave, or guard network between the two
+                domains. Firewall rules should allow only NATS traffic (port 4222) between
+                segments. For Azure, use private endpoints or VNet service endpoints to restrict
+                storage account access to authorized networks.
             </li>
             <li>
                 <strong>Monitor plugin logs</strong>: Watch for anomaly indicators: "Relay
@@ -1741,7 +1900,7 @@ Server B acts as a relay point. Each hop is independent.</pre>
             </li>
             <li>
                 <strong>Test connections regularly</strong>: Use the admin console test button
-                or the <code>POST /api/v1/test-connection</code> endpoint to verify NATS
+                or the <code>POST /api/v1/test-connection</code> endpoint to verify transport
                 connectivity without affecting running connections.
             </li>
             <li>
@@ -1766,7 +1925,7 @@ Server B acts as a relay point. Each hop is independent.</pre>
             </a>
             <a href="admin.html" class="nav-card">
                 <h3>Admin Configuration Guide</h3>
-                <p>NATS connection setup, relay settings, and example configurations.</p>
+                <p>Transport connection setup, relay settings, and example configurations.</p>
             </a>
             <a href="api.html" class="nav-card">
                 <h3>REST API Reference</h3>

@@ -19,7 +19,7 @@
             <a href="commands.html" class="active">Slash Commands</a>
             <a href="admin.html">Admin Configuration</a>
             <a href="api.html">REST API</a>
-            <a href="nats-interface.html">NATS Interface</a>
+            <a href="transport-interface.html">Transport Interface</a>
             <a href="threatmodel.html">Threat Model</a>
             <a href="whitepaper.html">Whitepaper</a>
         </nav>
@@ -118,7 +118,7 @@
         <h2 id="init-team">/crossguard init-team [connection-name]</h2>
 
         <p>
-            Link a NATS connection to the current team, enabling cross-domain relay for this team.
+            Link a connection to the current team, enabling cross-domain relay for this team.
         </p>
 
         <table class="field-table">
@@ -144,7 +144,7 @@
 
         <h4>Error Cases</h4>
         <ul>
-            <li><code>No NATS connections configured. Add connections in the System Console first.</code></li>
+            <li><code>No connections configured. Add connections in the System Console first.</code></li>
             <li><code>Connection not found: xyz. Available connections: outbound:relay-to-b, inbound:relay-from-a</code></li>
         </ul>
 
@@ -152,20 +152,20 @@
         <h2 id="init-channel">/crossguard init-channel [connection-name]</h2>
 
         <p>
-            Link a NATS connection to the current channel. The team must be initialized first with
+            Link a connection to the current channel. The team must be initialized first with
             the same connection.
         </p>
 
         <table class="field-table">
             <tbody>
-                <tr><td>Permission</td><td>Channel Admin, Team Admin, or System Admin</td></tr>
+                <tr><td>Permission</td><td>Channel Admin, Team Admin, or System Admin (blocked by <code>RestrictToSystemAdmins</code>)</td></tr>
                 <tr><td>Arguments</td><td><code>connection-name</code> (optional, same auto-select/dialog behavior as init-team)</td></tr>
             </tbody>
         </table>
 
         <h4>Behavior</h4>
         <ul>
-            <li>Validates team is initialized with this connection first. If the team has the connection but the channel doesn't, it auto-initializes the team.</li>
+            <li>Validates team is initialized first. If the team does not yet have this specific connection linked, the REST API auto-links the team. The slash command requires explicit team initialization via <code>/crossguard init-team</code>.</li>
             <li>If connection not linked at team level, returns: <code>Connection X is not linked to this team. Run /crossguard init-team first.</code></li>
             <li>Adds link emoji prefix to channel header (visible indicator)</li>
             <li>Publishes WebSocket event <code>channel_connections_updated</code> to update UI indicators</li>
@@ -179,7 +179,7 @@
         <!-- teardown-team -->
         <h2 id="teardown-team">/crossguard teardown-team [connection-name]</h2>
 
-        <p>Unlink a NATS connection from the current team.</p>
+        <p>Unlink a connection from the current team.</p>
 
         <table class="field-table">
             <tbody>
@@ -210,11 +210,11 @@
         <!-- teardown-channel -->
         <h2 id="teardown-channel">/crossguard teardown-channel [connection-name]</h2>
 
-        <p>Unlink a NATS connection from the current channel.</p>
+        <p>Unlink a connection from the current channel.</p>
 
         <table class="field-table">
             <tbody>
-                <tr><td>Permission</td><td>Channel Admin, Team Admin, or System Admin</td></tr>
+                <tr><td>Permission</td><td>Channel Admin, Team Admin, or System Admin (blocked by <code>RestrictToSystemAdmins</code>)</td></tr>
                 <tr><td>Arguments</td><td><code>connection-name</code> (optional, same auto-select/dialog behavior)</td></tr>
             </tbody>
         </table>
@@ -327,7 +327,7 @@
             </li>
             <li>
                 <strong>System Admins:</strong> Global overview with all initialized teams (table with display
-                name, team ID, team name, linked connections), all configured NATS connections (table with name,
+                name, team ID, team name, linked connections), all configured connections (table with name,
                 direction, address, auth type, subject, file transfer status), plus current channel status.
                 Warnings shown if connection configuration cannot be parsed.
             </li>

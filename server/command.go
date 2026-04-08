@@ -71,16 +71,16 @@ func (p *Plugin) registerCommand() error {
 func getAutocompleteData() *model.AutocompleteData {
 	cmd := model.NewAutocompleteData(commandTrigger, "[command]", "Cross Guard commands")
 
-	initTeam := model.NewAutocompleteData("init-team", "[connection-name]", "Link a NATS connection to this team (requires team admin or system admin)")
+	initTeam := model.NewAutocompleteData("init-team", "[connection-name]", "Link a connection to this team (requires team admin or system admin)")
 	cmd.AddCommand(initTeam)
 
-	initChannel := model.NewAutocompleteData("init-channel", "[connection-name]", "Link a NATS connection to this channel (requires channel admin or higher)")
+	initChannel := model.NewAutocompleteData("init-channel", "[connection-name]", "Link a connection to this channel (requires channel admin or higher)")
 	cmd.AddCommand(initChannel)
 
-	teardownTeam := model.NewAutocompleteData("teardown-team", "[connection-name]", "Unlink a NATS connection from this team (requires team admin or system admin)")
+	teardownTeam := model.NewAutocompleteData("teardown-team", "[connection-name]", "Unlink a connection from this team (requires team admin or system admin)")
 	cmd.AddCommand(teardownTeam)
 
-	teardownChannel := model.NewAutocompleteData("teardown-channel", "[connection-name]", "Unlink a NATS connection from this channel (requires channel admin or higher)")
+	teardownChannel := model.NewAutocompleteData("teardown-channel", "[connection-name]", "Unlink a connection from this channel (requires channel admin or higher)")
 	cmd.AddCommand(teardownChannel)
 
 	resetPrompt := model.NewAutocompleteData("reset-prompt", "<connection-name>", "Clear a blocked or pending connection prompt for this team")
@@ -141,10 +141,10 @@ func (p *Plugin) executeHelp() *model.CommandResponse {
 	sb.WriteString("**Quick Reference:**\n\n")
 	sb.WriteString("| Command | Description | Permission |\n")
 	sb.WriteString("|:--------|:------------|:-----------|\n")
-	sb.WriteString("| `init-team [name]` | Link a NATS connection to this team | Team Admin |\n")
-	sb.WriteString("| `init-channel [name]` | Link a NATS connection to this channel | Channel Admin |\n")
-	sb.WriteString("| `teardown-team [name]` | Unlink a NATS connection from this team | Team Admin |\n")
-	sb.WriteString("| `teardown-channel [name]` | Unlink a NATS connection from this channel | Channel Admin |\n")
+	sb.WriteString("| `init-team [name]` | Link a connection to this team | Team Admin |\n")
+	sb.WriteString("| `init-channel [name]` | Link a connection to this channel | Channel Admin |\n")
+	sb.WriteString("| `teardown-team [name]` | Unlink a connection from this team | Team Admin |\n")
+	sb.WriteString("| `teardown-channel [name]` | Unlink a connection from this channel | Channel Admin |\n")
 	sb.WriteString("| `reset-prompt <name>` | Clear a pending team connection prompt | Team Admin |\n")
 	sb.WriteString("| `reset-channel-prompt <name>` | Clear a pending channel connection prompt | Team Admin |\n")
 	sb.WriteString("| `rewrite-team [name] [team]` | Set or clear a remote team name rewrite | Team Admin |\n")
@@ -155,27 +155,27 @@ func (p *Plugin) executeHelp() *model.CommandResponse {
 	sb.WriteString("**Detailed Commands:**\n\n")
 
 	sb.WriteString("##### `/crossguard init-team [connection-name]`\n")
-	sb.WriteString("Link a NATS connection to the current team, enabling cross-domain relay.\n")
+	sb.WriteString("Link a connection to the current team, enabling cross-domain relay.\n")
 	sb.WriteString("- **Permission:** Team Admin or System Admin\n")
 	sb.WriteString("- **Arguments:** `connection-name` (optional if only one connection is configured)\n")
 	sb.WriteString("- **Example:** `/crossguard init-team myconn`\n")
 	sb.WriteString("- If multiple connections exist and no name is given, a selection dialog will appear.\n\n")
 
 	sb.WriteString("##### `/crossguard init-channel [connection-name]`\n")
-	sb.WriteString("Link a NATS connection to the current channel. The team must be initialized first.\n")
+	sb.WriteString("Link a connection to the current channel. The team must be initialized first.\n")
 	sb.WriteString("- **Permission:** Channel Admin, Team Admin, or System Admin\n")
 	sb.WriteString("- **Arguments:** `connection-name` (optional if only one connection is configured)\n")
 	sb.WriteString("- **Example:** `/crossguard init-channel myconn`\n")
 	sb.WriteString("- If multiple connections exist and no name is given, a selection dialog will appear.\n\n")
 
 	sb.WriteString("##### `/crossguard teardown-team [connection-name]`\n")
-	sb.WriteString("Unlink a NATS connection from the current team.\n")
+	sb.WriteString("Unlink a connection from the current team.\n")
 	sb.WriteString("- **Permission:** Team Admin or System Admin\n")
 	sb.WriteString("- **Arguments:** `connection-name` (optional if only one connection is linked)\n")
 	sb.WriteString("- **Example:** `/crossguard teardown-team myconn`\n\n")
 
 	sb.WriteString("##### `/crossguard teardown-channel [connection-name]`\n")
-	sb.WriteString("Unlink a NATS connection from the current channel.\n")
+	sb.WriteString("Unlink a connection from the current channel.\n")
 	sb.WriteString("- **Permission:** Channel Admin, Team Admin, or System Admin\n")
 	sb.WriteString("- **Arguments:** `connection-name` (optional if only one connection is linked)\n")
 	sb.WriteString("- **Example:** `/crossguard teardown-channel myconn`\n\n")
@@ -200,13 +200,13 @@ func (p *Plugin) executeHelp() *model.CommandResponse {
 	sb.WriteString("- **Example (clear):** `/crossguard rewrite-team myconn`\n\n")
 
 	sb.WriteString("##### `/crossguard status`\n")
-	sb.WriteString("Show the Cross Guard status for the current team and channel. System Admins see a global overview of all initialized teams and NATS connections.\n")
+	sb.WriteString("Show the Cross Guard status for the current team and channel. System Admins see a global overview of all initialized teams and connections.\n")
 	sb.WriteString("- **Permission:** Any team member (System Admins see global status)\n\n")
 
 	sb.WriteString("---\n\n")
 
 	sb.WriteString("**Getting Started:**\n")
-	sb.WriteString("1. Configure NATS connections in **System Console > Plugins > Cross Guard**\n")
+	sb.WriteString("1. Configure connections in **System Console > Plugins > Cross Guard**\n")
 	sb.WriteString("2. Run `/crossguard init-team` in the team you want to enable\n")
 	sb.WriteString("3. Run `/crossguard init-channel` in each channel that should relay messages\n")
 	sb.WriteString("4. Run `/crossguard status` to verify the setup\n\n")
@@ -245,7 +245,7 @@ func (p *Plugin) executeInitTeam(args *model.CommandArgs) *model.CommandResponse
 	connName, allConns, resolveErr := p.resolveConnectionName(inputName, p.getAllConnectionNames())
 	if resolveErr != "" {
 		if len(allConns) == 0 {
-			return respondEphemeral("No NATS connections configured. Add connections in the System Console first.")
+			return respondEphemeral("No connections configured. Add connections in the System Console first.")
 		}
 		if inputName == "" && len(allConns) > 1 {
 			p.openConnectionDialog(args.TriggerId, args.TeamId, allConns, actionInitTeam)
@@ -414,7 +414,7 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 	}
 
 	if len(resp.Connections) > 0 {
-		sb.WriteString("\n**NATS Connections:**\n\n")
+		sb.WriteString("\n**Connections:**\n\n")
 		sb.WriteString("| Name | Direction | Address | Auth Type | Subject | Format | Files |\n")
 		sb.WriteString("|:-----|:----------|:--------|:----------|:--------|:-------|:------|\n")
 		for _, conn := range resp.Connections {
@@ -482,7 +482,7 @@ func (p *Plugin) executeInitChannel(args *model.CommandArgs) *model.CommandRespo
 	connName, _, resolveErr := p.resolveConnectionName(inputName, allConns)
 	if resolveErr != "" {
 		if len(allConns) == 0 {
-			return respondEphemeral("No NATS connections configured. Check the System Console settings.")
+			return respondEphemeral("No connections configured. Check the System Console settings.")
 		}
 		if inputName == "" && len(allConns) > 1 {
 			p.openConnectionDialog(args.TriggerId, args.ChannelId, allConns, actionInitChannel)

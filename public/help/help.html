@@ -19,7 +19,7 @@
             <a href="commands.html">Slash Commands</a>
             <a href="admin.html">Admin Configuration</a>
             <a href="api.html">REST API</a>
-            <a href="nats-interface.html">NATS Interface</a>
+            <a href="transport-interface.html">Transport Interface</a>
             <a href="threatmodel.html">Threat Model</a>
             <a href="whitepaper.html">Whitepaper</a>
         </nav>
@@ -38,7 +38,7 @@
         <!-- What is Cross Guard? -->
         <h2>What is Cross Guard?</h2>
         <p>
-            Cross Guard enables message relay between separate Mattermost servers using NATS as the
+            Cross Guard enables message relay between separate Mattermost servers using NATS or Azure Queue Storage as the
             transport layer. It is designed for environments where multiple isolated Mattermost instances
             need to exchange messages across domain boundaries without direct database or API access
             between servers.
@@ -47,8 +47,8 @@
             Posts, edits, deletes, reactions, and file attachments flow bidirectionally across server
             boundaries. Each server maintains its own users, teams, and channels. Cross Guard bridges
             them at the message level, preserving each server's independence while enabling real-time
-            communication. File attachments are transferred using NATS JetStream Object Store, a
-            separate transport from the core pub/sub text relay. File transfer is opt-in per connection.
+            communication. File attachments are transferred using NATS JetStream Object Store or
+            Azure Blob Storage, depending on the configured provider. File transfer is opt-in per connection.
         </p>
         <p>
             The plugin integrates with Mattermost's post lifecycle hooks, so relay behavior is
@@ -59,16 +59,16 @@
         <h2>How Federation Works</h2>
 
         <div class="diagram-box">
-<pre>Server A (Low Side)          NATS Bus              Server B (High Side)
+<pre>Server A (Low Side)          Transport Layer           Server B (High Side)
 +-----------------------+    +----------------+    +-----------------------+
 |                       |    |                |    |                       |
-|  User posts in        |    |   Subject:     |    |  Bot posts in         |
-|  #town-square         |---&gt;|   crossguard.  |---&gt;|  #town-square         |
-|                       |    |   relay.msg    |    |                       |
-|  Outbound hook        |    |  (core NATS)   |    |  Inbound handler      |
+|  User posts in        |    |  NATS Subject  |    |  Bot posts in         |
+|  #town-square         |---&gt;|  or Azure Queue|---&gt;|  #town-square         |
 |                       |    |                |    |                       |
+|  Outbound hook        |    |  (provider     |    |  Inbound handler      |
+|                       |    |   dependent)   |    |                       |
 |  File attached?       |    | JetStream Obj  |    |  File downloaded &amp;    |
-|  Upload to ObjStore   |---&gt;| Store bucket   |---&gt;|  attached to post     |
+|  Upload to storage    |---&gt;| or Blob Store  |---&gt;|  attached to post     |
 +-----------------------+    +----------------+    +-----------------------+</pre>
         </div>
 
@@ -78,12 +78,12 @@
                 <strong>Outbound:</strong> Hooks into Mattermost post lifecycle events
                 (<code>MessageHasBeenPosted</code>, <code>MessageHasBeenUpdated</code>,
                 <code>MessageHasBeenDeleted</code>, reaction events), serializes to a message
-                envelope (JSON or XML, per connection config), and publishes to NATS.
+                envelope (JSON or XML, per connection config), and sends via the configured transport.
             </li>
             <li>
-                <strong>Inbound:</strong> Subscribes to a NATS subject, auto-detects the message
-                format (JSON or XML), deserializes the envelope, and creates, updates, or
-                deletes posts locally.
+                <strong>Inbound:</strong> Receives messages from the transport (NATS subscription
+                or Azure queue polling), auto-detects the message format (JSON or XML),
+                deserializes the envelope, and creates, updates, or deletes posts locally.
             </li>
         </ul>
 
@@ -96,11 +96,11 @@
                 <tr><td>New posts</td><td>Yes</td><td>Including thread replies (root_id preserved)</td></tr>
                 <tr><td>Post edits</td><td>Yes</td><td>Updated content replaces original on the remote side</td></tr>
                 <tr><td>Post deletes</td><td>Yes</td><td>Matched by original post ID</td></tr>
-                <tr><td>Reaction adds</td><td>Yes</td><td>Emoji name and user are relayed</td></tr>
-                <tr><td>Reaction removes</td><td>Yes</td><td>Matched by emoji name and post ID</td></tr>
+                <tr><td>Reaction adds</td><td>Yes</td><td>Emoji name and user are relayed. Sync-user reactions are filtered.</td></tr>
+                <tr><td>Reaction removes</td><td>Yes</td><td>Matched by emoji name and post ID. Sync-user reactions are filtered.</td></tr>
                 <tr><td>File attachments</td><td>Configurable</td><td>Enabled per connection via <code>file_transfer_enabled</code>. Supports allow/deny extension filters.</td></tr>
                 <tr><td>System messages</td><td>No</td><td>Filtered out to avoid noise</td></tr>
-                <tr><td>Relay bot posts</td><td>No</td><td>Loop prevention via <code>crossguard_relayed</code> property</td></tr>
+                <tr><td>Relay bot posts</td><td>No</td><td>Loop prevention via <code>crossguard_relayed</code> property (posts/edits), sync-user filtering (reactions), and delete flag mechanism (deletes)</td></tr>
             </tbody>
         </table>
 
@@ -109,7 +109,7 @@
 
         <h3>Connections</h3>
         <p>
-            Named NATS connection configurations (inbound or outbound) defined in the System Console.
+            Named connection configurations (NATS or Azure Queue Storage), inbound or outbound, defined in the System Console.
             Referenced by name in all commands using the format <code>direction:name</code>
             (e.g., <code>outbound:relay-to-b</code>).
         </p>
@@ -129,7 +129,8 @@
         <h3>Inbound Prompts</h3>
         <p>
             When an inbound message arrives for a team or channel that hasn't been explicitly accepted,
-            an interactive prompt (Accept/Block buttons) is posted in town-square. Admins must accept
+            an interactive prompt (Accept/Block buttons) is posted. Team-level prompts appear in
+            town-square; channel-level prompts appear in the target channel. Admins must accept
             before messages flow. Use <code>/crossguard reset-prompt</code> to clear a blocked prompt.
         </p>
 
@@ -154,7 +155,7 @@
             <li>
                 <strong>Configure connections</strong> in
                 <strong>System Console &gt; Plugins &gt; Cross Guard</strong>.
-                Add NATS connection details (address, subject, auth type).
+                Add connection details for your chosen provider (NATS or Azure Queue Storage).
                 See the <a href="admin.html">Admin Configuration Guide</a> for details.
             </li>
             <li>
@@ -182,7 +183,7 @@
             <tbody>
                 <tr>
                     <td><span class="permission-tag permission-sysadmin">System Admin</span></td>
-                    <td>All commands, all teams/channels. Can configure NATS connections in System Console. Can test connections via API. Sees global status overview.</td>
+                    <td>All commands, all teams/channels. Can configure connections in System Console. Can test connections via API. Sees global status overview.</td>
                     <td>Always has full access regardless of <code>RestrictToSystemAdmins</code> setting.</td>
                 </tr>
                 <tr>
@@ -222,15 +223,15 @@
             </a>
             <a href="admin.html" class="nav-card">
                 <h3>Admin Configuration Guide</h3>
-                <p>NATS connection setup, relay settings, example configurations, and troubleshooting.</p>
+                <p>Connection setup for NATS and Azure, relay settings, example configurations, and troubleshooting.</p>
             </a>
             <a href="api.html" class="nav-card">
                 <h3>REST API Reference</h3>
                 <p>All 16 REST endpoints with request/response examples and authentication details.</p>
             </a>
-            <a href="nats-interface.html" class="nav-card">
-                <h3>NATS Interface</h3>
-                <p>Wire protocol reference: message envelope, payload schemas, connection configuration, and complete examples.</p>
+            <a href="transport-interface.html" class="nav-card">
+                <h3>Transport Interface</h3>
+                <p>Wire protocol reference: message envelope, payload schemas, connection configuration for NATS and Azure Queue Storage, and complete examples.</p>
             </a>
             <a href="threatmodel.html" class="nav-card">
                 <h3>Threat Model</h3>

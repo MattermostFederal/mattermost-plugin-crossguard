@@ -19,7 +19,7 @@
             <a href="commands.html">Slash Commands</a>
             <a href="admin.html">Admin Configuration</a>
             <a href="api.html">REST API</a>
-            <a href="nats-interface.html">NATS Interface</a>
+            <a href="transport-interface.html">Transport Interface</a>
             <a href="threatmodel.html" class="active">Threat Model</a>
             <a href="whitepaper.html">Whitepaper</a>
         </nav>
@@ -39,8 +39,9 @@
         <h2>Introduction</h2>
         <p>
             Cross Guard operates as a Cross Domain Solution (CDS), bridging two or more Mattermost
-            instances across security domain boundaries using NATS as the transport. This page documents
-            the trust boundaries, the data that crosses them, and the threats and mitigations at each layer.
+            instances across security domain boundaries using NATS or Azure Queue Storage as the transport.
+            This page documents the trust boundaries, the data that crosses them, and the threats and
+            mitigations at each layer.
         </p>
         <p>
             Intended audience: security reviewers, accreditors, and administrators evaluating Cross Guard
@@ -51,14 +52,14 @@
         <h2>System Architecture and Trust Zones</h2>
 
         <div class="diagram-box">
-<pre>Zone 1: Mattermost Server A         Zone 3: NATS Bus          Zone 5: Mattermost Server B
+<pre>Zone 1: Mattermost Server A         Zone 3: Transport          Zone 5: Mattermost Server B
 +----------------------------+     +------------------+     +----------------------------+
-|  Users, Teams, Channels    |     |                  |     |  Users, Teams, Channels    |
-|  Mattermost API            |     |  NATS Server     |     |  Mattermost API            |
-|  +----------------------+  |     |  (may be shared  |     |  +----------------------+  |
-|  | Zone 2: Cross Guard  |  |     |   or dedicated)  |     |  | Zone 4: Cross Guard  |  |
-|  | Plugin (Outbound)    |--|----&gt;|  Subject-based   |----&gt;|--| Plugin (Inbound)     |  |
-|  | hooks.go, nats.go    |  |     |  pub/sub routing  |     |  | inbound.go           |  |
+|  Users, Teams, Channels    |     |  NATS Server     |     |  Users, Teams, Channels    |
+|  Mattermost API            |     |  (pub/sub)       |     |  Mattermost API            |
+|  +----------------------+  |     |       or         |     |  +----------------------+  |
+|  | Zone 2: Cross Guard  |  |     |  Azure Queue +   |     |  | Zone 4: Cross Guard  |  |
+|  | Plugin (Outbound)    |--|----&gt;|  Blob Storage    |----&gt;|--| Plugin (Inbound)     |  |
+|  | hooks.go, provider   |  |     |  (queue/poll)    |     |  | inbound.go           |  |
 |  +----------------------+  |     +------------------+     |  +----------------------+  |
 +----------------------------+                               +----------------------------+</pre>
         </div>
@@ -81,15 +82,21 @@
                 </tr>
                 <tr>
                     <td><strong>Zone 2: Cross Guard Plugin (Outbound)</strong></td>
-                    <td>Plugin code running inside Server A. Hooks into post lifecycle events (<code>MessageHasBeenPosted</code>, <code>MessageHasBeenUpdated</code>, <code>MessageHasBeenDeleted</code>, reaction hooks in <code>hooks.go</code>). Serializes to NATS envelope, publishes via <code>nats.go:publishToOutbound()</code>.</td>
+                    <td>Plugin code running inside Server A. Hooks into post lifecycle events (<code>MessageHasBeenPosted</code>, <code>MessageHasBeenUpdated</code>, <code>MessageHasBeenDeleted</code>, reaction hooks in <code>hooks.go</code>). Serializes to message envelope, publishes via <code>connections.go:publishToOutbound()</code>.</td>
                     <td>Trusted (same process as Mattermost)</td>
                     <td>Plugin code + Server A admin config</td>
                 </tr>
                 <tr>
-                    <td><strong>Zone 3: NATS Bus</strong></td>
+                    <td><strong>Zone 3: Transport Layer (NATS)</strong></td>
                     <td>External message broker. Receives published messages, delivers to subscribers. Can be shared or dedicated. May be in a separate network segment.</td>
                     <td>Semi-trusted (transport security only)</td>
                     <td>NATS admin (may be separate from MM admin)</td>
+                </tr>
+                <tr>
+                    <td><strong>Zone 3 (alt): Azure Queue Storage</strong></td>
+                    <td>Azure-managed queue and blob storage. Messages are enqueued by the outbound plugin and polled by the inbound plugin. File attachments are stored in Azure Blob Storage containers.</td>
+                    <td>Semi-trusted</td>
+                    <td>Azure subscription owner. Data encrypted at rest and in transit by Azure. Access controlled via connection string (shared key).</td>
                 </tr>
                 <tr>
                     <td><strong>Zone 4: Cross Guard Plugin (Inbound)</strong></td>
@@ -110,8 +117,9 @@
         <h2>Data Crossing the Domain Boundary</h2>
 
         <p>
-            The following data structures from <code>server/model/</code> transit the NATS bus between
-            trust zones. Understanding exactly what crosses the boundary is critical for CDS evaluation.
+            The following data structures from <code>server/model/</code> transit the transport layer (NATS bus
+            or Azure Queue Storage) between trust zones. Understanding exactly what crosses the boundary
+            is critical for CDS evaluation.
         </p>
 
         <h3>Envelope (<code>model/message.go:Envelope</code>)</h3>
@@ -220,9 +228,10 @@
                 user metadata (email, profile image, custom fields), channel purpose/header, hashtags,
                 pinned status, edit history, and interactive message elements (buttons, menus).
                 File attachments (<code>post.FileIds</code>) are not included in the envelope but can
-                be transferred separately via NATS JetStream Object Store when
-                <code>file_transfer_enabled</code> is true on the connection. File transfer is disabled
-                by default and supports allow/deny type filtering and size limits.
+                be transferred separately via NATS JetStream Object Store or Azure Blob Storage
+                (depending on the configured provider) when <code>file_transfer_enabled</code> is true
+                on the connection. File transfer is disabled by default and supports allow/deny type
+                filtering and size limits.
             </p>
         </div>
 
@@ -261,11 +270,20 @@
                 <tr><td>Code Path</td><td><code>inbound.go</code> calls <code>model.DetectFormat(msg.Data)</code> followed by <code>model.Unmarshal()</code> with no signature verification. The deserialized envelope is dispatched directly to handlers.</td></tr>
                 <tr><td>Mitigation</td><td>
                     <ol>
-                        <li>TLS encryption (<code>nats.go</code>, min TLS 1.2) protects against passive eavesdropping. NATS authentication (token or credentials) restricts who can connect.</li>
+                        <li>TLS encryption (<code>nats_provider.go</code>, min TLS 1.2) protects against passive eavesdropping. NATS authentication (token or credentials) restricts who can connect.</li>
                         <li>Restrict NATS server network access to only authorized Mattermost servers using IPsec, firewall rules, or network segmentation. Configure NATS ACLs so only authorized Mattermost server clients can publish to <code>crossguard.*</code> subjects.</li>
                     </ol>
                 </td></tr>
                 <tr><td>Residual Risk</td><td>A compromised but network-authorized Mattermost server with valid NATS credentials can still inject messages. No end-to-end integrity verification exists, but the combination of network-level restrictions and NATS ACLs significantly limits the attack surface.</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-spoof-az1">T-SPOOF-AZ1: Azure Connection String Compromise</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-sysadmin">HIGH</span></td></tr>
+                <tr><td>Description</td><td>An attacker who obtains the Azure Storage connection string can enqueue arbitrary messages or read queued messages. The connection string provides full access to the storage account.</td></tr>
+                <tr><td>Mitigation</td><td>Store connection strings securely (Mattermost encrypts plugin config at rest). Rotate storage account keys regularly. Use Azure Private Endpoints to restrict network access. Monitor Azure Storage analytics for anomalous access patterns.</td></tr>
             </tbody>
         </table>
 
@@ -277,9 +295,9 @@
             <tbody>
                 <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
                 <tr><td>Description</td><td><code>handleInboundUpdate()</code> in <code>inbound.go</code> looks up a local post by remote post ID mapping and replaces its <code>Message</code> field. There is no verification that the update came from the original author or that the remote user had edit permissions.</td></tr>
-                <tr><td>Code Path</td><td><code>inbound.go</code> retrieves mapping, sets <code>existing.Message = postMsg.Message</code>, calls <code>UpdatePost()</code>.</td></tr>
+                <tr><td>Code Path</td><td><code>inbound.go</code> retrieves mapping, sets <code>existing.Message = postMsg.MessageText</code>, calls <code>UpdatePost()</code>.</td></tr>
                 <tr><td>Mitigation</td><td>Post mapping keys (<code>pm-{connName}-{remotePostId}</code>) use connection-scoped namespaces, limiting edits to the connection that created the original post. The remote Mattermost server enforces its own edit permissions before relaying.</td></tr>
-                <tr><td>Residual Risk</td><td>If NATS credentials are compromised, fabricated update messages can modify any previously relayed post.</td></tr>
+                <tr><td>Residual Risk</td><td>If transport credentials are compromised (NATS token/password or Azure connection string), fabricated update messages can modify any previously relayed post.</td></tr>
             </tbody>
         </table>
 
@@ -287,7 +305,7 @@
         <table class="field-table">
             <tbody>
                 <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
-                <tr><td>Description</td><td><code>handleInboundDelete()</code> in <code>inbound.go</code> deletes a local post based solely on the remote post ID in the NATS message. No author or permission verification.</td></tr>
+                <tr><td>Description</td><td><code>handleInboundDelete()</code> in <code>inbound.go</code> deletes a local post based solely on the remote post ID in the inbound message. No author or permission verification.</td></tr>
                 <tr><td>Code Path</td><td><code>inbound.go</code> retrieves mapping, calls <code>DeletePost(localPostID)</code>.</td></tr>
                 <tr><td>Mitigation</td><td>Same connection-scoped namespace as edits. The deleting flag mechanism (<code>SetDeletingFlag</code>/<code>ClearDeletingFlag</code>) prevents delete loops but does not authenticate the delete request.</td></tr>
                 <tr><td>Residual Risk</td><td>Same as T-TAMP-1.</td></tr>
@@ -298,8 +316,17 @@
         <table class="field-table">
             <tbody>
                 <tr><td>Severity</td><td><span class="permission-tag permission-member">LOW</span></td></tr>
-                <tr><td>Description</td><td><code>SetPostMapping()</code> in <code>inbound.go</code> stores <code>connName:remotePostId -&gt; localPostId</code>. If an attacker sends a new post with a previously-used remote post ID, the mapping is overwritten, causing future edits/deletes to target the wrong local post.</td></tr>
-                <tr><td>Mitigation</td><td>Post IDs are 26-character random strings (Mattermost <code>NewId()</code>), making collision unlikely without intentional targeting. Connection-scoped namespacing limits blast radius.</td></tr>
+                <tr><td>Description</td><td><code>SetPostMapping()</code> in <code>inbound.go</code> stores <code>connName:remotePostId -&gt; localPostId</code>. The inbound handler checks for existing post ID mappings before creating a post. While duplicate remote post IDs are detected and skipped via an idempotency check, a race condition between the check and the store write could theoretically allow a mapping conflict under extremely high concurrency.</td></tr>
+                <tr><td>Mitigation</td><td>The idempotency check (<code>GetPostMapping</code>) prevents replay of previously-seen post IDs. Post IDs are 26-character random strings (Mattermost <code>NewId()</code>), making collision unlikely without intentional targeting. Connection-scoped namespacing limits blast radius.</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-tamp-az1">T-TAMP-AZ1: Azure Queue Message Tampering</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
+                <tr><td>Description</td><td>Messages in Azure Queue Storage are Base64-encoded but not encrypted or signed by the application. An attacker with storage account access could modify queued messages before they are consumed.</td></tr>
+                <tr><td>Mitigation</td><td>Restrict storage account access via Azure RBAC and network rules. Consider using SAS tokens with limited permissions instead of full connection strings. Azure Storage provides its own integrity checks at the transport level via TLS.</td></tr>
             </tbody>
         </table>
 
@@ -310,9 +337,18 @@
         <table class="field-table">
             <tbody>
                 <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
-                <tr><td>Description</td><td>Relayed posts, edits, deletes, and reactions are created via the Mattermost Plugin API. While Mattermost logs post creation, there is no Cross Guard-specific audit log linking a local action back to the specific NATS message, remote server, or remote user that triggered it.</td></tr>
+                <tr><td>Description</td><td>Relayed posts, edits, deletes, and reactions are created via the Mattermost Plugin API. While Mattermost logs post creation, there is no Cross Guard-specific audit log linking a local action back to the specific transport message, remote server, or remote user that triggered it.</td></tr>
                 <tr><td>Mitigation</td><td>Plugin logs contain connection name, remote post IDs, and usernames at DEBUG/WARN level. Team init/teardown actions post bot announcements to <code>#town-square</code> with the acting user's name. The <code>crossguard_relayed</code> post property marks all inbound posts.</td></tr>
-                <tr><td>Residual Risk</td><td>Forensic reconstruction requires correlating logs across both Mattermost instances and the NATS server.</td></tr>
+                <tr><td>Residual Risk</td><td>Forensic reconstruction requires correlating logs across both Mattermost instances and the transport infrastructure (NATS server or Azure Storage account).</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-repud-az1">T-REPUD-AZ1: Limited Azure Audit Trail</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-member">LOW</span></td></tr>
+                <tr><td>Description</td><td>Azure Storage provides access logging, but correlating queue operations to specific Cross Guard messages requires additional effort. Message content is Base64-encoded in logs.</td></tr>
+                <tr><td>Mitigation</td><td>Enable Azure Storage Analytics logging. Enable Azure Monitor diagnostic settings for the storage account. Cross Guard logs all inbound/outbound operations with connection names and post IDs.</td></tr>
             </tbody>
         </table>
 
@@ -326,7 +362,7 @@
                 <tr><td>Description</td><td>TLS encrypts data in transit between plugin and NATS server, but the NATS server itself processes messages in cleartext. A compromised or malicious NATS server operator can read all relayed message content.</td></tr>
                 <tr><td>Mitigation</td><td>
                     <ol>
-                        <li>Use a dedicated, locally-administered NATS server. Enable TLS with mutual certificate authentication (<code>client_cert</code>/<code>client_key</code> in <code>nats.go</code>). For CDS deployments, the NATS server should be within a controlled enclave.</li>
+                        <li>Use a dedicated, locally-administered NATS server. Enable TLS with mutual certificate authentication (<code>client_cert</code>/<code>client_key</code> in <code>nats_provider.go</code>). For CDS deployments, the NATS server should be within a controlled enclave.</li>
                         <li>Restrict NATS server network access to only authorized Mattermost servers using IPsec, firewall rules, or network segmentation. Configure NATS ACLs so only authorized Mattermost server clients can subscribe to <code>crossguard.*</code> subjects.</li>
                     </ol>
                 </td></tr>
@@ -338,8 +374,8 @@
         <table class="field-table">
             <tbody>
                 <tr><td>Severity</td><td><span class="permission-tag permission-member">LOW</span></td></tr>
-                <tr><td>Description</td><td>NATS envelopes contain <code>team_name</code> and <code>channel_name</code> from the source server. An entity with NATS subscribe access learns the team and channel structure of the sending server.</td></tr>
-                <tr><td>Mitigation</td><td>Use dedicated NATS subjects per connection pair. Restrict NATS ACLs.</td></tr>
+                <tr><td>Description</td><td>Message envelopes contain <code>team_name</code> and <code>channel_name</code> from the source server. An entity with transport read access (NATS subscribe or Azure queue dequeue) learns the team and channel structure of the sending server.</td></tr>
+                <tr><td>Mitigation</td><td>Use dedicated transport channels per connection pair. For NATS, restrict ACLs. For Azure, restrict storage account access via RBAC and network rules.</td></tr>
             </tbody>
         </table>
 
@@ -361,6 +397,15 @@
             </tbody>
         </table>
 
+        <h4 id="t-info-az1">T-INFO-AZ1: Connection String Exposure in Plugin Config</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
+                <tr><td>Description</td><td>The Azure connection string is stored in the Mattermost plugin configuration. System admins with database access or config export access can view the connection string.</td></tr>
+                <tr><td>Mitigation</td><td>Mattermost encrypts plugin settings at rest. Limit System Admin access. Rotate storage account keys if compromise is suspected. Use Azure Key Vault integration where possible.</td></tr>
+            </tbody>
+        </table>
+
         <!-- 4.5 Denial of Service -->
         <h3>Denial of Service</h3>
 
@@ -379,8 +424,17 @@
         <table class="field-table">
             <tbody>
                 <tr><td>Severity</td><td><span class="permission-tag permission-member">LOW</span></td></tr>
-                <tr><td>Description</td><td><code>publishToOutbound()</code> in <code>nats.go</code> retries failed publishes 3 times with exponential backoff (500ms, 1s, 2s). If NATS is unreachable, each outbound message blocks a goroutine for up to ~3.5 seconds.</td></tr>
+                <tr><td>Description</td><td><code>publishToOutbound()</code> in <code>connections.go</code> calls the provider's Publish method. The NATS provider retries failed publishes 3 times with exponential backoff (500ms, 1s, 2s). If the transport is unreachable, each outbound message blocks a goroutine for up to ~3.5 seconds. The Azure provider does not retry at the application level.</td></tr>
                 <tr><td>Mitigation</td><td>Context cancellation (<code>ctx.Done()</code>) allows graceful shutdown. Messages are dropped (not queued) after retry exhaustion.</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-dos-az1">T-DOS-AZ1: Azure Queue Saturation</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
+                <tr><td>Description</td><td>An attacker with queue write access (or a misconfigured outbound server) could flood the queue with messages, causing the inbound poller to process excessive messages and potentially overwhelming the Mattermost server.</td></tr>
+                <tr><td>Mitigation</td><td>Azure Queue Storage has built-in throttling. The inbound poller processes a maximum of 32 messages per batch with a 5-second interval, providing natural rate limiting. Monitor queue depth via Azure metrics. Set up alerts for unusual queue growth.</td></tr>
             </tbody>
         </table>
 
@@ -391,7 +445,7 @@
         <table class="field-table">
             <tbody>
                 <tr><td>Severity</td><td><span class="permission-tag permission-teamadmin">MEDIUM</span></td></tr>
-                <tr><td>Description</td><td>By default (<code>RestrictToSystemAdmins=false</code>), Team Admins can link/unlink NATS connections to their teams, and Channel Admins can manage channel connections. A compromised or rogue Team Admin could enable relay on channels without broader organizational approval.</td></tr>
+                <tr><td>Description</td><td>By default (<code>RestrictToSystemAdmins=false</code>), Team Admins can link/unlink connections to their teams, and Channel Admins can manage channel connections. A compromised or rogue Team Admin could enable relay on channels without broader organizational approval.</td></tr>
                 <tr><td>Code Path</td><td><code>command.go</code> (<code>isTeamAdminOrSystemAdmin</code>) checks <code>RestrictToSystemAdmins</code>.</td></tr>
                 <tr><td>Mitigation</td><td>Enable <code>RestrictToSystemAdmins</code> setting to lock all connection management to System Admins only. Inbound connections require explicit Accept via admin prompts before messages flow.</td></tr>
                 <tr><td>Residual Risk</td><td>With the setting disabled, the blast radius is limited to the Team Admin's own team.</td></tr>
@@ -405,6 +459,15 @@
                 <tr><td>Description</td><td><code>ensureMembership()</code> in <code>sync_user.go</code> automatically adds sync users (and real users when username lookup is enabled) to teams and channels as messages arrive. This bypasses normal Mattermost invitation/join workflows.</td></tr>
                 <tr><td>Code Path</td><td><code>sync_user.go</code> calls <code>ensureMembership(user.Id, teamID, channelID)</code>, which calls <code>CreateTeamMember</code> and <code>AddChannelMember</code>.</td></tr>
                 <tr><td>Mitigation</td><td>Only affects channels/teams that have been explicitly linked to an inbound connection by an admin. The <code>system_user</code> role assigned to sync users provides no admin privileges.</td></tr>
+            </tbody>
+        </table>
+
+        <h4 id="t-elev-az1">T-ELEV-AZ1: Blob Container Public Access Misconfiguration</h4>
+        <table class="field-table">
+            <tbody>
+                <tr><td>Severity</td><td><span class="permission-tag permission-sysadmin">HIGH</span></td></tr>
+                <tr><td>Description</td><td>If the Azure Blob container is accidentally configured with public access (blob or container level), file attachments become accessible to anyone on the internet without authentication.</td></tr>
+                <tr><td>Mitigation</td><td>The plugin creates containers with private access by default. Enforce "no public access" at the storage account level via Azure policy. Audit container access levels regularly. Use Azure Defender for Storage to detect public access misconfigurations.</td></tr>
             </tbody>
         </table>
 
@@ -675,7 +738,7 @@
                     <td>Info Disclosure</td>
                     <td><span class="permission-tag permission-member">LOW</span></td>
                     <td>Partial</td>
-                    <td>Dedicated subjects + ACLs</td>
+                    <td>Dedicated transport channels + ACLs/RBAC</td>
                 </tr>
                 <tr>
                     <td><a href="#t-info-3">T-INFO-3</a></td>
@@ -725,8 +788,71 @@
                     <td>By design</td>
                     <td>Limited to linked channels</td>
                 </tr>
+                <tr>
+                    <td><a href="#t-spoof-az1">T-SPOOF-AZ1</a></td>
+                    <td>Azure connection string compromise</td>
+                    <td>Spoofing</td>
+                    <td><span class="permission-tag permission-sysadmin">HIGH</span></td>
+                    <td>Partial</td>
+                    <td>Encrypted config + key rotation + Private Endpoints</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-tamp-az1">T-TAMP-AZ1</a></td>
+                    <td>Azure queue message tampering</td>
+                    <td>Tampering</td>
+                    <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
+                    <td>Partial</td>
+                    <td>Azure RBAC + network rules + TLS transport integrity</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-repud-az1">T-REPUD-AZ1</a></td>
+                    <td>Limited Azure audit trail</td>
+                    <td>Repudiation</td>
+                    <td><span class="permission-tag permission-member">LOW</span></td>
+                    <td>Partial</td>
+                    <td>Azure Storage Analytics + plugin logs</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-info-az1">T-INFO-AZ1</a></td>
+                    <td>Connection string exposure in config</td>
+                    <td>Info Disclosure</td>
+                    <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
+                    <td>Partial</td>
+                    <td>Encrypted config + key rotation</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-dos-az1">T-DOS-AZ1</a></td>
+                    <td>Azure queue saturation</td>
+                    <td>DoS</td>
+                    <td><span class="permission-tag permission-teamadmin">MEDIUM</span></td>
+                    <td>Partial</td>
+                    <td>Azure throttling + batch polling (32 msgs/5s)</td>
+                </tr>
+                <tr>
+                    <td><a href="#t-elev-az1">T-ELEV-AZ1</a></td>
+                    <td>Blob container public access</td>
+                    <td>Privilege</td>
+                    <td><span class="permission-tag permission-sysadmin">HIGH</span></td>
+                    <td>By design</td>
+                    <td>Private access default + Azure policy</td>
+                </tr>
             </tbody>
         </table>
+
+        <!-- Section 10: Azure Transport Security -->
+        <h2>Azure Transport Security Considerations</h2>
+        <p>
+            When using Azure Queue Storage as the transport provider, the following security
+            measures should be implemented:
+        </p>
+        <ul>
+            <li><strong>Private Endpoints:</strong> Configure Azure Private Endpoints for the storage account to ensure queue and blob traffic stays within the Azure backbone network.</li>
+            <li><strong>Network Rules:</strong> Use Azure Storage firewall rules to restrict access to specific IP ranges or virtual networks.</li>
+            <li><strong>Key Rotation:</strong> Rotate storage account access keys on a regular schedule. Update the plugin configuration after rotation.</li>
+            <li><strong>Monitoring:</strong> Enable Azure Monitor diagnostic settings and Storage Analytics to track access patterns and detect anomalies.</li>
+            <li><strong>Least Privilege:</strong> Consider using Shared Access Signatures (SAS) scoped to only the required queue and container, rather than full account-level connection strings.</li>
+        </ul>
+
     </main>
 </div>
 </body>

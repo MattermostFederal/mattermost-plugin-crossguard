@@ -222,7 +222,7 @@ func (p *Plugin) getTeamStatus(teamID string) (*TeamStatusResponse, *apiError) {
 	}, nil
 }
 
-// getGlobalStatus returns the status of all initialized teams and redacted NATS connections.
+// getGlobalStatus returns the status of all initialized teams and redacted connections.
 func (p *Plugin) getGlobalStatus() (*GlobalStatusResponse, *apiError) {
 	teamIDs, err := p.kvstore.GetInitializedTeamIDs()
 	if err != nil {

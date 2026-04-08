@@ -1,6 +1,6 @@
 # Cross Guard - Mattermost Plugin
 
-Cross Guard plugin for Mattermost Federal. Enables cross-domain message relay between Mattermost servers via NATS.
+Cross Guard plugin for Mattermost Federal. Enables cross-domain message relay between Mattermost servers using pluggable transport providers (NATS or Azure Queue Storage).
 
 ## Development
 
@@ -27,7 +27,7 @@ make deploy
 
 ### Docker Development Environment (Dual-Server)
 
-The dev environment runs two Mattermost servers (A and B) with a shared NATS bus for cross-domain relay testing.
+The dev environment runs two Mattermost servers (A and B) with a shared NATS bus and an Azurite instance (Azure Storage Emulator) for cross-domain relay testing with either provider.
 
 After `make docker-setup`:
 
@@ -40,8 +40,21 @@ After `make docker-setup`:
   - User: `userb / password`
   - Team: Test B
 - **NATS**: `nats://localhost:4222` (monitor: http://localhost:8222)
+- **Azurite Queue**: `http://localhost:10001`
+- **Azurite Blob**: `http://localhost:10000`
 
-`make deploy` automatically configures Server A with an outbound NATS connection and Server B with an inbound NATS connection.
+`make deploy` automatically configures Server A with an outbound connection and Server B with an inbound connection.
+
+### Transport Providers
+
+Cross Guard supports two pluggable transport providers, selectable per connection in the admin console:
+
+| Provider | Messaging | File Transfer |
+|----------|-----------|---------------|
+| **NATS** | JetStream pub/sub | JetStream Object Store |
+| **Azure Queue Storage** | Azure Queue (polling-based) | Azure Blob Storage |
+
+Both providers support JSON and XML wire formats for cross-domain message relay.
 
 ### Slash Commands
 
@@ -88,7 +101,8 @@ Typical workflow: `init-team <connection-name>` first, then `init-channel <conne
 | `make docker-disable` | Disable plugin on both servers |
 | `make docker-enable` | Enable plugin on both servers |
 | `make docker-plugin-list` | List installed plugins on both servers |
-| `make docker-smoke-test` | Run end-to-end relay smoke test (init, post, verify) |
+| `make docker-smoke-test` | Run end-to-end NATS relay smoke test (init, post, verify) |
+| `make docker-azure-smoke-test` | Run Azure Queue/Blob relay smoke test via Azurite |
 | `make docker-kill-orphans` | Kill orphaned containers on MM ports |
 
 ### Release

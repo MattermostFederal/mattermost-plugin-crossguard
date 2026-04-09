@@ -7,7 +7,19 @@ description: Systematically find Go backend test coverage gaps and add exhaustiv
 
 Systematically analyze Go backend coverage, identify gaps, and add exhaustive tests that follow project patterns. You are a Go testing expert who writes thorough, maintainable tests.
 
-## Step 1: Measure Current Coverage
+**This skill runs in two phases: Plan first, then Execute.**
+
+---
+
+## Phase A: Plan (Read-Only)
+
+Enter plan mode, analyze coverage, build a todo list, then exit plan mode for user approval.
+
+### Step 1: Enter Plan Mode
+
+Call `EnterPlanMode` to ensure no edits are made during analysis.
+
+### Step 2: Measure Current Coverage
 
 Run `make coverage-backend` and capture the output. This runs `go test -coverprofile` then `go tool cover -func` to show per-function coverage.
 
@@ -23,7 +35,7 @@ Parse the output to build a prioritized list:
 
 Skip trivial functions (main, manifest constants, simple getters under 5 lines).
 
-## Step 2: Understand What Needs Testing
+### Step 3: Understand What Needs Testing
 
 For each function in your priority list:
 
@@ -32,12 +44,32 @@ For each function in your priority list:
 3. **Identify untested paths**: error returns, edge cases, branch conditions, concurrent scenarios
 4. **Note dependencies**: what needs mocking (API calls, KV store, providers)
 
-Build a concrete test plan before writing any code. For each test, know:
-- The specific branch/path being tested
-- The setup required (mocks, test data)
-- The assertion that proves the path was exercised
+### Step 4: Build Todo List
 
-## Step 3: Write Tests Using Project Patterns
+Use `TaskCreate` to create one task per function or logical group of functions needing tests. Each task should include:
+
+- **subject**: `Test <FunctionName> in <file.go>` (imperative form)
+- **description**: Current coverage %, what specifically needs testing (list the untested branches, error paths, edge cases), and the tier (1-4)
+
+Group related functions into a single task when they share setup (e.g., all methods on the same receiver that need the same mock). Order tasks by tier (Tier 1 first).
+
+Example tasks:
+- `Test HandleInbound semaphore-full and context-cancel paths in inbound.go` (Tier 1, 0% coverage, needs mock provider + semaphore fill)
+- `Test splitMessage UTF-8 boundary handling in service.go` (Tier 3, 65% coverage, missing multi-byte split edge cases)
+
+### Step 5: Exit Plan Mode
+
+Call `ExitPlanMode` to present the plan and todo list to the user for approval.
+
+---
+
+## Phase B: Execute
+
+After the user approves the plan, work through the todo list writing tests.
+
+### Step 6: Write Tests Using Project Patterns
+
+Mark each task as `in_progress` (via `TaskUpdate`) before starting it, and `completed` when tests pass.
 
 ### Test Infrastructure Available
 
@@ -187,7 +219,7 @@ Add tests to existing `*_test.go` files. The mapping:
 - `server/model/post_message.go` -> `server/model/post_message_test.go`
 - `server/model/test_message.go` -> `server/model/test_message_test.go`
 
-## Step 4: Implement in Phases
+## Step 7: Implement in Phases
 
 Work through tiers in order. After each phase, validate before moving on.
 
@@ -206,7 +238,7 @@ Message splitting (UTF-8 boundaries), file handling (retry exhaustion, filter po
 **Phase 5 - Interface extraction for testability (if needed):**
 If a dependency uses a concrete SDK type that cannot be mocked (e.g., Azure blob client), extract an interface to enable unit testing. Follow the existing `azureQueuer` pattern in `azure_provider.go`.
 
-## Step 5: Validate After Each Phase
+## Step 8: Validate After Each Phase
 
 After writing each batch of tests:
 
@@ -221,9 +253,11 @@ make check-style
 make coverage-backend 2>&1
 ```
 
-Compare coverage numbers against the baseline from Step 1. If a function you targeted is still at 0%, your test isn't exercising the right code path. Re-read the source and fix.
+Compare coverage numbers against the baseline from Step 2. If a function you targeted is still at 0%, your test isn't exercising the right code path. Re-read the source and fix.
 
-## Step 6: Final Verification
+Mark completed tasks via `TaskUpdate` with `status: "completed"` as each batch passes.
+
+## Step 9: Final Verification
 
 After all phases complete:
 

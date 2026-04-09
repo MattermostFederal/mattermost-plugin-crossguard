@@ -7,7 +7,19 @@ description: Systematically find frontend test coverage gaps and add exhaustive 
 
 Systematically analyze frontend coverage, identify gaps, and add exhaustive tests that follow project patterns. You are a frontend testing expert who writes thorough, maintainable Playwright tests.
 
-## Step 1: Measure Current Coverage
+**This skill runs in two phases: Plan first, then Execute.**
+
+---
+
+## Phase A: Plan (Read-Only)
+
+Enter plan mode, analyze coverage, build a todo list, then exit plan mode for user approval.
+
+### Step 1: Enter Plan Mode
+
+Call `EnterPlanMode` to ensure no edits are made during analysis.
+
+### Step 2: Measure Current Coverage
 
 Run `make coverage-frontend` and capture the output. This runs C8 coverage for both unit tests (Playwright Test) and component tests (Playwright CT).
 
@@ -27,7 +39,7 @@ Parse the C8 text output to build a prioritized list:
 
 Skip test infrastructure files (`*Story.tsx`, `PluginTestHarness.tsx`, `TestPlaceholder.tsx`).
 
-## Step 2: Understand What Needs Testing
+### Step 3: Understand What Needs Testing
 
 For each file in your priority list:
 
@@ -36,12 +48,32 @@ For each file in your priority list:
 3. **Identify untested paths**: error states, loading states, empty/null props, user interactions, API failures, edge cases
 4. **Note dependencies**: what needs mocking (API routes, global state, browser APIs)
 
-Build a concrete test plan before writing any code. For each test, know:
-- The specific behavior/state being tested
-- The setup required (mounts, route mocks, props)
-- The assertion that proves the behavior was exercised
+### Step 4: Build Todo List
 
-## Step 3: Write Tests Using Project Patterns
+Use `TaskCreate` to create one task per component or logical group of files needing tests. Each task should include:
+
+- **subject**: `Test <ComponentName> in <file>` (imperative form)
+- **description**: Current coverage %, what specifically needs testing (list the untested states, interactions, error paths), and the tier (1-4)
+
+Group related files into a single task when they share setup (e.g., a component and its Story wrapper). Order tasks by tier (Tier 1 first).
+
+Example tasks:
+- `Test CrossguardUserPopover error and empty states in CrossguardUserPopover.pw.tsx` (Tier 1, 0% coverage, needs route mocks for API failure + empty user list)
+- `Test AdminPanel form validation edge cases in AdminPanel.pw.tsx` (Tier 3, 62% coverage, missing invalid input handling and submit error states)
+
+### Step 5: Exit Plan Mode
+
+Call `ExitPlanMode` to present the plan and todo list to the user for approval.
+
+---
+
+## Phase B: Execute
+
+After the user approves the plan, work through the todo list writing tests.
+
+### Step 6: Write Tests Using Project Patterns
+
+Mark each task as `in_progress` (via `TaskUpdate`) before starting it, and `completed` when tests pass.
 
 ### Two Test Types
 
@@ -276,7 +308,7 @@ Add tests to existing test files or create new ones following the pattern:
 **Plugin class tests:**
 - `src/index.tsx` -> `src/index.pw.tsx`
 
-## Step 4: Implement in Phases
+## Step 7: Implement in Phases
 
 Work through tiers in order. After each phase, validate before moving on.
 
@@ -295,7 +327,7 @@ Malformed JSON inputs, network failures, rapid user interactions, concurrent sta
 **Phase 5 - Story wrapper creation (if needed):**
 If a component needs internal state exposed for testing, create a `*Story.tsx` wrapper following the existing pattern in `ConnectionSettingsStory.tsx`. The story component captures callbacks via `window.__testCalls`.
 
-## Step 5: Validate After Each Phase
+## Step 8: Validate After Each Phase
 
 After writing each batch of tests:
 
@@ -313,9 +345,11 @@ make check-style
 make coverage-frontend 2>&1
 ```
 
-Compare coverage numbers against the baseline from Step 1. If a file you targeted still shows low coverage, your tests aren't exercising the right code paths. Re-read the source and fix.
+Compare coverage numbers against the baseline from Step 2. If a file you targeted still shows low coverage, your tests aren't exercising the right code paths. Re-read the source and fix.
 
-## Step 6: Final Verification
+Mark completed tasks via `TaskUpdate` with `status: "completed"` as each batch passes.
+
+## Step 9: Final Verification
 
 After all phases complete:
 

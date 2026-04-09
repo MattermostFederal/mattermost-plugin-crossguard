@@ -266,12 +266,24 @@ ifneq ($(HAS_WEBAPP),)
 endif
 
 ## Prints Go code coverage summary to terminal.
-.PHONY: coverage
-coverage: apply webapp/node_modules
+.PHONY: coverage-backend
+coverage-backend: apply
 ifneq ($(HAS_SERVER),)
 	$(GO) test $(GO_TEST_FLAGS) -coverprofile=server/coverage.txt ./server/...
 	$(GO) tool cover -func=server/coverage.txt
 endif
+
+## Prints frontend code coverage summary to terminal.
+.PHONY: coverage-frontend
+coverage-frontend: webapp/node_modules
+ifneq ($(HAS_WEBAPP),)
+	cd webapp && $(NPM) run test:coverage
+	cd webapp && $(NPM) run test:pw-ct-coverage
+endif
+
+## Prints code coverage summary for both backend and frontend.
+.PHONY: coverage
+coverage: coverage-backend coverage-frontend
 
 ## Clean removes all build artifacts (but preserves build tools).
 .PHONY: clean
@@ -285,6 +297,8 @@ ifneq ($(HAS_WEBAPP),)
 	rm -fr webapp/junit.xml
 	rm -fr webapp/dist
 	rm -fr webapp/node_modules
+	rm -fr webapp/coverage
+	rm -fr webapp/coverage-ct
 endif
 
 ## Nuke everything: Docker containers, data, and all build artifacts

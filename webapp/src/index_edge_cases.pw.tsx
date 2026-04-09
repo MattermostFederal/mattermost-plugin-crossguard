@@ -1019,3 +1019,65 @@ return {error: 'no main menu callback registered'};
         expect(result).toEqual({teamID: 'team-42'});
     });
 });
+
+// ---------------------------------------------------------------------------
+// Simultaneous team + channels change
+// ---------------------------------------------------------------------------
+test.describe('Plugin - simultaneous state changes', () => {
+    test('team ID and channels changing in one callback triggers both team status and channel connections fetches', async ({mount, page}) => {
+        await mount(<PluginTestHarness/>);
+
+        const fetchedUrls: string[] = [];
+        await page.route('**/plugins/crossguard/**', (route) => {
+            fetchedUrls.push(route.request().url());
+            route.fulfill({status: 200, contentType: 'application/json', body: '{}'});
+        });
+
+        await page.evaluate(async () => {
+            const Plugin = (window as any).__PluginClass;
+            const plugin = new Plugin();
+            let callCount = 0;
+            const states = [
+                {entities: {teams: {currentTeamId: ''}, channels: {currentChannelId: '', channels: {}}}},
+                {entities: {teams: {currentTeamId: 'team-new'}, channels: {currentChannelId: 'ch-1', channels: {'ch-1': {}, 'ch-2': {}}}}},
+            ];
+            let subscribeCb: (() => void) | null = null;
+            const registry = {
+                registerAdminConsoleCustomSetting: () => {},
+                registerRootComponent: () => {},
+                registerSidebarChannelLinkLabelComponent: () => {},
+                registerPopoverUserAttributesComponent: () => {},
+                registerWebSocketEventHandler: () => {},
+                registerChannelHeaderMenuAction: () => 'menu-id',
+                registerMainMenuAction: () => 'main-menu-id',
+                unregisterComponent: () => {},
+            };
+            const store = {
+                getState: () => states[Math.min(callCount++, states.length - 1)],
+                subscribe: (cb: () => void) => {
+                    subscribeCb = cb;
+                    return () => {};
+                },
+            };
+
+            await plugin.initialize(registry, store);
+            await new Promise((r) => setTimeout(r, 100));
+
+            // Trigger store subscription with both team and channels changed
+            if (subscribeCb) {
+                (subscribeCb as () => void)();
+            }
+            await new Promise((r) => setTimeout(r, 200));
+
+            plugin.uninitialize();
+        });
+
+        // Should have fetched team status for the new team
+        const teamFetches = fetchedUrls.filter((u) => u.includes('/teams/team-new/status'));
+        expect(teamFetches.length).toBeGreaterThanOrEqual(1);
+
+        // Should have fetched channel connections for the new channels
+        const connFetches = fetchedUrls.filter((u) => u.includes('/api/v1/channels/connections'));
+        expect(connFetches.length).toBeGreaterThanOrEqual(1);
+    });
+});

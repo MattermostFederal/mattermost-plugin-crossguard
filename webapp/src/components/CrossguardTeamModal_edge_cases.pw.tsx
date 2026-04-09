@@ -666,3 +666,31 @@ test.describe('Full rewrite lifecycle', () => {
         await expect(page.getByText('No remote team rewrite')).toBeVisible();
     });
 });
+
+// ---------------------------------------------------------------------------
+// 12. Missing response fields
+// ---------------------------------------------------------------------------
+test.describe('Missing response fields', () => {
+    test('response without team_display_name renders modal without crash', async ({mount, page}) => {
+        const responseBody = {team_id: 'team1', team_name: 'test-team', initialized: true, connections: [connStatus()]};
+        await page.route('**/plugins/crossguard/api/v1/teams/*/status', (route: any) => {
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(responseBody)});
+        });
+        await mount(<CrossguardTeamModal/>);
+        await openModal(page, 'team1');
+
+        // Modal should render connections without crashing even when team_display_name is missing
+        await expect(page.getByText('my-conn')).toBeVisible();
+    });
+
+    test('response with empty connections array and no team_display_name renders empty state', async ({mount, page}) => {
+        const responseBody = {team_id: 'team1', team_name: 'bare', initialized: true, connections: []};
+        await page.route('**/plugins/crossguard/api/v1/teams/*/status', (route: any) => {
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(responseBody)});
+        });
+        await mount(<CrossguardTeamModal/>);
+        await openModal(page, 'team1');
+
+        await expect(page.getByText('No connections available')).toBeVisible();
+    });
+});

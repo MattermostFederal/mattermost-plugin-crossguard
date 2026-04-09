@@ -251,6 +251,7 @@ ifneq ($(HAS_SERVER),)
 endif
 ifneq ($(HAS_WEBAPP),)
 	cd webapp && $(NPM) run test;
+	cd webapp && $(NPM) run test:pw-ct;
 endif
 
 ## Runs any lints and unit tests defined for the server and webapp, if they exist, optimized for a CI environment.
@@ -261,6 +262,7 @@ ifneq ($(HAS_SERVER),)
 endif
 ifneq ($(HAS_WEBAPP),)
 	cd webapp && $(NPM) run test;
+	cd webapp && $(NPM) run test:pw-ct;
 endif
 
 ## Creates a coverage report for the server code.

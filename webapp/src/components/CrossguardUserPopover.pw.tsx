@@ -1,0 +1,115 @@
+import {test, expect} from '@playwright/experimental-ct-react';
+import React from 'react';
+
+import CrossguardUserPopover from './CrossguardUserPopover';
+
+test.describe('CrossguardUserPopover', () => {
+    test('renders null when user has no props object', async ({mount}) => {
+        const component = await mount(<CrossguardUserPopover user={{}}/>);
+        await expect(component).toBeEmpty();
+    });
+
+    test('renders null when user.props exists but has no CrossguardRemoteUsername', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover user={{props: {other: 'value'}}}/>,
+        );
+        await expect(component).toBeEmpty();
+    });
+
+    test('renders null when CrossguardRemoteUsername is empty string', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover user={{props: {CrossguardRemoteUsername: ''}}}/>,
+        );
+        await expect(component).toBeEmpty();
+    });
+
+    test('renders relay info with valid props', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: 'alice'},
+                    last_name: '(via ServerB)',
+                }}
+            />,
+        );
+        await expect(component.getByText('Relayed from: alice (via ServerB)')).toBeVisible();
+    });
+
+    test('extracts connection name from last_name regex', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: 'bob'},
+                    last_name: '(via my-conn)',
+                }}
+            />,
+        );
+        await expect(component.getByText('Relayed from: bob (via my-conn)')).toBeVisible();
+    });
+
+    test('shows unknown when last_name does not match regex pattern', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: 'carol'},
+                    last_name: 'NotAMatch',
+                }}
+            />,
+        );
+        await expect(component.getByText('Relayed from: carol (via unknown)')).toBeVisible();
+    });
+
+    test('shows unknown when last_name is undefined', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{props: {CrossguardRemoteUsername: 'dave'}}}
+            />,
+        );
+        await expect(component.getByText('Relayed from: dave (via unknown)')).toBeVisible();
+    });
+
+    test('shows unknown when last_name is empty string', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: 'eve'},
+                    last_name: '',
+                }}
+            />,
+        );
+        await expect(component.getByText('Relayed from: eve (via unknown)')).toBeVisible();
+    });
+
+    test('extracts connection name with spaces', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: 'frank'},
+                    last_name: '(via Server With Spaces)',
+                }}
+            />,
+        );
+        await expect(component.getByText('Relayed from: frank (via Server With Spaces)')).toBeVisible();
+    });
+
+    test('does not match partial last_name with surrounding text', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: 'grace'},
+                    last_name: 'prefix (via Foo) suffix',
+                }}
+            />,
+        );
+
+        // Regex uses ^ and $ anchors, so partial match fails and falls back to "unknown"
+        await expect(component.getByText('Relayed from: grace (via unknown)')).toBeVisible();
+    });
+
+    test('handles user.props being explicitly undefined', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover user={{props: undefined}}/>,
+        );
+        await expect(component).toBeEmpty();
+    });
+});

@@ -1,6 +1,7 @@
 bin/
 dist/
 coverage.txt
+coverage.out
 webapp/src/manifest.ts
 server/manifest.go
 

@@ -372,24 +372,31 @@ func TestHandlePromptAccept(t *testing.T) {
 	t.Run("GetUser failure returns error", func(t *testing.T) {
 		api := &plugintest.API{}
 		defaultLogMocks(api)
-		p, _ := setupTestPluginWithRouter(api)
+		p, kvs := setupTestPluginWithRouter(api)
 		p.configuration = &configuration{}
 
-		// First GetUser call is from isTeamAdminOrSystemAdmin, second from the handler.
-		// We need admin check to pass, then GetUser in the handler to fail.
-		// Since isTeamAdminOrSystemAdmin also calls GetUser, we make the user a sysadmin
-		// so the admin check passes, but then the second GetUser in the handler body...
-		// Actually, looking at the code, after the admin check passes, there is a separate
-		// GetUser call at line 124. But isTeamAdminOrSystemAdmin at line 108 also calls GetUser.
-		// If we return the admin user for the admin check and then error on the next call,
-		// that is tricky because mock matches by args not call order. Instead, test the case
-		// where GetUser fails completely (admin check fails too).
-		// Let's test a different scenario: admin check passes, but the explicit GetUser
-		// at line 124 fails. Since both calls use the same user ID, we cannot differentiate.
-		// Skip this sub-case since the mock framework cannot distinguish two calls with the
-		// same arguments returning different results in sequence without extra setup.
-		// We test the permission error case separately above.
-		t.Skip("Cannot differentiate two GetUser calls with same args using testify mock without call counting")
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+
+		// First GetUser call (from isTeamAdminOrSystemAdmin) succeeds,
+		// second GetUser call (from the handler body) fails.
+		api.On("GetUser", "admin-id").Return(adminUser, nil).Once()
+		api.On("GetUser", "admin-id").Return(nil, &mmModel.AppError{Message: "db error"}).Once()
+
+		kvs.getConnectionPromptFn = func(teamID, connName string) (*store.ConnectionPrompt, error) {
+			return &store.ConnectionPrompt{State: store.PromptStatePending, PostID: "prompt-post-id"}, nil
+		}
+
+		r := postActionRequest(t, "admin-id", map[string]any{
+			"team_id":   "team-id",
+			"conn_name": "high",
+		})
+		w := httptest.NewRecorder()
+
+		p.handlePromptAccept(w, r)
+
+		var resp mmModel.PostActionIntegrationResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, "Failed to look up user.", resp.EphemeralText)
 	})
 
 	t.Run("happy path accepts and updates post", func(t *testing.T) {

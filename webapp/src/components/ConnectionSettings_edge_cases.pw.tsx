@@ -754,7 +754,25 @@ test.describe('ConnectionSettings Edge Cases', () => {
     });
 
     // -------------------------------------------------------------------------
-    // 14. File transfer with Azure blob container
+    // 14. Deny file filter mode on card
+    // -------------------------------------------------------------------------
+    test.describe('Deny file filter badge', () => {
+        test('card with deny file filter mode shows Deny badge text', async ({mount}) => {
+            const conn = {
+                ...natsConn,
+                name: 'deny-conn',
+                file_transfer_enabled: true,
+                file_filter_mode: 'deny',
+                file_filter_types: '.exe,.bat',
+                nats: {...natsConn.nats, subject: 'crossguard.deny-conn'},
+            };
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([conn])})}/>);
+            await expect(component.getByText('Deny: .exe,.bat')).toBeVisible();
+        });
+    });
+
+    // -------------------------------------------------------------------------
+    // 15. File transfer with Azure blob container
     // -------------------------------------------------------------------------
     test.describe('File transfer Azure blob', () => {
         test('Azure plus file_transfer_enabled shows Blob Container Name field', async ({mount}) => {

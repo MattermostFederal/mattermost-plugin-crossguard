@@ -379,6 +379,69 @@ listener();
         expect(fetchedIds).toContain('ch1');
     });
 
+    test('channelId change without channels ref change triggers fetch for new channelId', async ({mount, page}) => {
+        await mount(<PluginTestHarness/>);
+
+        const fetchedIds: string[] = [];
+        await page.route('**/api/v1/channels/connections*', async (route) => {
+            const url = route.request().url();
+            const match = url.match(/ids=([^&]*)/);
+            if (match) {
+                fetchedIds.push(...match[1].split(','));
+            }
+            await route.fulfill({status: 200, contentType: 'application/json', body: '{}'});
+        });
+        await page.route('**/api/v1/teams/*/status', (route) => {
+            route.fulfill({status: 200, contentType: 'application/json', body: '{}'});
+        });
+
+        await page.evaluate(async () => {
+            const Plugin = (window as any).__PluginClass;
+            const plugin = new Plugin();
+            let nextId = 1;
+            const registry = {
+                registerAdminConsoleCustomSetting: () => 'id-' + (nextId++),
+                registerRootComponent: () => 'id-' + (nextId++),
+                registerSidebarChannelLinkLabelComponent: () => 'id-' + (nextId++),
+                registerPopoverUserAttributesComponent: () => 'id-' + (nextId++),
+                registerWebSocketEventHandler: () => 'id-' + (nextId++),
+                registerChannelHeaderMenuAction: () => 'id-' + (nextId++),
+                registerMainMenuAction: () => 'id-' + (nextId++),
+                unregisterComponent: () => {},
+            };
+
+            let listener: any = null;
+            const channelsObj = {ch1: {}, ch2: {}};
+            let currentChannelId = 'ch1';
+            const store = {
+                getState: () => ({
+                    entities: {
+                        teams: {currentTeamId: 'team1'},
+                        channels: {currentChannelId, channels: channelsObj},
+                    },
+                }),
+                subscribe: (fn: any) => {
+ listener = fn;
+ return () => {};
+},
+            };
+
+            await plugin.initialize(registry, store);
+            await new Promise((r) => setTimeout(r, 100));
+
+            // Change channelId while keeping the same channels object reference.
+            // This exercises the else-if branch at line 83 of index.tsx.
+            currentChannelId = 'ch2';
+            if (listener) {
+listener();
+}
+            await new Promise((r) => setTimeout(r, 100));
+        });
+
+        await page.waitForTimeout(200);
+        expect(fetchedIds).toContain('ch2');
+    });
+
     test('team change resets known channels, all treated as new', async ({mount, page}) => {
         await mount(<PluginTestHarness/>);
 
@@ -841,6 +904,66 @@ return {error: 'no menu callback registered'};
         });
 
         expect(result).toEqual({channelID: 'test-channel-id'});
+    });
+
+    test('addMenuAction is idempotent, second team success does not double-register', async ({mount, page}) => {
+        await mount(<PluginTestHarness/>);
+        await page.route('**/api/v1/teams/*/status', (route) => {
+            route.fulfill({status: 200, contentType: 'application/json', body: '{}'});
+        });
+        await page.route('**/api/v1/channels/connections*', (route) => {
+            route.fulfill({status: 200, contentType: 'application/json', body: '{}'});
+        });
+
+        const result = await page.evaluate(async () => {
+            const Plugin = (window as any).__PluginClass;
+            const plugin = new Plugin();
+            let menuRegisterCount = 0;
+            let nextId = 1;
+            const registry = {
+                registerAdminConsoleCustomSetting: () => 'id-' + (nextId++),
+                registerRootComponent: () => 'id-' + (nextId++),
+                registerSidebarChannelLinkLabelComponent: () => 'id-' + (nextId++),
+                registerPopoverUserAttributesComponent: () => 'id-' + (nextId++),
+                registerWebSocketEventHandler: () => 'id-' + (nextId++),
+                registerChannelHeaderMenuAction: () => {
+ menuRegisterCount++;
+ return 'menu-' + nextId++;
+},
+                registerMainMenuAction: () => 'main-' + (nextId++),
+                unregisterComponent: () => {},
+            };
+
+            let teamId = 'team1';
+            let listener: any;
+            const store = {
+                getState: () => ({
+                    entities: {
+                        teams: {currentTeamId: teamId},
+                        channels: {currentChannelId: '', channels: {}},
+                    },
+                }),
+                subscribe: (fn: any) => {
+ listener = fn;
+ return () => {};
+},
+            };
+
+            await plugin.initialize(registry, store);
+            await new Promise((r) => setTimeout(r, 200));
+
+            // Switch to a different team (both return 200, so addMenuAction is called again)
+            teamId = 'team2';
+            if (listener) {
+listener();
+}
+            await new Promise((r) => setTimeout(r, 200));
+
+            return menuRegisterCount;
+        });
+
+        // addMenuAction guards against double-registration, so count should be 1
+        expect(result).toBe(1);
     });
 
     test('main menu action dispatches correct team modal event with teamID', async ({mount, page}) => {

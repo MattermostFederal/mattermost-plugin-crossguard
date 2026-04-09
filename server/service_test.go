@@ -1749,3 +1749,145 @@ func TestGetGlobalStatus_ConfigParseWarnings(t *testing.T) {
 	require.NotNil(t, resp)
 	assert.Len(t, resp.Warnings, 2)
 }
+
+// ---------------------------------------------------------------------------
+// Additional service edge-case tests (new)
+// ---------------------------------------------------------------------------
+
+func TestInitTeamForCrossGuard_TeamNotFound(t *testing.T) {
+	api := &plugintest.API{}
+	mockLogCalls(api)
+	p, _ := setupTestPluginWithRouter(api)
+	p.configuration = defaultTestConfig()
+
+	api.On("GetTeam", "bad-team-id").Return(nil, &model.AppError{Message: "not found"})
+
+	conn := store.TeamConnection{Direction: "outbound", Connection: "high"}
+	team, alreadyLinked, svcErr := p.initTeamForCrossGuard(testUser(), "bad-team-id", conn)
+	assert.Nil(t, team)
+	assert.False(t, alreadyLinked)
+	require.NotNil(t, svcErr)
+	assert.Equal(t, 404, svcErr.Status)
+	assert.Contains(t, svcErr.Message, "team not found")
+}
+
+func TestInitTeamForCrossGuard_AddConnectionFails(t *testing.T) {
+	api := &plugintest.API{}
+	mockLogCalls(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.configuration = defaultTestConfig()
+
+	api.On("GetTeam", "team-id").Return(testTeam(), nil)
+	kvs.getTeamConnectionsFn = func(teamID string) ([]store.TeamConnection, error) {
+		return []store.TeamConnection{}, nil
+	}
+	kvs.addTeamConnectionFn = func(teamID string, c store.TeamConnection) error {
+		return errors.New("write error")
+	}
+
+	conn := store.TeamConnection{Direction: "outbound", Connection: "high"}
+	team, alreadyLinked, svcErr := p.initTeamForCrossGuard(testUser(), "team-id", conn)
+	assert.Nil(t, team)
+	assert.False(t, alreadyLinked)
+	require.NotNil(t, svcErr)
+	assert.Equal(t, 500, svcErr.Status)
+}
+
+func TestTeardownTeamForCrossGuard_NotLinked(t *testing.T) {
+	api := &plugintest.API{}
+	mockLogCalls(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.configuration = defaultTestConfig()
+
+	api.On("GetTeam", "team-id").Return(testTeam(), nil)
+	kvs.getTeamConnectionsFn = func(teamID string) ([]store.TeamConnection, error) {
+		return []store.TeamConnection{{Direction: "inbound", Connection: "low"}}, nil
+	}
+
+	conn := store.TeamConnection{Direction: "outbound", Connection: "high"}
+	_, svcErr := p.teardownTeamForCrossGuard(testUser(), "team-id", conn)
+	require.NotNil(t, svcErr)
+	assert.Equal(t, 400, svcErr.Status)
+	assert.Contains(t, svcErr.Message, "not linked")
+}
+
+func TestTeardownChannelForCrossGuard_RemovesHeaderPrefix(t *testing.T) {
+	api := &plugintest.API{}
+	mockLogCalls(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.configuration = defaultTestConfig()
+
+	channel := testChannel()
+	channel.Header = crossguardHeaderPrefix + "my header"
+	api.On("GetChannel", "chan-id").Return(channel, nil)
+
+	conn := store.TeamConnection{Direction: "outbound", Connection: "high"}
+
+	// Return the connection as existing, then empty after removal.
+	removeCallCount := 0
+	kvs.getChannelConnectionsFn = func(channelID string) ([]store.TeamConnection, error) {
+		removeCallCount++
+		if removeCallCount == 1 {
+			return []store.TeamConnection{conn}, nil
+		}
+		return nil, nil
+	}
+	kvs.removeChannelConnectionFn = func(channelID string, c store.TeamConnection) error {
+		return nil
+	}
+	kvs.deleteChannelConnectionsFn = func(channelID string) error {
+		return nil
+	}
+
+	var updatedChannel *model.Channel
+	api.On("UpdateChannel", mock.AnythingOfType("*model.Channel")).Run(func(args mock.Arguments) {
+		updatedChannel = args.Get(0).(*model.Channel)
+	}).Return(&model.Channel{}, nil)
+	api.On("CreatePost", mock.Anything).Return(&model.Post{}, nil)
+	api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return()
+
+	_, svcErr := p.teardownChannelForCrossGuard(testUser(), "chan-id", conn)
+	assert.Nil(t, svcErr)
+	require.NotNil(t, updatedChannel)
+	assert.Equal(t, "my header", updatedChannel.Header, "header prefix should be removed")
+}
+
+func TestGetGlobalStatus_MixedTeams(t *testing.T) {
+	api := &plugintest.API{}
+	mockLogCalls(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.configuration = defaultTestConfig()
+
+	kvs.getInitializedTeamIDsFn = func() ([]string, error) {
+		return []string{"good-team", "bad-team"}, nil
+	}
+
+	goodTeam := &model.Team{Id: "good-team", Name: "good", DisplayName: "Good Team"}
+	api.On("GetTeam", "good-team").Return(goodTeam, nil)
+	api.On("GetTeam", "bad-team").Return(nil, &model.AppError{Message: "not found"})
+
+	resp, svcErr := p.getGlobalStatus()
+	require.Nil(t, svcErr)
+	require.NotNil(t, resp)
+	require.Len(t, resp.Teams, 2)
+
+	assert.Equal(t, "Good Team", resp.Teams[0].DisplayName)
+	assert.Equal(t, "(unknown)", resp.Teams[1].DisplayName)
+	assert.Equal(t, "(error)", resp.Teams[1].TeamName)
+}
+
+func TestGetChannelStatus_DMChannel(t *testing.T) {
+	api := &plugintest.API{}
+	mockLogCalls(api)
+	p, _ := setupTestPluginWithRouter(api)
+	p.configuration = defaultTestConfig()
+
+	dmChannel := &model.Channel{Id: "dm-chan-id", Type: model.ChannelTypeDirect, TeamId: ""}
+	api.On("GetChannel", "dm-chan-id").Return(dmChannel, nil)
+
+	resp, svcErr := p.getChannelStatus("dm-chan-id")
+	assert.Nil(t, resp)
+	require.NotNil(t, svcErr)
+	assert.Equal(t, 400, svcErr.Status)
+	assert.Contains(t, svcErr.Message, "direct or group")
+}

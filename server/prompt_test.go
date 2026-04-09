@@ -1441,3 +1441,186 @@ func TestWritePostActionResponse(t *testing.T) {
 		assert.Nil(t, resp.Update)
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Additional prompt edge-case tests (new)
+// ---------------------------------------------------------------------------
+
+func TestHandlePromptAccept_AlreadyResolved(t *testing.T) {
+	api := &plugintest.API{}
+	defaultLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.configuration = &configuration{}
+
+	adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+	api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+	// Prompt is in "blocked" state, not "pending".
+	kvs.getConnectionPromptFn = func(teamID, connName string) (*store.ConnectionPrompt, error) {
+		return &store.ConnectionPrompt{State: store.PromptStateBlocked, PostID: "old-post"}, nil
+	}
+
+	r := postActionRequest(t, "admin-id", map[string]any{
+		"team_id":   "team-id",
+		"conn_name": "high",
+	})
+	w := httptest.NewRecorder()
+
+	p.handlePromptAccept(w, r)
+
+	var resp mmModel.PostActionIntegrationResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "This prompt is no longer active.", resp.EphemeralText)
+}
+
+func TestHandlePromptBlock_Success(t *testing.T) {
+	api := &plugintest.API{}
+	defaultLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.configuration = &configuration{}
+
+	adminUser := &mmModel.User{Id: "admin-id", Username: "admin", Roles: mmModel.SystemAdminRoleId}
+	api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+	kvs.getConnectionPromptFn = func(teamID, connName string) (*store.ConnectionPrompt, error) {
+		return &store.ConnectionPrompt{State: store.PromptStatePending, PostID: "prompt-post-id"}, nil
+	}
+
+	var savedPrompt *store.ConnectionPrompt
+	kvs.setConnectionPromptFn = func(teamID, connName string, prompt *store.ConnectionPrompt) error {
+		savedPrompt = prompt
+		return nil
+	}
+
+	promptPost := &mmModel.Post{Id: "prompt-post-id", Message: "old message"}
+	api.On("GetPost", "prompt-post-id").Return(promptPost, nil)
+
+	var updatedPost *mmModel.Post
+	api.On("UpdatePost", mock.AnythingOfType("*model.Post")).Run(func(args mock.Arguments) {
+		updatedPost = args.Get(0).(*mmModel.Post)
+	}).Return(&mmModel.Post{}, nil)
+
+	r := postActionRequest(t, "admin-id", map[string]any{
+		"team_id":   "team-id",
+		"conn_name": "high",
+	})
+	w := httptest.NewRecorder()
+
+	p.handlePromptBlock(w, r)
+
+	var resp mmModel.PostActionIntegrationResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Empty(t, resp.EphemeralText)
+
+	require.NotNil(t, savedPrompt)
+	assert.Equal(t, store.PromptStateBlocked, savedPrompt.State)
+
+	require.NotNil(t, updatedPost)
+	assert.Contains(t, updatedPost.Message, "blocked")
+	assert.Contains(t, updatedPost.Message, "@admin")
+}
+
+func TestHandleChannelPromptAccept_Success(t *testing.T) {
+	api := &plugintest.API{}
+	defaultLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.configuration = &configuration{}
+
+	adminUser := &mmModel.User{Id: "admin-id", Username: "admin", Roles: mmModel.SystemAdminRoleId}
+	api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+	channel := &mmModel.Channel{Id: "chan-id", Name: "test-channel", TeamId: "team-id", Type: mmModel.ChannelTypeOpen}
+	api.On("GetChannel", "chan-id").Return(channel, nil)
+
+	kvs.getChannelConnectionPromptFn = func(channelID, connName string) (*store.ConnectionPrompt, error) {
+		return &store.ConnectionPrompt{State: store.PromptStatePending, PostID: "prompt-post-id"}, nil
+	}
+
+	// initChannelForCrossGuard needs team connections to contain the inbound conn.
+	kvs.getTeamConnectionsFn = func(teamID string) ([]store.TeamConnection, error) {
+		return []store.TeamConnection{{Direction: "inbound", Connection: "high"}}, nil
+	}
+	kvs.getChannelConnectionsFn = func(channelID string) ([]store.TeamConnection, error) {
+		return nil, nil
+	}
+	kvs.addChannelConnectionFn = func(channelID string, conn store.TeamConnection) error {
+		return nil
+	}
+
+	api.On("UpdateChannel", mock.Anything).Return(&mmModel.Channel{}, nil)
+	api.On("CreatePost", mock.Anything).Return(&mmModel.Post{}, nil)
+	api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Return()
+
+	var deletedPromptChanID, deletedPromptConn string
+	kvs.deleteChannelConnectionPromptFn = func(channelID, connName string) error {
+		deletedPromptChanID = channelID
+		deletedPromptConn = connName
+		return nil
+	}
+
+	promptPost := &mmModel.Post{Id: "prompt-post-id", Message: "old message"}
+	api.On("GetPost", "prompt-post-id").Return(promptPost, nil)
+	api.On("UpdatePost", mock.AnythingOfType("*model.Post")).Return(&mmModel.Post{}, nil)
+
+	reqBody := mmModel.PostActionIntegrationRequest{
+		UserId: "admin-id",
+		Context: map[string]any{
+			"channel_id": "chan-id",
+			"conn_name":  "high",
+		},
+	}
+	data, err := json.Marshal(reqBody)
+	require.NoError(t, err)
+	r := httptest.NewRequest(http.MethodPost, "/api/v1/prompt/channel/accept", strings.NewReader(string(data)))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Mattermost-User-Id", "admin-id")
+	w := httptest.NewRecorder()
+
+	p.handleChannelPromptAccept(w, r)
+
+	var resp mmModel.PostActionIntegrationResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Empty(t, resp.EphemeralText)
+	assert.Equal(t, "chan-id", deletedPromptChanID)
+	assert.Equal(t, "high", deletedPromptConn)
+}
+
+func TestHandleUnlinkedInbound_PromptExists(t *testing.T) {
+	api := &plugintest.API{}
+	defaultLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.configuration = &configuration{}
+
+	kvs.getConnectionPromptFn = func(teamID, connName string) (*store.ConnectionPrompt, error) {
+		return &store.ConnectionPrompt{State: store.PromptStatePending, PostID: "existing-post"}, nil
+	}
+
+	team := &mmModel.Team{Id: "team-id", Name: "test-a", DisplayName: "Test A"}
+	p.handleUnlinkedInbound(team, "high")
+
+	api.AssertNotCalled(t, "CreatePost", mock.Anything)
+}
+
+func TestHandleUnlinkedInboundChannel_CreateRace(t *testing.T) {
+	api := &plugintest.API{}
+	defaultLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.configuration = &configuration{}
+
+	kvs.getChannelConnectionPromptFn = func(channelID, connName string) (*store.ConnectionPrompt, error) {
+		return nil, nil
+	}
+	// CreateChannelConnectionPrompt returns saved=false (another goroutine won the race).
+	kvs.createChannelConnectionPromptFn = func(channelID, connName string, prompt *store.ConnectionPrompt) (bool, error) {
+		return false, nil
+	}
+
+	api.On("CreatePost", mock.Anything).Return(&mmModel.Post{Id: "dup-post-id"}, nil)
+	api.On("DeletePost", "dup-post-id").Return(nil)
+
+	team := &mmModel.Team{Id: "team-id", Name: "test-a", DisplayName: "Test A"}
+	channel := &mmModel.Channel{Id: "chan-id", Name: "test-channel", DisplayName: "Test Channel", TeamId: "team-id"}
+	p.handleUnlinkedInboundChannel(team, channel, "high")
+
+	api.AssertCalled(t, "DeletePost", "dup-post-id")
+}

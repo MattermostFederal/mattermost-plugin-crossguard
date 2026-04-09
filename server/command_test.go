@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	mmModel "github.com/mattermost/mattermost/server/public/model"
@@ -1304,4 +1306,142 @@ func TestGetAutocompleteData_Structure(t *testing.T) {
 	assert.True(t, subcommands["reset-prompt"])
 	assert.True(t, subcommands["reset-channel-prompt"])
 	assert.True(t, subcommands["rewrite-team"])
+}
+
+// ---------------------------------------------------------------------------
+// Additional command edge-case tests (new)
+// ---------------------------------------------------------------------------
+
+func TestExecuteRewriteTeam_DeleteFlow(t *testing.T) {
+	api := &plugintest.API{}
+	addCmdLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.setConfiguration(defaultTestConfig())
+
+	adminUser := &mmModel.User{Id: "admin-id", Username: "admin", Roles: mmModel.SystemAdminRoleId}
+	api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+	// Team has inbound connection with an existing remote team name.
+	kvs.getTeamConnectionsFn = func(teamID string) ([]store.TeamConnection, error) {
+		return []store.TeamConnection{
+			{Direction: "inbound", Connection: "high", RemoteTeamName: "old-remote"},
+		}, nil
+	}
+
+	var deletedConn, deletedRemote string
+	kvs.deleteTeamRewriteIndexFn = func(connName, remoteTeamName string) error {
+		deletedConn = connName
+		deletedRemote = remoteTeamName
+		return nil
+	}
+	kvs.setTeamConnectionsFn = func(teamID string, conns []store.TeamConnection) error {
+		return nil
+	}
+
+	tsChannel := &mmModel.Channel{Id: "ts-id"}
+	api.On("GetChannelByName", "team-id", "town-square", false).Return(tsChannel, nil)
+	api.On("CreatePost", mock.Anything).Return(&mmModel.Post{}, nil)
+
+	// Command with no remote team name (clear rewrite).
+	args := &mmModel.CommandArgs{
+		Command: "/crossguard rewrite-team high",
+		UserId:  "admin-id",
+		TeamId:  "team-id",
+	}
+	resp := p.executeRewriteTeam(args)
+	assert.Contains(t, resp.Text, "Rewrite cleared")
+	assert.Equal(t, "high", deletedConn)
+	assert.Equal(t, "old-remote", deletedRemote)
+}
+
+func TestExecuteInitTeam_SingleAutoSelect(t *testing.T) {
+	api := &plugintest.API{}
+	addCmdLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.setConfiguration(singleOutboundConfig())
+
+	adminUser := &mmModel.User{Id: "admin-id", Username: "admin", Roles: mmModel.SystemAdminRoleId}
+	api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+	team := &mmModel.Team{Id: "team-id", Name: "test-team"}
+	api.On("GetTeam", "team-id").Return(team, nil)
+
+	tsChannel := &mmModel.Channel{Id: "ts-id"}
+	api.On("GetChannelByName", "team-id", "town-square", false).Return(tsChannel, nil)
+	api.On("CreatePost", mock.Anything).Return(&mmModel.Post{}, nil)
+
+	kvs.getTeamConnectionsFn = func(teamID string) ([]store.TeamConnection, error) {
+		return nil, nil
+	}
+	kvs.addTeamConnectionFn = func(teamID string, conn store.TeamConnection) error {
+		return nil
+	}
+
+	// No connection name specified, single connection should auto-select.
+	args := &mmModel.CommandArgs{
+		Command: "/crossguard init-team",
+		UserId:  "admin-id",
+		TeamId:  "team-id",
+	}
+	resp := p.executeInitTeam(args)
+	// Empty text means success (announcement posted via CreatePost).
+	assert.Empty(t, resp.Text)
+	// OpenInteractiveDialog should NOT be called for single connection.
+	api.AssertNotCalled(t, "OpenInteractiveDialog", mock.Anything)
+}
+
+func TestDialogSubmission_InvalidPayload(t *testing.T) {
+	api := &plugintest.API{}
+	addCmdLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+	p.setConfiguration(defaultTestConfig())
+
+	// POST malformed JSON to the dialog endpoint.
+	r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", nil, "admin-id")
+	r.Body = http.NoBody
+	w := httptest.NewRecorder()
+
+	p.router.ServeHTTP(w, r)
+
+	// Should return 200 with an error in the response body (Mattermost dialog pattern),
+	// or a non-panic HTTP response.
+	assert.NotEqual(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestExecuteStatus_RegularUser(t *testing.T) {
+	api := &plugintest.API{}
+	addCmdLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.setConfiguration(defaultTestConfig())
+
+	regularUser := &mmModel.User{Id: "user-id", Username: "alice", Roles: mmModel.SystemUserRoleId}
+	api.On("GetUser", "user-id").Return(regularUser, nil)
+	api.On("GetTeamMember", "team-id", "user-id").Return(&mmModel.TeamMember{SchemeAdmin: false}, nil)
+
+	team := &mmModel.Team{Id: "team-id", Name: "test-team", DisplayName: "Test Team"}
+	api.On("GetTeam", "team-id").Return(team, nil)
+
+	channel := &mmModel.Channel{Id: "chan-id", Name: "test-channel", DisplayName: "Test Channel"}
+	api.On("GetChannel", "chan-id").Return(channel, nil)
+
+	kvs.getTeamConnectionsFn = func(teamID string) ([]store.TeamConnection, error) {
+		return []store.TeamConnection{{Direction: "outbound", Connection: "high"}}, nil
+	}
+	kvs.getChannelConnectionsFn = func(channelID string) ([]store.TeamConnection, error) {
+		return nil, nil
+	}
+
+	args := &mmModel.CommandArgs{
+		Command:   "/crossguard status",
+		UserId:    "user-id",
+		TeamId:    "team-id",
+		ChannelId: "chan-id",
+	}
+	resp, appErr := p.ExecuteCommand(nil, args)
+	assert.Nil(t, appErr)
+	// Regular user should see team-scoped status, not system admin global view.
+	assert.Contains(t, resp.Text, "Cross Guard Status")
+	assert.Contains(t, resp.Text, "Test Team")
+	// Should NOT contain "Initialized Teams" (that is system admin only).
+	assert.NotContains(t, resp.Text, "Initialized Teams")
 }

@@ -3,16 +3,59 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
+
+// startEmbeddedNATS starts an in-process NATS server on a random port for testing.
+// Returns the server URL and a cleanup function. The server is automatically
+// stopped when the test completes.
+func startEmbeddedNATS(t *testing.T) string {
+	t.Helper()
+	opts := &natsserver.Options{
+		Host:      "127.0.0.1",
+		Port:      -1, // random available port
+		NoLog:     true,
+		NoSigs:    true,
+		JetStream: true,
+		StoreDir:  t.TempDir(),
+	}
+	srv, err := natsserver.NewServer(opts)
+	if err != nil {
+		t.Fatalf("failed to create embedded NATS server: %v", err)
+	}
+	srv.Start()
+	if !srv.ReadyForConnections(5 * natsConnectTimeout) {
+		t.Fatal("embedded NATS server not ready")
+	}
+	t.Cleanup(func() { srv.Shutdown() })
+	return fmt.Sprintf("nats://127.0.0.1:%d", opts.Port)
+}
+
+// connectToEmbeddedNATS creates a natsProvider connected to the embedded test server.
+func connectToEmbeddedNATS(t *testing.T, addr, subject string) *natsProvider {
+	t.Helper()
+	nc, err := nats.Connect(addr, nats.Timeout(natsConnectTimeout))
+	if err != nil {
+		t.Fatalf("failed to connect to embedded NATS: %v", err)
+	}
+	t.Cleanup(func() { nc.Close() })
+	return &natsProvider{
+		nc:      nc,
+		subject: subject,
+	}
+}
 
 // flexibleKVStore extends testKVStore with configurable function overrides.
 // When a function pointer is nil, it delegates to the embedded testKVStore.

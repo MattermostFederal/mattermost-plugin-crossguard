@@ -1234,3 +1234,283 @@ func TestUploadPostFiles_MultipleConnections(t *testing.T) {
 
 	assert.ElementsMatch(t, []string{"conn-a", "conn-b"}, uploadedConns)
 }
+
+// ---------------------------------------------------------------------------
+// Additional splitMessage edge-case tests
+// ---------------------------------------------------------------------------
+
+func TestSplitMessage_ExactBoundary(t *testing.T) {
+	env := makeEnvelope("")
+	overhead := measureOverhead(t, env, model.FormatJSON)
+	// Set text length exactly equal to available space so no split is needed.
+	available := 200
+	maxSize := overhead + safetyMargin + available
+	text := strings.Repeat("x", available)
+	env.PostMessage.MessageText = text
+
+	parts := splitMessage(env, model.FormatJSON, maxSize)
+
+	require.Len(t, parts, 1)
+	assert.Equal(t, text, parts[0], "single part should have no label")
+}
+
+func TestSplitMessage_OneByteTooLong(t *testing.T) {
+	env := makeEnvelope("")
+	overhead := measureOverhead(t, env, model.FormatJSON)
+	available := 200
+	maxSize := overhead + safetyMargin + available
+	// One byte over the available limit forces a split.
+	text := strings.Repeat("x", available+1)
+	env.PostMessage.MessageText = text
+
+	parts := splitMessage(env, model.FormatJSON, maxSize)
+
+	require.Greater(t, len(parts), 1, "should split into multiple parts")
+	for i, p := range parts {
+		assert.Contains(t, p, fmt.Sprintf("[Part %d/%d]", i+1, len(parts)))
+	}
+}
+
+func TestSplitMessage_EmptyText(t *testing.T) {
+	env := makeEnvelope("")
+
+	parts := splitMessage(env, model.FormatJSON, 1000)
+
+	require.Len(t, parts, 1)
+	assert.Equal(t, "", parts[0])
+}
+
+func TestSplitMessage_TinyMaxSize(t *testing.T) {
+	// maxSize smaller than overhead triggers the safety valve (available=1).
+	env := makeEnvelope("hello world")
+
+	parts := splitMessage(env, model.FormatJSON, 5)
+
+	require.Greater(t, len(parts), 0)
+	// Reconstruct all parts to ensure no data lost.
+	var rebuilt strings.Builder
+	for _, p := range parts {
+		if _, after, ok := strings.Cut(p, "] "); ok {
+			rebuilt.WriteString(after)
+		} else {
+			rebuilt.WriteString(p)
+		}
+	}
+	assert.Equal(t, "hello world", rebuilt.String())
+}
+
+func TestSplitMessage_AllMultibyte(t *testing.T) {
+	// Pure 4-byte emoji characters split without corruption.
+	text := strings.Repeat("\U0001F600", 200)
+	env := makeEnvelope(text)
+	overhead := measureOverhead(t, env, model.FormatJSON)
+	// Use enough available space so label + chunk are both valid UTF-8.
+	maxSize := overhead + safetyMargin + 500
+
+	parts := splitMessage(env, model.FormatJSON, maxSize)
+
+	require.Greater(t, len(parts), 1)
+	// Reconstruct: strip labels and verify no data loss.
+	var rebuilt strings.Builder
+	for _, p := range parts {
+		if _, after, ok := strings.Cut(p, "] "); ok {
+			rebuilt.WriteString(after)
+		} else {
+			rebuilt.WriteString(p)
+		}
+	}
+	assert.Equal(t, text, rebuilt.String())
+}
+
+// ---------------------------------------------------------------------------
+// Additional publishToOutbound edge-case tests
+// ---------------------------------------------------------------------------
+
+func TestPublishToOutbound_EmptyPool(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+	p.outboundConns = nil
+
+	env := makeEnvelope("hello")
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+	// Should be a no-op with no panics.
+	p.publishToOutbound(context.Background(), env, conns)
+}
+
+func TestPublishToOutbound_UnlinkedSkipped(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	published := false
+	p.outboundConns = []outboundConn{{
+		provider: &mockQueueProvider{publishFn: func(_ context.Context, _ []byte) error {
+			published = true
+			return nil
+		}},
+		name:          "high",
+		healthy:       true,
+		lastCheckTime: time.Now(),
+	}}
+
+	env := makeEnvelope("hello")
+	// Link a different connection name so "high" is not linked.
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "other"}}
+	p.publishToOutbound(context.Background(), env, conns)
+	assert.False(t, published)
+}
+
+func TestPublishToOutbound_UnhealthyWithinInterval(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	published := false
+	p.outboundConns = []outboundConn{{
+		provider: &mockQueueProvider{publishFn: func(_ context.Context, _ []byte) error {
+			published = true
+			return nil
+		}},
+		name:          "high",
+		healthy:       false,
+		lastCheckTime: time.Now(), // just checked, within 30s recheck interval
+	}}
+
+	env := makeEnvelope("hello")
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+	p.publishToOutbound(context.Background(), env, conns)
+	assert.False(t, published, "unhealthy connection within recheck interval should be skipped")
+}
+
+func TestPublishToOutbound_UnhealthyPastInterval(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	published := false
+	p.outboundConns = []outboundConn{{
+		provider: &mockQueueProvider{publishFn: func(_ context.Context, _ []byte) error {
+			published = true
+			return nil
+		}},
+		name:          "high",
+		healthy:       false,
+		lastCheckTime: time.Now().Add(-time.Minute), // past the 30s recheck interval
+	}}
+
+	env := makeEnvelope("hello")
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+	p.publishToOutbound(context.Background(), env, conns)
+	assert.True(t, published, "unhealthy connection past recheck interval should be retried")
+}
+
+func TestPublishToOutbound_FailMarksUnhealthy(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	p.outboundConns = []outboundConn{{
+		provider: &mockQueueProvider{publishFn: func(_ context.Context, _ []byte) error {
+			return errors.New("connection refused")
+		}},
+		name:          "high",
+		healthy:       true,
+		lastCheckTime: time.Now(),
+	}}
+
+	env := makeEnvelope("hello")
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+	p.publishToOutbound(context.Background(), env, conns)
+
+	assert.False(t, p.outboundConns[0].healthy)
+}
+
+func TestPublishToOutbound_SuccessMarksHealthy(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	p.outboundConns = []outboundConn{{
+		provider:      &mockQueueProvider{},
+		name:          "high",
+		healthy:       false,
+		lastCheckTime: time.Now().Add(-31 * time.Second),
+	}}
+
+	env := makeEnvelope("hello")
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+	p.publishToOutbound(context.Background(), env, conns)
+
+	assert.True(t, p.outboundConns[0].healthy)
+}
+
+func TestPublishToOutbound_SplitPartFails(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	var publishCount int
+	p.outboundConns = []outboundConn{{
+		provider: &mockQueueProvider{
+			publishFn: func(_ context.Context, _ []byte) error {
+				publishCount++
+				if publishCount == 2 {
+					return errors.New("publish error on part 2")
+				}
+				return nil
+			},
+			maxMsgSize: 200, // Very small to force split
+		},
+		name:          "high",
+		healthy:       true,
+		lastCheckTime: time.Now(),
+	}}
+
+	longText := strings.Repeat("a", 500)
+	env := makeEnvelope(longText)
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+	p.publishToOutbound(context.Background(), env, conns)
+
+	// Part 1 succeeded, part 2 failed, so part 3 should not be attempted.
+	assert.Equal(t, 2, publishCount, "should stop after the failing part")
+	assert.False(t, p.outboundConns[0].healthy, "connection should be marked unhealthy after part failure")
+}
+
+func TestPublishToOutbound_MultipleLinkedConnections(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	var publishedA, publishedB bool
+	p.outboundConns = []outboundConn{
+		{
+			provider: &mockQueueProvider{publishFn: func(_ context.Context, _ []byte) error {
+				publishedA = true
+				return nil
+			}},
+			name:          "conn-a",
+			healthy:       true,
+			lastCheckTime: time.Now(),
+		},
+		{
+			provider: &mockQueueProvider{publishFn: func(_ context.Context, _ []byte) error {
+				publishedB = true
+				return nil
+			}},
+			name:          "conn-b",
+			healthy:       true,
+			lastCheckTime: time.Now(),
+		},
+	}
+
+	env := makeEnvelope("hello")
+	conns := []store.TeamConnection{
+		{Direction: "outbound", Connection: "conn-a"},
+		{Direction: "outbound", Connection: "conn-b"},
+	}
+	p.publishToOutbound(context.Background(), env, conns)
+
+	assert.True(t, publishedA, "conn-a should receive the message")
+	assert.True(t, publishedB, "conn-b should receive the message")
+}

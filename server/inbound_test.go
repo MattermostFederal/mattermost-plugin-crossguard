@@ -1230,3 +1230,377 @@ func TestHandleInboundFile_HappyPath(t *testing.T) {
 	api.AssertCalled(t, "UploadFile", []byte("file-data"), "ch1", "report.pdf")
 	api.AssertCalled(t, "UpdatePost", mock.Anything)
 }
+
+// ---------------------------------------------------------------------------
+// Additional inbound edge-case tests (new)
+// ---------------------------------------------------------------------------
+
+func TestHandleInboundPost_WithRootID_MappingExists(t *testing.T) {
+	api := &plugintest.API{}
+	p, kvs := setupTestPlugin(api)
+
+	// Pre-populate root mapping.
+	kvs.postMappings["high-remote-root-id"] = "local-root-id"
+
+	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
+	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
+	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.high", Position: syncUserPosition}
+	notFoundErr := &mmModel.AppError{Message: "not found"}
+
+	api.On("GetTeamByName", "test-a").Return(team, nil)
+	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
+	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+		"username", "alice", "conn", "high").Return()
+	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
+	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
+	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
+	api.On("CreatePost", mock.MatchedBy(func(post *mmModel.Post) bool {
+		return post.RootId == "local-root-id" && post.Message == "threaded reply"
+	})).Return(&mmModel.Post{Id: "local-reply-id"}, nil)
+
+	postMsg := model.PostMessage{
+		PostID:      "remote-reply-id",
+		RootID:      "remote-root-id",
+		ChannelName: "town-square",
+		TeamName:    "test-a",
+		Username:    "alice",
+		MessageText: "threaded reply",
+	}
+
+	p.handleInboundPost("high", &postMsg)
+
+	assert.Equal(t, "local-reply-id", kvs.postMappings["high-remote-reply-id"])
+	api.AssertExpectations(t)
+}
+
+func TestHandleInboundPost_WithRootID_MappingMissing(t *testing.T) {
+	api := &plugintest.API{}
+	p, kvs := setupTestPlugin(api)
+
+	// No root mapping exists.
+	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
+	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
+	syncUser := &mmModel.User{Id: "sync-uid", Username: "alice.high", Position: syncUserPosition}
+	notFoundErr := &mmModel.AppError{Message: "not found"}
+
+	api.On("GetTeamByName", "test-a").Return(team, nil)
+	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
+	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+		"username", "alice", "conn", "high").Return()
+	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
+	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
+	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
+	api.On("LogWarn", "Inbound post: failed to look up root mapping",
+		"conn", "high", "remote_root_id", "nonexistent-root", "error", mock.Anything).Maybe()
+	api.On("CreatePost", mock.MatchedBy(func(post *mmModel.Post) bool {
+		return post.RootId == "" && post.Message == "orphaned reply"
+	})).Return(&mmModel.Post{Id: "local-post-id"}, nil)
+
+	postMsg := model.PostMessage{
+		PostID:      "remote-post-id",
+		RootID:      "nonexistent-root",
+		ChannelName: "town-square",
+		TeamName:    "test-a",
+		Username:    "alice",
+		MessageText: "orphaned reply",
+	}
+
+	p.handleInboundPost("high", &postMsg)
+
+	assert.Equal(t, "local-post-id", kvs.postMappings["high-remote-post-id"])
+}
+
+func TestHandleInboundUpdate_UpdatePostFails(t *testing.T) {
+	api := &plugintest.API{}
+	p, kvs := setupTestPlugin(api)
+
+	kvs.postMappings["high-remote-post-id"] = "local-post-id"
+
+	existingPost := &mmModel.Post{Id: "local-post-id", Message: "original"}
+	api.On("GetPost", "local-post-id").Return(existingPost, nil)
+	api.On("UpdatePost", mock.AnythingOfType("*model.Post")).Return(nil, &mmModel.AppError{Message: "update failed"})
+	api.On("LogError", "Inbound update: failed to update post",
+		"conn", "high", "local_id", "local-post-id", "error", "update failed").Return()
+
+	postMsg := model.PostMessage{PostID: "remote-post-id", MessageText: "edited"}
+	p.handleInboundUpdate("high", &postMsg)
+
+	api.AssertExpectations(t)
+}
+
+func TestHandleInboundDelete_FullLifecycle(t *testing.T) {
+	api := &plugintest.API{}
+	p, kvs := setupTestPlugin(api)
+
+	kvs.postMappings["high-remote-post-id"] = "local-post-id"
+
+	api.On("DeletePost", "local-post-id").Return(nil)
+
+	deleteMsg := model.DeleteMessage{
+		PostID:      "remote-post-id",
+		ChannelName: "town-square",
+		TeamName:    "test-a",
+	}
+	p.handleInboundDelete("high", &deleteMsg)
+
+	// Verify deleting flag was set and then cleared.
+	assert.False(t, kvs.deletingFlags["local-post-id"], "delete flag should be cleared after delete")
+	// Verify post mapping was removed.
+	_, exists := kvs.postMappings["high-remote-post-id"]
+	assert.False(t, exists, "post mapping should be deleted")
+
+	api.AssertExpectations(t)
+}
+
+// clearDeletingFlagFailStore overrides ClearDeletingFlag to return an error.
+type clearDeletingFlagFailStore struct {
+	*testKVStore
+	clearErr error
+}
+
+func (s *clearDeletingFlagFailStore) ClearDeletingFlag(_ string) error {
+	return s.clearErr
+}
+
+func TestHandleInboundDelete_ClearFlagFails(t *testing.T) {
+	api := &plugintest.API{}
+	p := &Plugin{}
+	p.SetAPI(api)
+	p.botUserID = "bot-user-id"
+	ctx, cancel := context.WithCancel(context.Background())
+	p.ctx = ctx
+	p.cancel = cancel
+	p.relaySem = make(chan struct{}, 50)
+
+	kvs := &clearDeletingFlagFailStore{
+		testKVStore: newTestKVStore(),
+		clearErr:    errors.New("clear flag failed"),
+	}
+	kvs.postMappings["high-remote-post-id"] = "local-post-id"
+	p.kvstore = kvs
+
+	api.On("DeletePost", "local-post-id").Return(nil)
+	api.On("LogWarn", "Inbound delete: failed to remove delete flag",
+		"conn", "high", "local_id", "local-post-id", "error", "clear flag failed").Return()
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	deleteMsg := model.DeleteMessage{
+		PostID:      "remote-post-id",
+		ChannelName: "town-square",
+		TeamName:    "test-a",
+	}
+
+	// Should not panic even though ClearDeletingFlag fails.
+	assert.NotPanics(t, func() {
+		p.handleInboundDelete("high", &deleteMsg)
+	})
+	api.AssertCalled(t, "DeletePost", "local-post-id")
+}
+
+func TestHandleInboundFile_PostMappingRetry(t *testing.T) {
+	api := &plugintest.API{}
+	mockLog(api)
+	p, _ := setupTestPlugin(api)
+	p.fileSem = make(chan struct{}, 32)
+
+	p.inboundConns = []inboundConn{
+		{
+			provider:            &mockQueueProvider{},
+			name:                "high",
+			fileTransferEnabled: true,
+		},
+	}
+
+	// GetPostMapping returns empty on first 2 calls, then returns value on 3rd.
+	callCount := 0
+	kvs := &flexibleKVStore{testKVStore: newTestKVStore()}
+	kvs.postMappings["high-remote-post-1"] = "local-post-1"
+	p.kvstore = kvs
+
+	// Override GetPostMapping to simulate retry behavior.
+	retryKvs := &retryPostMappingStore{
+		testKVStore: kvs.testKVStore,
+		threshold:   3,
+	}
+	retryKvs.callCount = &callCount
+	p.kvstore = retryKvs
+
+	existingPost := &mmModel.Post{
+		Id:        "local-post-1",
+		ChannelId: "ch1",
+		FileIds:   mmModel.StringArray{},
+	}
+	api.On("GetPost", "local-post-1").Return(existingPost, nil)
+	api.On("UploadFile", []byte("file-data"), "ch1", "doc.pdf").Return(&mmModel.FileInfo{
+		Id:   "uploaded-file-1",
+		Name: "doc.pdf",
+	}, nil)
+	api.On("UpdatePost", mock.MatchedBy(func(post *mmModel.Post) bool {
+		return post.Id == "local-post-1"
+	})).Return(existingPost, nil)
+
+	headers := map[string]string{
+		headerConnName: "high",
+		headerPostID:   "remote-post-1",
+		headerFilename: "doc.pdf",
+	}
+	err := p.handleInboundFile(p.ctx, "high", "blob-key", []byte("file-data"), headers)
+	assert.NoError(t, err)
+	assert.Equal(t, 3, *retryKvs.callCount)
+}
+
+// retryPostMappingStore returns empty mapping until callCount reaches threshold.
+type retryPostMappingStore struct {
+	*testKVStore
+	threshold int
+	callCount *int
+}
+
+func (s *retryPostMappingStore) GetPostMapping(connName, remotePostID string) (string, error) {
+	*s.callCount++
+	if *s.callCount < s.threshold {
+		return "", nil
+	}
+	return s.testKVStore.GetPostMapping(connName, remotePostID)
+}
+
+func TestHandleInboundFile_ContextCancelledDuringRetry(t *testing.T) {
+	api := &plugintest.API{}
+	mockLog(api)
+	p, _ := setupTestPlugin(api)
+	p.fileSem = make(chan struct{}, 32)
+
+	p.inboundConns = []inboundConn{
+		{
+			provider:            &mockQueueProvider{},
+			name:                "high",
+			fileTransferEnabled: true,
+		},
+	}
+
+	// Create a context that we cancel immediately.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// GetPostMapping always returns empty to force retry, but context is cancelled.
+	kvs := &flexibleKVStore{testKVStore: newTestKVStore()}
+	p.kvstore = kvs
+
+	headers := map[string]string{
+		headerConnName: "high",
+		headerPostID:   "remote-post-1",
+		headerFilename: "doc.pdf",
+	}
+	err := p.handleInboundFile(ctx, "high", "blob-key", []byte("file-data"), headers)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestHandleInboundFile_UploadFails(t *testing.T) {
+	api := &plugintest.API{}
+	mockLog(api)
+	p, kvs := setupTestPlugin(api)
+	p.fileSem = make(chan struct{}, 32)
+
+	p.inboundConns = []inboundConn{
+		{
+			provider:            &mockQueueProvider{},
+			name:                "high",
+			fileTransferEnabled: true,
+		},
+	}
+
+	kvs.postMappings["high-remote-post-1"] = "local-post-1"
+
+	existingPost := &mmModel.Post{
+		Id:        "local-post-1",
+		ChannelId: "ch1",
+		FileIds:   mmModel.StringArray{},
+	}
+	api.On("GetPost", "local-post-1").Return(existingPost, nil)
+	api.On("UploadFile", []byte("file-data"), "ch1", "doc.pdf").Return(nil, &mmModel.AppError{Message: "upload failed"})
+
+	headers := map[string]string{
+		headerConnName: "high",
+		headerPostID:   "remote-post-1",
+		headerFilename: "doc.pdf",
+	}
+	err := p.handleInboundFile(p.ctx, "high", "blob-key", []byte("file-data"), headers)
+	assert.NoError(t, err)
+	// UpdatePost should not be called when upload fails.
+	api.AssertNotCalled(t, "UpdatePost", mock.Anything)
+}
+
+func TestHandleInboundFile_UpdatePostFails(t *testing.T) {
+	api := &plugintest.API{}
+	mockLog(api)
+	p, kvs := setupTestPlugin(api)
+	p.fileSem = make(chan struct{}, 32)
+
+	p.inboundConns = []inboundConn{
+		{
+			provider:            &mockQueueProvider{},
+			name:                "high",
+			fileTransferEnabled: true,
+		},
+	}
+
+	kvs.postMappings["high-remote-post-1"] = "local-post-1"
+
+	existingPost := &mmModel.Post{
+		Id:        "local-post-1",
+		ChannelId: "ch1",
+		FileIds:   mmModel.StringArray{},
+	}
+	api.On("GetPost", "local-post-1").Return(existingPost, nil)
+	api.On("UploadFile", []byte("file-data"), "ch1", "doc.pdf").Return(&mmModel.FileInfo{
+		Id:   "uploaded-file-1",
+		Name: "doc.pdf",
+	}, nil)
+	api.On("UpdatePost", mock.AnythingOfType("*model.Post")).Return(nil, &mmModel.AppError{Message: "update failed"})
+
+	headers := map[string]string{
+		headerConnName: "high",
+		headerPostID:   "remote-post-1",
+		headerFilename: "doc.pdf",
+	}
+	err := p.handleInboundFile(p.ctx, "high", "blob-key", []byte("file-data"), headers)
+	assert.NoError(t, err)
+}
+
+func TestResolveTeamAndChannel_RewriteIndex(t *testing.T) {
+	api := &plugintest.API{}
+	p := &Plugin{}
+	p.SetAPI(api)
+	p.botUserID = "bot-user-id"
+	ctx, cancel := context.WithCancel(context.Background())
+	p.ctx = ctx
+	p.cancel = cancel
+	p.relaySem = make(chan struct{}, 50)
+
+	destTeam := &mmModel.Team{Id: "dest-team-id", Name: "local-team"}
+	channel := &mmModel.Channel{Id: "dest-chan-id", Name: "town-square", TeamId: "dest-team-id"}
+
+	api.On("GetTeam", "dest-team-id").Return(destTeam, nil)
+	api.On("GetChannelByName", "dest-team-id", "town-square", false).Return(channel, nil)
+
+	kvs := &rewriteTestKVStore{
+		testKVStore: newTestKVStore(),
+		teamConns: map[string][]store.TeamConnection{
+			"dest-team-id": {{Direction: "inbound", Connection: "high"}},
+		},
+		chanConns: map[string][]store.TeamConnection{
+			"dest-chan-id": {{Direction: "inbound", Connection: "high"}},
+		},
+		rewriteIndex: map[string]string{
+			"high::remote-team": "dest-team-id",
+		},
+	}
+	p.kvstore = kvs
+
+	gotTeam, gotChannel, err := p.resolveTeamAndChannel("high", "remote-team", "town-square")
+	require.NoError(t, err)
+	assert.Equal(t, "dest-team-id", gotTeam.Id)
+	assert.Equal(t, "dest-chan-id", gotChannel.Id)
+}

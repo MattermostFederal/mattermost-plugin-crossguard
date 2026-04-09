@@ -30,9 +30,16 @@ const (
 	blobMetadataHeadersKey         = "crossguard_headers"
 )
 
+// azureQueuer abstracts Azure Queue operations for testability.
+type azureQueuer interface {
+	EnqueueMessage(ctx context.Context, content string, o *azqueue.EnqueueMessageOptions) (azqueue.EnqueueMessagesResponse, error)
+	DequeueMessages(ctx context.Context, o *azqueue.DequeueMessagesOptions) (azqueue.DequeueMessagesResponse, error)
+	DeleteMessage(ctx context.Context, messageID string, popReceipt string, o *azqueue.DeleteMessageOptions) (azqueue.DeleteMessageResponse, error)
+}
+
 // azureProvider implements QueueProvider using Azure Queue Storage and Azure Blob Storage.
 type azureProvider struct {
-	queueClient     *azqueue.QueueClient
+	queueClient     azureQueuer
 	containerClient *container.Client
 	api             plugin.API
 	cfg             AzureProviderConfig

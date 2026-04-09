@@ -835,3 +835,170 @@ func TestMessageHasBeenDeleted_IsDeletingFlagError(t *testing.T) {
 	// Should log error and return without relaying.
 	api.AssertNotCalled(t, "GetChannel", mock.Anything)
 }
+
+// ---------------------------------------------------------------------------
+// Additional hook edge-case tests (new)
+// ---------------------------------------------------------------------------
+
+func TestMessageHasBeenPosted_SystemMessage(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	post := &mmModel.Post{Id: "p1", Type: "system_join_channel", UserId: "user-id"}
+	p.MessageHasBeenPosted(nil, post)
+	// No channel/team lookups expected for system messages.
+	api.AssertNotCalled(t, "GetChannel", mock.Anything)
+	api.AssertNotCalled(t, "GetUser", mock.Anything)
+}
+
+func TestMessageHasBeenPosted_WithFiles(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+	p.configuration = &configuration{}
+
+	var published atomic.Bool
+	p.outboundConns = []outboundConn{{
+		provider: &mockQueueProvider{
+			publishFn: func(_ context.Context, _ []byte) error {
+				published.Store(true)
+				return nil
+			},
+			uploadFileFn: func(_ context.Context, _ string, _ []byte, _ map[string]string) error {
+				return nil
+			},
+		},
+		name:                "high",
+		healthy:             true,
+		lastCheckTime:       time.Now(),
+		fileTransferEnabled: true,
+	}}
+
+	channel := &mmModel.Channel{Id: "chan-id", Name: "ch", TeamId: "team-id"}
+	team := &mmModel.Team{Id: "team-id", Name: "test-team"}
+	user := &mmModel.User{Id: "user-id", Username: "alice"}
+
+	api.On("GetChannel", "chan-id").Return(channel, nil)
+	api.On("GetTeam", "team-id").Return(team, nil)
+	api.On("GetUser", "user-id").Return(user, nil)
+
+	fi := &mmModel.FileInfo{Id: "file-1", Name: "doc.pdf", Size: 1024}
+	api.On("GetFileInfo", "file-1").Return(fi, nil)
+	api.On("GetFile", "file-1").Return([]byte("file-data"), nil)
+	maxSize := int64(100 * 1024 * 1024)
+	api.On("GetConfig").Return(&mmModel.Config{
+		FileSettings: mmModel.FileSettings{MaxFileSize: &maxSize},
+	}).Maybe()
+
+	post := &mmModel.Post{
+		Id:        "p1",
+		ChannelId: "chan-id",
+		UserId:    "user-id",
+		Message:   "hello with file",
+		FileIds:   mmModel.StringArray{"file-1"},
+	}
+	p.MessageHasBeenPosted(nil, post)
+	p.wg.Wait()
+
+	assert.True(t, published.Load())
+}
+
+func TestMessageHasBeenUpdated_SystemMessageSkipped(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	post := &mmModel.Post{Id: "p1", Type: mmModel.PostTypeJoinChannel, UserId: "user-id"}
+	p.MessageHasBeenUpdated(nil, post, post)
+	api.AssertNotCalled(t, "GetChannel", mock.Anything)
+	api.AssertNotCalled(t, "GetUser", mock.Anything)
+}
+
+func TestMessageHasBeenUpdated_GetUserFails(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	channel := &mmModel.Channel{Id: "chan-id", Name: "ch", TeamId: "team-id"}
+	team := &mmModel.Team{Id: "team-id", Name: "test-team"}
+	api.On("GetChannel", "chan-id").Return(channel, nil)
+	api.On("GetTeam", "team-id").Return(team, nil)
+	api.On("GetUser", "user-id").Return(nil, &mmModel.AppError{Message: "user not found"})
+
+	post := &mmModel.Post{Id: "p1", ChannelId: "chan-id", UserId: "user-id", Message: "edited"}
+	p.MessageHasBeenUpdated(nil, post, post)
+	// LogError should have been called for the user lookup failure.
+}
+
+func TestMessageHasBeenDeleted_BotUser(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	post := &mmModel.Post{Id: "p1", UserId: p.botUserID, ChannelId: "chan-id"}
+	p.MessageHasBeenDeleted(nil, post)
+	// Bot user posts should be filtered early, no KV interaction.
+	api.AssertNotCalled(t, "GetChannel", mock.Anything)
+}
+
+func TestReactionHasBeenAdded_SystemPost(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	systemPost := &mmModel.Post{Id: "post-id", Type: mmModel.PostTypeJoinChannel, UserId: "user-id"}
+	api.On("GetPost", "post-id").Return(systemPost, nil)
+
+	reaction := &mmModel.Reaction{PostId: "post-id", UserId: "reactor-id", EmojiName: "thumbsup"}
+	p.ReactionHasBeenAdded(nil, reaction)
+	// System post reactions should be skipped.
+	api.AssertNotCalled(t, "GetUser", mock.Anything)
+}
+
+func TestReactionHasBeenAdded_CrossguardSyncUser(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	normalPost := &mmModel.Post{Id: "post-id", UserId: "user-id", ChannelId: "chan-id"}
+	syncUser := &mmModel.User{Id: "reactor-id", Username: "alice.high", Position: "crossguard-sync"}
+
+	api.On("GetPost", "post-id").Return(normalPost, nil)
+	api.On("GetUser", "reactor-id").Return(syncUser, nil)
+
+	reaction := &mmModel.Reaction{PostId: "post-id", UserId: "reactor-id", EmojiName: "thumbsup"}
+	p.ReactionHasBeenAdded(nil, reaction)
+	// Sync user reactions should be filtered, no channel lookup.
+	api.AssertNotCalled(t, "GetChannel", mock.Anything)
+}
+
+func TestReactionHasBeenAdded_GetPostFails(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	api.On("GetPost", "post-id").Return(nil, &mmModel.AppError{Message: "not found"})
+
+	reaction := &mmModel.Reaction{PostId: "post-id", UserId: "reactor-id", EmojiName: "thumbsup"}
+	p.ReactionHasBeenAdded(nil, reaction)
+	// GetUser should not be called when GetPost fails.
+	api.AssertNotCalled(t, "GetUser", mock.Anything)
+}
+
+func TestRelayToOutbound_SemaphoreFull(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	// Use a capacity-1 semaphore and fill it.
+	p.relaySem = make(chan struct{}, 1)
+	p.relaySem <- struct{}{}
+
+	env := &model.Envelope{Type: model.MessageTypePost}
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+	p.relayToOutbound(env, conns, "test-semaphore-full")
+
+	// Drain so test cleanup does not hang.
+	<-p.relaySem
+}

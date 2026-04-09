@@ -846,3 +846,62 @@ func TestOnConfigurationChange_WithReconnect(t *testing.T) {
 	err := p.OnConfigurationChange()
 	assert.NoError(t, err)
 }
+
+// ---------------------------------------------------------------------------
+// Additional configuration edge-case tests (new)
+// ---------------------------------------------------------------------------
+
+func TestParseConnections_AzureProvider(t *testing.T) {
+	input := `[{"name":"az-conn","provider":"azure","azure":{"connection_string":"DefaultEndpoints...","queue_name":"myqueue","blob_container_name":"myblob"}}]`
+	conns, err := parseConnections(input)
+	require.NoError(t, err)
+	require.Len(t, conns, 1)
+	assert.Equal(t, "az-conn", conns[0].Name)
+	assert.Equal(t, ProviderAzure, conns[0].Provider)
+	require.NotNil(t, conns[0].Azure)
+	assert.Equal(t, "myqueue", conns[0].Azure.QueueName)
+	assert.Equal(t, "myblob", conns[0].Azure.BlobContainerName)
+	assert.Nil(t, conns[0].NATS)
+}
+
+func TestParseConnections_MissingNATSConfig(t *testing.T) {
+	// Provider is "nats" but no nats config block. parseConnections itself succeeds,
+	// but validation should catch it.
+	input := `[{"name":"bad-conn","provider":"nats"}]`
+	conns, err := parseConnections(input)
+	require.NoError(t, err)
+	require.Len(t, conns, 1)
+	assert.Equal(t, "nats", conns[0].Provider)
+	assert.Nil(t, conns[0].NATS)
+
+	// Validate should report an error about missing nats config block.
+	cfg := &configuration{OutboundConnections: input}
+	valErr := cfg.validate()
+	require.Error(t, valErr)
+	assert.Contains(t, valErr.Error(), "nats config block is required")
+}
+
+func TestValidateConnectionList_MultipleErrors(t *testing.T) {
+	conns := []ConnectionConfig{
+		{Name: "", Provider: "nats"},                  // missing name and missing nats block
+		{Name: "valid", Provider: "invalid-provider"}, // bad provider
+	}
+	data, _ := json.Marshal(conns)
+	cfg := &configuration{InboundConnections: string(data)}
+	err := cfg.validate()
+	require.Error(t, err)
+	// Should contain errors for both connections.
+	assert.Contains(t, err.Error(), "name is required")
+	assert.Contains(t, err.Error(), "provider must be")
+}
+
+func TestParseConnections_DefaultProviderNATS(t *testing.T) {
+	// Empty/missing provider field should default to "nats".
+	input := `[{"name":"default-conn","nats":{"address":"nats://localhost:4222","subject":"crossguard.test"}}]`
+	conns, err := parseConnections(input)
+	require.NoError(t, err)
+	require.Len(t, conns, 1)
+	assert.Equal(t, ProviderNATS, conns[0].Provider, "empty provider should default to nats")
+	require.NotNil(t, conns[0].NATS)
+	assert.Equal(t, "default-conn", conns[0].NATS.Name, "nested name should be populated from parent")
+}

@@ -265,12 +265,12 @@ ifneq ($(HAS_WEBAPP),)
 	cd webapp && $(NPM) run test:pw-ct;
 endif
 
-## Creates a coverage report for the server code.
+## Prints Go code coverage summary to terminal.
 .PHONY: coverage
 coverage: apply webapp/node_modules
 ifneq ($(HAS_SERVER),)
 	$(GO) test $(GO_TEST_FLAGS) -coverprofile=server/coverage.txt ./server/...
-	$(GO) tool cover -html=server/coverage.txt
+	$(GO) tool cover -func=server/coverage.txt
 endif
 
 ## Clean removes all build artifacts (but preserves build tools).

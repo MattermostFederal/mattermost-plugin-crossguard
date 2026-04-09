@@ -143,6 +143,7 @@ After setup:
 | `make deploy` | Build, deploy plugin, and run quick NATS smoke test |
 | `make dist` | Build plugin bundle only |
 | `make test` | Run all tests |
+| `make coverage` | Run Go tests and print code coverage summary |
 | `make check-style` | Lint code |
 | `make nuke` | Remove everything: containers, data, build artifacts |
 

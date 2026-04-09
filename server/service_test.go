@@ -1638,3 +1638,114 @@ func TestPublishChannelConnectionUpdate(t *testing.T) {
 			mock.Anything)
 	})
 }
+
+func TestGetAllConnectionNames(t *testing.T) {
+	t.Run("returns both inbound and outbound", func(t *testing.T) {
+		api := &plugintest.API{}
+		defaultLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"out-conn","provider":"nats","nats":{"address":"nats://localhost:4222","subject":"test"}}]`,
+			InboundConnections:  `[{"name":"in-conn","provider":"nats","nats":{"address":"nats://localhost:4222","subject":"test"}}]`,
+		}
+
+		names := p.getAllConnectionNames()
+
+		require.Len(t, names, 2)
+		assert.Equal(t, "outbound", names[0].Direction)
+		assert.Equal(t, "out-conn", names[0].Connection)
+		assert.Equal(t, "inbound", names[1].Direction)
+		assert.Equal(t, "in-conn", names[1].Connection)
+	})
+
+	t.Run("parse error for outbound still returns inbound", func(t *testing.T) {
+		api := &plugintest.API{}
+		defaultLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		p.configuration = &configuration{
+			OutboundConnections: "invalid json",
+			InboundConnections:  `[{"name":"in-conn","provider":"nats","nats":{"address":"nats://localhost:4222","subject":"test"}}]`,
+		}
+
+		names := p.getAllConnectionNames()
+
+		require.Len(t, names, 1)
+		assert.Equal(t, "inbound", names[0].Direction)
+		assert.Equal(t, "in-conn", names[0].Connection)
+	})
+
+	t.Run("empty config returns nil", func(t *testing.T) {
+		api := &plugintest.API{}
+		defaultLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		p.configuration = &configuration{}
+
+		names := p.getAllConnectionNames()
+		assert.Nil(t, names)
+	})
+}
+
+func TestGetConnectionMap(t *testing.T) {
+	t.Run("returns map keyed by direction:name", func(t *testing.T) {
+		api := &plugintest.API{}
+		defaultLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"out-conn","provider":"nats","nats":{"address":"nats://localhost:4222","subject":"test"},"file_transfer_enabled":true}]`,
+			InboundConnections:  `[{"name":"in-conn","provider":"nats","nats":{"address":"nats://localhost:4222","subject":"test"}}]`,
+		}
+
+		m := p.getConnectionMap()
+
+		require.Len(t, m, 2)
+		outConn, ok := m["outbound:out-conn"]
+		require.True(t, ok)
+		assert.Equal(t, "out-conn", outConn.Name)
+		assert.True(t, outConn.FileTransferEnabled)
+
+		inConn, ok := m["inbound:in-conn"]
+		require.True(t, ok)
+		assert.Equal(t, "in-conn", inConn.Name)
+	})
+
+	t.Run("parse error returns partial map", func(t *testing.T) {
+		api := &plugintest.API{}
+		defaultLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		p.configuration = &configuration{
+			OutboundConnections: "invalid json",
+			InboundConnections:  `[{"name":"in-conn","provider":"nats","nats":{"address":"nats://localhost:4222","subject":"test"}}]`,
+		}
+
+		m := p.getConnectionMap()
+
+		require.Len(t, m, 1)
+		_, ok := m["inbound:in-conn"]
+		assert.True(t, ok)
+	})
+}
+
+func TestGetGlobalStatus_ConfigParseWarnings(t *testing.T) {
+	api := &plugintest.API{}
+	defaultLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+
+	kvs.getInitializedTeamIDsFn = func() ([]string, error) {
+		return nil, nil
+	}
+
+	p.configuration = &configuration{
+		OutboundConnections: "invalid json",
+		InboundConnections:  "also invalid",
+	}
+
+	resp, svcErr := p.getGlobalStatus()
+	require.Nil(t, svcErr)
+	require.NotNil(t, resp)
+	assert.Len(t, resp.Warnings, 2)
+}

@@ -62,3 +62,39 @@ func TestOnPluginClusterEvent_NonCachingStore(t *testing.T) {
 		Data: []byte("data"),
 	})
 }
+
+func TestOnDeactivate_WithConnections(t *testing.T) {
+	p := &Plugin{}
+	ctx, cancel := context.WithCancel(context.Background())
+	p.ctx = ctx
+	p.cancel = cancel
+	p.relaySem = make(chan struct{}, 50)
+	p.fileSem = make(chan struct{}, 32)
+
+	outboundClosed := false
+	inboundClosed := false
+	p.outboundConns = []outboundConn{
+		{
+			provider: &mockQueueProvider{closeFn: func() error {
+				outboundClosed = true
+				return nil
+			}},
+			name: "out-conn",
+		},
+	}
+	p.inboundCancel = func() {}
+	p.inboundConns = []inboundConn{
+		{
+			provider: &mockQueueProvider{closeFn: func() error {
+				inboundClosed = true
+				return nil
+			}},
+			name: "in-conn",
+		},
+	}
+
+	err := p.OnDeactivate()
+	assert.NoError(t, err)
+	assert.True(t, outboundClosed, "outbound provider should be closed")
+	assert.True(t, inboundClosed, "inbound provider should be closed")
+}

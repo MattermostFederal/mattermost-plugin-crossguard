@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -918,4 +919,318 @@ func TestUpdateOutboundHealth_IndexOutOfRange(t *testing.T) {
 
 	// Original entry should be unchanged.
 	assert.True(t, p.outboundConns[0].healthy)
+}
+
+func TestConnectOutbound(t *testing.T) {
+	t.Run("config parse error logs and returns empty pool", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		p.configuration = &configuration{
+			OutboundConnections: "not valid json",
+		}
+
+		p.connectOutbound()
+
+		p.outboundMu.RLock()
+		defer p.outboundMu.RUnlock()
+		assert.Nil(t, p.outboundConns)
+	})
+
+	t.Run("empty connections list results in nil pool", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		p.configuration = &configuration{
+			OutboundConnections: "[]",
+		}
+
+		p.connectOutbound()
+
+		p.outboundMu.RLock()
+		defer p.outboundMu.RUnlock()
+		assert.Nil(t, p.outboundConns)
+	})
+
+	t.Run("provider creation failure skips connection", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		// Use "unknown" provider to trigger createProvider error.
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"bad-conn","provider":"unknown"}]`,
+		}
+
+		p.connectOutbound()
+
+		p.outboundMu.RLock()
+		defer p.outboundMu.RUnlock()
+		assert.Nil(t, p.outboundConns)
+	})
+}
+
+func TestCloseOutbound(t *testing.T) {
+	t.Run("closes all providers and nils pool", func(t *testing.T) {
+		p := &Plugin{}
+		closed := make([]string, 0)
+		p.outboundConns = []outboundConn{
+			{
+				provider: &mockQueueProvider{closeFn: func() error {
+					closed = append(closed, "conn-a")
+					return nil
+				}},
+				name: "conn-a",
+			},
+			{
+				provider: &mockQueueProvider{closeFn: func() error {
+					closed = append(closed, "conn-b")
+					return nil
+				}},
+				name: "conn-b",
+			},
+		}
+
+		p.closeOutbound()
+
+		assert.Nil(t, p.outboundConns)
+		assert.ElementsMatch(t, []string{"conn-a", "conn-b"}, closed)
+	})
+
+	t.Run("nil pool is no-op", func(t *testing.T) {
+		p := &Plugin{}
+		p.outboundConns = nil
+
+		assert.NotPanics(t, func() {
+			p.closeOutbound()
+		})
+		assert.Nil(t, p.outboundConns)
+	})
+}
+
+func TestReconnectOutbound(t *testing.T) {
+	t.Run("closes old providers and rebuilds pool", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		oldClosed := false
+		p.outboundConns = []outboundConn{
+			{
+				provider: &mockQueueProvider{closeFn: func() error {
+					oldClosed = true
+					return nil
+				}},
+				name: "old-conn",
+			},
+		}
+
+		// Set empty config so new pool will be nil.
+		p.configuration = &configuration{
+			OutboundConnections: "[]",
+		}
+
+		p.reconnectOutbound()
+
+		assert.True(t, oldClosed)
+		p.outboundMu.RLock()
+		defer p.outboundMu.RUnlock()
+		assert.Nil(t, p.outboundConns)
+	})
+}
+
+func TestUploadPostFiles_HappyPath(t *testing.T) {
+	t.Run("successful file upload with correct headers", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		var capturedHeaders map[string]string
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{
+				uploadFileFn: func(ctx context.Context, key string, data []byte, headers map[string]string) error {
+					capturedHeaders = headers
+					return nil
+				},
+			},
+			name:                "high",
+			fileTransferEnabled: true,
+			healthy:             true,
+			lastCheckTime:       time.Now(),
+		}}
+
+		api.On("GetConfig").Return(&mmModel.Config{}).Maybe()
+		api.On("GetFileInfo", "file-1").Return(&mmModel.FileInfo{
+			Id:   "file-1",
+			Name: "report.pdf",
+			Size: 1024,
+		}, nil)
+		api.On("GetFile", "file-1").Return([]byte("pdf-content"), nil)
+
+		post := &mmModel.Post{
+			Id:        "post-1",
+			ChannelId: "ch1",
+			FileIds:   mmModel.StringArray{"file-1"},
+		}
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+
+		p.uploadPostFiles(post, conns)
+		p.wg.Wait()
+
+		require.NotNil(t, capturedHeaders)
+		assert.Equal(t, "post-1", capturedHeaders[headerPostID])
+		assert.Equal(t, "high", capturedHeaders[headerConnName])
+		assert.Equal(t, "report.pdf", capturedHeaders[headerFilename])
+	})
+
+	t.Run("GetFile error skips file", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		uploaded := false
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{
+				uploadFileFn: func(ctx context.Context, key string, data []byte, headers map[string]string) error {
+					uploaded = true
+					return nil
+				},
+			},
+			name:                "high",
+			fileTransferEnabled: true,
+			healthy:             true,
+			lastCheckTime:       time.Now(),
+		}}
+
+		api.On("GetConfig").Return(&mmModel.Config{}).Maybe()
+		api.On("GetFileInfo", "file-1").Return(&mmModel.FileInfo{
+			Id:   "file-1",
+			Name: "report.pdf",
+			Size: 100,
+		}, nil)
+		api.On("GetFile", "file-1").Return(nil, &mmModel.AppError{Message: "download failed"})
+
+		post := &mmModel.Post{
+			Id:        "post-1",
+			ChannelId: "ch1",
+			FileIds:   mmModel.StringArray{"file-1"},
+		}
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+
+		p.uploadPostFiles(post, conns)
+		p.wg.Wait()
+
+		assert.False(t, uploaded)
+	})
+}
+
+func TestUploadPostFiles_SemaphoreFull(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	uploaded := false
+	p.outboundConns = []outboundConn{{
+		provider: &mockQueueProvider{
+			uploadFileFn: func(ctx context.Context, key string, data []byte, headers map[string]string) error {
+				uploaded = true
+				return nil
+			},
+		},
+		name:                "high",
+		fileTransferEnabled: true,
+		healthy:             true,
+		lastCheckTime:       time.Now(),
+	}}
+
+	// Fill the file semaphore completely.
+	for range cap(p.fileSem) {
+		p.fileSem <- struct{}{}
+	}
+
+	api.On("GetConfig").Return(&mmModel.Config{}).Maybe()
+	api.On("GetFileInfo", "file-1").Return(&mmModel.FileInfo{
+		Id:   "file-1",
+		Name: "report.pdf",
+		Size: 100,
+	}, nil)
+	api.On("GetFile", "file-1").Return([]byte("pdf-content"), nil)
+
+	post := &mmModel.Post{
+		Id:        "post-1",
+		ChannelId: "ch1",
+		FileIds:   mmModel.StringArray{"file-1"},
+	}
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+
+	p.uploadPostFiles(post, conns)
+	p.wg.Wait()
+
+	// Drain semaphore.
+	for range cap(p.fileSem) {
+		<-p.fileSem
+	}
+
+	assert.False(t, uploaded)
+}
+
+func TestUploadPostFiles_MultipleConnections(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	uploadedConns := make([]string, 0)
+	var mu sync.Mutex
+	makeProvider := func() *mockQueueProvider {
+		return &mockQueueProvider{
+			uploadFileFn: func(ctx context.Context, key string, data []byte, headers map[string]string) error {
+				mu.Lock()
+				uploadedConns = append(uploadedConns, headers[headerConnName])
+				mu.Unlock()
+				return nil
+			},
+		}
+	}
+
+	p.outboundConns = []outboundConn{
+		{
+			provider:            makeProvider(),
+			name:                "conn-a",
+			fileTransferEnabled: true,
+			healthy:             true,
+			lastCheckTime:       time.Now(),
+		},
+		{
+			provider:            makeProvider(),
+			name:                "conn-b",
+			fileTransferEnabled: true,
+			healthy:             true,
+			lastCheckTime:       time.Now(),
+		},
+	}
+
+	api.On("GetConfig").Return(&mmModel.Config{}).Maybe()
+	api.On("GetFileInfo", "file-1").Return(&mmModel.FileInfo{
+		Id:   "file-1",
+		Name: "report.pdf",
+		Size: 100,
+	}, nil)
+	api.On("GetFile", "file-1").Return([]byte("pdf-content"), nil)
+
+	post := &mmModel.Post{
+		Id:        "post-1",
+		ChannelId: "ch1",
+		FileIds:   mmModel.StringArray{"file-1"},
+	}
+	conns := []store.TeamConnection{
+		{Direction: "outbound", Connection: "conn-a"},
+		{Direction: "outbound", Connection: "conn-b"},
+	}
+
+	p.uploadPostFiles(post, conns)
+	p.wg.Wait()
+
+	assert.ElementsMatch(t, []string{"conn-a", "conn-b"}, uploadedConns)
 }

@@ -799,3 +799,50 @@ func TestOnConfigurationChange_NoReconnectBeforeActivation(t *testing.T) {
 	cfg := p.getConfiguration()
 	require.NotNil(t, cfg)
 }
+
+func TestSetConfiguration_SamePointerLogs(t *testing.T) {
+	api := &plugintest.API{}
+	defaultLogMocks(api)
+	p := &Plugin{}
+	p.SetAPI(api)
+
+	cfg := &configuration{}
+	p.configuration = cfg
+
+	// Setting same pointer should log warning and not change config.
+	p.setConfiguration(cfg)
+
+	api.AssertCalled(t, "LogWarn", "setConfiguration called with the existing configuration")
+}
+
+func TestSetConfiguration_ReplaceConfig(t *testing.T) {
+	p := &Plugin{}
+	cfg1 := &configuration{OutboundConnections: "old"}
+	cfg2 := &configuration{OutboundConnections: "new"}
+
+	p.setConfiguration(cfg1)
+	assert.Equal(t, cfg1, p.getConfiguration())
+
+	p.setConfiguration(cfg2)
+	assert.Equal(t, cfg2, p.getConfiguration())
+}
+
+func TestOnConfigurationChange_WithReconnect(t *testing.T) {
+	api := &plugintest.API{}
+	defaultLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	// Simulate post-activation state.
+	p.relaySem = make(chan struct{}, 50)
+	p.fileSem = make(chan struct{}, 32)
+	p.inboundCancel = func() {}
+	p.configuration = &configuration{}
+
+	api.On("LoadPluginConfiguration", mock.Anything).Return(nil).Run(func(args mock.Arguments) {
+		// The LoadPluginConfiguration writes to the passed config pointer.
+		// Leave it as zero-value config for this test.
+	})
+
+	err := p.OnConfigurationChange()
+	assert.NoError(t, err)
+}

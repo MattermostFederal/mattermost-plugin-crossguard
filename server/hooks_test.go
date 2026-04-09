@@ -788,3 +788,50 @@ func TestRelayToOutbound_EmptyConnNames(t *testing.T) {
 	// Semaphore should be released
 	assert.Equal(t, 0, len(p.relaySem))
 }
+
+func TestReactionHasBeenRemoved_GetUserFailure(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	normalPost := &mmModel.Post{
+		Id:        "post-1",
+		UserId:    "user-1",
+		ChannelId: "ch1",
+	}
+	api.On("GetPost", "post-1").Return(normalPost, nil)
+	api.On("GetUser", "user-1").Return(nil, &mmModel.AppError{Message: "user not found"})
+
+	reaction := &mmModel.Reaction{
+		UserId:    "user-1",
+		PostId:    "post-1",
+		EmojiName: "thumbsup",
+	}
+
+	p.ReactionHasBeenRemoved(nil, reaction)
+	p.wg.Wait()
+
+	api.AssertNotCalled(t, "RemoveReaction", mock.Anything)
+}
+
+func TestMessageHasBeenDeleted_IsDeletingFlagError(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+
+	kvs.isDeletingFlagSetFn = func(postID string) (bool, error) {
+		return false, errors.New("kv failure")
+	}
+
+	post := &mmModel.Post{
+		Id:        "post-1",
+		UserId:    "user-1",
+		ChannelId: "ch1",
+	}
+
+	p.MessageHasBeenDeleted(nil, post)
+	p.wg.Wait()
+
+	// Should log error and return without relaying.
+	api.AssertNotCalled(t, "GetChannel", mock.Anything)
+}

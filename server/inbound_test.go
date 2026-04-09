@@ -1049,3 +1049,184 @@ func TestHandleInboundFile_ConnectionNotActive(t *testing.T) {
 
 	api.AssertExpectations(t)
 }
+
+func TestConnectInbound(t *testing.T) {
+	t.Run("config parse error logs and returns empty pool", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPlugin(api)
+		p.fileSem = make(chan struct{}, 32)
+
+		p.configuration = &configuration{
+			InboundConnections: "not valid json",
+		}
+
+		p.connectInbound()
+
+		p.inboundMu.RLock()
+		defer p.inboundMu.RUnlock()
+		assert.Nil(t, p.inboundConns)
+	})
+
+	t.Run("provider creation failure skips connection", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPlugin(api)
+		p.fileSem = make(chan struct{}, 32)
+
+		p.configuration = &configuration{
+			InboundConnections: `[{"name":"bad","provider":"unknown"}]`,
+		}
+
+		p.connectInbound()
+
+		p.inboundMu.RLock()
+		defer p.inboundMu.RUnlock()
+		assert.Nil(t, p.inboundConns)
+	})
+}
+
+func TestCloseInbound(t *testing.T) {
+	t.Run("closes all providers and nils pool", func(t *testing.T) {
+		p := &Plugin{}
+		ctx, cancel := context.WithCancel(context.Background())
+		p.ctx = ctx
+		p.cancel = cancel
+		p.relaySem = make(chan struct{}, 50)
+		p.fileSem = make(chan struct{}, 32)
+		p.inboundCancel = func() {}
+
+		closed := make([]string, 0)
+		p.inboundConns = []inboundConn{
+			{
+				provider: &mockQueueProvider{closeFn: func() error {
+					closed = append(closed, "conn-a")
+					return nil
+				}},
+				name: "conn-a",
+			},
+			{
+				provider: &mockQueueProvider{closeFn: func() error {
+					closed = append(closed, "conn-b")
+					return nil
+				}},
+				name: "conn-b",
+			},
+		}
+
+		p.closeInbound()
+
+		assert.Nil(t, p.inboundConns)
+		assert.ElementsMatch(t, []string{"conn-a", "conn-b"}, closed)
+	})
+
+	t.Run("nil inboundCancel does not panic", func(t *testing.T) {
+		p := &Plugin{}
+		p.inboundCancel = nil
+
+		assert.NotPanics(t, func() {
+			p.closeInbound()
+		})
+	})
+}
+
+func TestReconnectInbound(t *testing.T) {
+	t.Run("closes old providers and rebuilds pool", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPlugin(api)
+		p.fileSem = make(chan struct{}, 32)
+
+		oldClosed := false
+		p.inboundCancel = func() {}
+		p.inboundConns = []inboundConn{
+			{
+				provider: &mockQueueProvider{closeFn: func() error {
+					oldClosed = true
+					return nil
+				}},
+				name: "old-conn",
+			},
+		}
+
+		p.configuration = &configuration{
+			InboundConnections: "[]",
+		}
+
+		p.reconnectInbound()
+
+		assert.True(t, oldClosed)
+		p.inboundMu.RLock()
+		defer p.inboundMu.RUnlock()
+		assert.Nil(t, p.inboundConns)
+	})
+}
+
+func TestHandleInboundFile_MissingHeaders2(t *testing.T) {
+	t.Run("empty required headers logs warning and skips", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPlugin(api)
+		p.fileSem = make(chan struct{}, 32)
+
+		err := p.handleInboundFile(p.ctx, "my-conn", "blob-key", []byte("data"), map[string]string{})
+		assert.NoError(t, err)
+	})
+
+	t.Run("mismatched connection name skips silently", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPlugin(api)
+		p.fileSem = make(chan struct{}, 32)
+
+		headers := map[string]string{
+			headerConnName: "other-conn",
+			headerPostID:   "remote-post-1",
+			headerFilename: "file.pdf",
+		}
+		err := p.handleInboundFile(p.ctx, "my-conn", "blob-key", []byte("data"), headers)
+		assert.NoError(t, err)
+	})
+}
+
+func TestHandleInboundFile_HappyPath(t *testing.T) {
+	api := &plugintest.API{}
+	mockLog(api)
+	p, kvs := setupTestPlugin(api)
+	p.fileSem = make(chan struct{}, 32)
+
+	p.inboundConns = []inboundConn{
+		{
+			provider:            &mockQueueProvider{},
+			name:                "my-conn",
+			fileTransferEnabled: true,
+		},
+	}
+
+	kvs.postMappings["my-conn-remote-post-1"] = "local-post-1"
+
+	existingPost := &mmModel.Post{
+		Id:        "local-post-1",
+		ChannelId: "ch1",
+		FileIds:   mmModel.StringArray{},
+	}
+	api.On("GetPost", "local-post-1").Return(existingPost, nil)
+	api.On("UploadFile", []byte("file-data"), "ch1", "report.pdf").Return(&mmModel.FileInfo{
+		Id:   "uploaded-file-1",
+		Name: "report.pdf",
+	}, nil)
+	api.On("UpdatePost", mock.MatchedBy(func(post *mmModel.Post) bool {
+		return post.Id == "local-post-1"
+	})).Return(existingPost, nil)
+
+	headers := map[string]string{
+		headerConnName: "my-conn",
+		headerPostID:   "remote-post-1",
+		headerFilename: "report.pdf",
+	}
+	err := p.handleInboundFile(p.ctx, "my-conn", "blob-key", []byte("file-data"), headers)
+	assert.NoError(t, err)
+
+	api.AssertCalled(t, "UploadFile", []byte("file-data"), "ch1", "report.pdf")
+	api.AssertCalled(t, "UpdatePost", mock.Anything)
+}

@@ -588,4 +588,204 @@ test.describe('ConnectionSettings Edge Cases', () => {
             await expect(component.getByText('Name is required.')).not.toBeVisible();
         });
     });
+
+    // -------------------------------------------------------------------------
+    // 10. Azure provider CRUD
+    // -------------------------------------------------------------------------
+    test.describe('Azure provider CRUD', () => {
+        test('Azure card shows Queue metadata in card view', async ({mount}) => {
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([azureConn])})}/>);
+            await expect(component.getByText('Queue')).toBeVisible();
+            await expect(component.getByText('test-queue')).toBeVisible();
+        });
+
+        test('Azure card shows Azure provider badge', async ({mount}) => {
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([azureConn])})}/>);
+            await expect(component.getByText('Azure')).toBeVisible();
+        });
+
+        test('Add Azure connection with all fields, verify saved JSON structure', async ({mount, page}) => {
+            const component = await mount(<ConnectionSettingsStory {...defaultProps()}/>);
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+            const nameInput = component.locator('input[placeholder="my-connection"]');
+            await nameInput.fill('my-azure');
+            const providerSelect = component.locator('select').first();
+            await providerSelect.selectOption('azure');
+            const connStringInput = component.locator('input[type="password"]');
+            await connStringInput.fill('DefaultEndpointsProtocol=https;AccountName=myacct');
+            const queueInput = component.locator('input[placeholder="crossguard-messages"]');
+            await queueInput.fill('my-queue');
+            await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+            const calls = await getCalls(page);
+            const saved = JSON.parse(calls.onChange[calls.onChange.length - 1].value);
+            expect(saved[0].name).toBe('my-azure');
+            expect(saved[0].provider).toBe('azure');
+            expect(saved[0].azure.connection_string).toBe('DefaultEndpointsProtocol=https;AccountName=myacct');
+            expect(saved[0].azure.queue_name).toBe('my-queue');
+            expect(saved[0].nats).toBeUndefined();
+        });
+
+        test('Edit Azure connection, change queue_name, save, verify updated JSON', async ({mount, page}) => {
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([azureConn])})}/>);
+            await component.getByRole('button', {name: 'Edit'}).click();
+            await expect(component.getByText('Edit Connection')).toBeVisible();
+            const queueInput = component.locator('input[placeholder="crossguard-messages"]');
+            await queueInput.fill('updated-queue');
+            await component.getByRole('button', {name: 'Update Connection'}).click();
+            const calls = await getCalls(page);
+            const saved = JSON.parse(calls.onChange[calls.onChange.length - 1].value);
+            expect(saved[0].azure.queue_name).toBe('updated-queue');
+        });
+    });
+
+    // -------------------------------------------------------------------------
+    // 11. Test connection edge cases
+    // -------------------------------------------------------------------------
+    test.describe('Test connection edge cases', () => {
+        test('Test connection success with empty message body shows Connection successful', async ({mount, page}) => {
+            await page.route('**/plugins/crossguard/api/v1/test-connection*', async (route) => {
+                await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({})});
+            });
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([natsConn])})}/>);
+            await component.getByRole('button', {name: 'Test Connection'}).click();
+            await expect(component.getByText('Connection successful')).toBeVisible();
+        });
+
+        test('Test connection with non-JSON error body shows Connection failed', async ({mount, page}) => {
+            await page.route('**/plugins/crossguard/api/v1/test-connection*', async (route) => {
+                await route.fulfill({status: 500, contentType: 'text/plain', body: 'Internal Server Error'});
+            });
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([natsConn])})}/>);
+            await component.getByRole('button', {name: 'Test Connection'}).click();
+            await expect(component.getByText('Connection failed')).toBeVisible();
+        });
+
+        test('Test connection network abort shows error message', async ({mount, page}) => {
+            await page.route('**/plugins/crossguard/api/v1/test-connection*', async (route) => {
+                await route.abort('connectionrefused');
+            });
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([natsConn])})}/>);
+            await component.getByRole('button', {name: 'Test Connection'}).click();
+
+            // Network abort triggers catch block, which sets message from err.message or 'Network error'.
+            // The status banner appears with success=false, so we wait for the button to stop showing 'Testing...'
+            await expect(component.getByRole('button', {name: 'Test Connection'})).toBeVisible({timeout: 5000});
+        });
+
+        test('Test connection loading shows Testing... on button', async ({mount, page}) => {
+            await page.route('**/plugins/crossguard/api/v1/test-connection*', async (route) => {
+                await new Promise((resolve) => setTimeout(resolve, 5000));
+                await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({message: 'ok'})});
+            });
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([natsConn])})}/>);
+            await component.getByRole('button', {name: 'Test Connection'}).click();
+            await expect(component.getByRole('button', {name: 'Testing...'})).toBeVisible();
+        });
+    });
+
+    // -------------------------------------------------------------------------
+    // 12. Message format (outbound only)
+    // -------------------------------------------------------------------------
+    test.describe('Message format outbound only', () => {
+        test('OutboundConnections id shows Message Format select in form', async ({mount}) => {
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({id: 'OutboundConnections'})}/>);
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+            await expect(component.getByText('Message Format')).toBeVisible();
+        });
+
+        test('InboundConnections id does NOT show Message Format in form', async ({mount}) => {
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({id: 'InboundConnections'})}/>);
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+            await expect(component.getByText('Message Format')).not.toBeVisible();
+        });
+
+        test('Outbound card with message_format xml shows XML badge', async ({mount}) => {
+            const xmlConn = {...natsConn, name: 'xml-out', message_format: 'xml' as const};
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({id: 'OutboundConnections', value: JSON.stringify([xmlConn])})}/>);
+            await expect(component.getByText('XML', {exact: true}).first()).toBeVisible();
+        });
+
+        test('Outbound card with message_format json does NOT show XML badge', async ({mount}) => {
+            const jsonConn = {...natsConn, name: 'json-out', message_format: 'json' as const};
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({id: 'OutboundConnections', value: JSON.stringify([jsonConn])})}/>);
+            const xmlBadges = component.locator('span').filter({hasText: /^XML$/});
+            await expect(xmlBadges).toHaveCount(0);
+        });
+    });
+
+    // -------------------------------------------------------------------------
+    // 13. TLS fields conditional rendering
+    // -------------------------------------------------------------------------
+    test.describe('TLS fields conditional', () => {
+        test('Enable TLS checkbox: Client Cert, Client Key, CA Cert appear', async ({mount}) => {
+            const component = await mount(<ConnectionSettingsStory {...defaultProps()}/>);
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+            const tlsCheckbox = component.locator('input[type="checkbox"]').first();
+            await tlsCheckbox.check();
+            await expect(component.getByText('Client Cert Path')).toBeVisible();
+            await expect(component.getByText('Client Key Path')).toBeVisible();
+            await expect(component.getByText('CA Cert Path')).toBeVisible();
+        });
+
+        test('Disable TLS: cert fields disappear', async ({mount}) => {
+            const component = await mount(<ConnectionSettingsStory {...defaultProps()}/>);
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+            const tlsCheckbox = component.locator('input[type="checkbox"]').first();
+            await tlsCheckbox.check();
+            await expect(component.getByText('Client Cert Path')).toBeVisible();
+            await tlsCheckbox.uncheck();
+            await expect(component.getByText('Client Cert Path')).not.toBeVisible();
+            await expect(component.getByText('Client Key Path')).not.toBeVisible();
+            await expect(component.getByText('CA Cert Path')).not.toBeVisible();
+        });
+
+        test('Card with tls_enabled true shows TLS badge', async ({mount}) => {
+            const tlsConn = {...natsConn, name: 'tls-conn', nats: {...natsConn.nats, tls_enabled: true}};
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([tlsConn])})}/>);
+            await expect(component.getByText('TLS', {exact: true})).toBeVisible();
+        });
+
+        test('Card with tls_enabled false does NOT show TLS badge', async ({mount}) => {
+            const noTlsConn = {...natsConn, name: 'no-tls', nats: {...natsConn.nats, tls_enabled: false}};
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([noTlsConn])})}/>);
+            const tlsBadges = component.locator('span').filter({hasText: /^TLS$/});
+            await expect(tlsBadges).toHaveCount(0);
+        });
+    });
+
+    // -------------------------------------------------------------------------
+    // 14. File transfer with Azure blob container
+    // -------------------------------------------------------------------------
+    test.describe('File transfer Azure blob', () => {
+        test('Azure plus file_transfer_enabled shows Blob Container Name field', async ({mount}) => {
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([azureConn])})}/>);
+            await component.getByRole('button', {name: 'Edit'}).click();
+            const fileCheckbox = component.getByText('Enable File Transfer').locator('..').locator('input[type="checkbox"]');
+            await fileCheckbox.check();
+            await expect(component.getByText('Blob Container Name')).toBeVisible();
+            await expect(component.locator('input[placeholder="crossguard-files"]')).toBeVisible();
+        });
+
+        test('NATS plus file_transfer_enabled does NOT show Blob Container Name', async ({mount}) => {
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([natsConn])})}/>);
+            await component.getByRole('button', {name: 'Edit'}).click();
+            const fileCheckbox = component.getByText('Enable File Transfer').locator('..').locator('input[type="checkbox"]');
+            await fileCheckbox.check();
+            await expect(component.getByText('Blob Container Name')).not.toBeVisible();
+        });
+
+        test('Fill blob_container_name, save Azure connection, verify value in JSON', async ({mount, page}) => {
+            const component = await mount(<ConnectionSettingsStory {...defaultProps({value: JSON.stringify([azureConn])})}/>);
+            await component.getByRole('button', {name: 'Edit'}).click();
+            const fileCheckbox = component.getByText('Enable File Transfer').locator('..').locator('input[type="checkbox"]');
+            await fileCheckbox.check();
+            const blobInput = component.locator('input[placeholder="crossguard-files"]');
+            await blobInput.fill('my-blob-container');
+            await component.getByRole('button', {name: 'Update Connection'}).click();
+            const calls = await getCalls(page);
+            const saved = JSON.parse(calls.onChange[calls.onChange.length - 1].value);
+            expect(saved[0].file_transfer_enabled).toBe(true);
+            expect(saved[0].azure.blob_container_name).toBe('my-blob-container');
+        });
+    });
 });

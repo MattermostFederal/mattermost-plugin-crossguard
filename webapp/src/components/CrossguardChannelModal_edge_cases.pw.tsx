@@ -420,3 +420,172 @@ test.describe('Keyboard/mouse edge cases', () => {
         await expect(component).toBeEmpty();
     });
 });
+
+// ---------------------------------------------------------------------------
+// 7. handleToggle error paths
+// ---------------------------------------------------------------------------
+test.describe('handleToggle error paths', () => {
+    test('network abort during toggle shows Network error banner', async ({mount, page}) => {
+        const body = statusResponse({
+            team_connections: [connStatus({name: 'net-fail', linked: false})],
+        });
+        await routeStatusOk(page, body);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch1');
+        await expect(component.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+
+        await page.route('**/plugins/crossguard/api/v1/channels/ch1/init*', (route: any) => {
+            route.abort('connectionfailed');
+        });
+        await setCsrfCookie(page);
+        await component.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(component.getByText('Network error.')).toBeVisible();
+    });
+
+    test('API error without error field shows fallback message', async ({mount, page}) => {
+        const body = statusResponse({
+            team_connections: [connStatus({name: 'fallback-conn', linked: false})],
+        });
+        await routeStatusOk(page, body);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch1');
+        await expect(component.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+
+        await page.route('**/plugins/crossguard/api/v1/channels/ch1/init*', (route: any) => {
+            route.fulfill({status: 400, contentType: 'application/json', body: JSON.stringify({status: 'fail'})});
+        });
+        await setCsrfCookie(page);
+        await component.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(component.getByText('Failed to link connection.')).toBeVisible();
+    });
+
+    test('successful link shows Connection linked message', async ({mount, page}) => {
+        const body = statusResponse({
+            team_connections: [connStatus({name: 'success-conn', linked: false})],
+        });
+        await routeStatusOk(page, body);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch1');
+        await expect(component.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+
+        await page.route('**/plugins/crossguard/api/v1/channels/ch1/init*', (route: any) => {
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({status: 'ok'})});
+        });
+        await setCsrfCookie(page);
+        await component.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(component.getByText('Connection "success-conn" linked.')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 8. CSRF token verification
+// ---------------------------------------------------------------------------
+test.describe('CSRF token verification', () => {
+    test('callAPI includes X-CSRF-Token header from cookie', async ({mount, page}) => {
+        const body = statusResponse({
+            team_connections: [connStatus({name: 'csrf-conn', linked: false})],
+        });
+        await routeStatusOk(page, body);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch1');
+        await expect(component.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+
+        let capturedHeaders: Record<string, string> = {};
+        await page.route('**/plugins/crossguard/api/v1/channels/ch1/init*', (route: any) => {
+            capturedHeaders = route.request().headers();
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({status: 'ok'})});
+        });
+        await setCsrfCookie(page);
+        await component.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(() => {
+            expect(capturedHeaders['x-csrf-token']).toBe('test-csrf-token');
+        }).toPass();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Files display edge cases
+// ---------------------------------------------------------------------------
+test.describe('Files display edge cases', () => {
+    test('connection with file_transfer_enabled false shows Files Disabled text', async ({mount, page}) => {
+        const body = statusResponse({
+            team_connections: [connStatus({name: 'no-files', file_transfer_enabled: false})],
+        });
+        await routeStatusOk(page, body);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch1');
+        await expect(component.getByText('Files: Disabled')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 10. Multiple connections mixed state
+// ---------------------------------------------------------------------------
+test.describe('Multiple connections mixed state', () => {
+    test('4 connections with various states all render correctly', async ({mount, page}) => {
+        const body = statusResponse({
+            team_connections: [
+                connStatus({name: 'in-linked', direction: 'inbound', linked: true, file_transfer_enabled: true, file_filter_mode: 'allow', file_filter_types: '.pdf'}),
+                connStatus({name: 'out-unlinked', direction: 'outbound', linked: false, file_transfer_enabled: false}),
+                connStatus({name: 'orphan-conn', direction: 'inbound', linked: false, orphaned: true, file_transfer_enabled: true}),
+                connStatus({name: 'out-files', direction: 'outbound', linked: true, file_transfer_enabled: true, file_filter_mode: 'deny', file_filter_types: '.exe,.bat'}),
+            ],
+        });
+        await routeStatusOk(page, body);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch1');
+
+        await expect(component.getByText('in-linked')).toBeVisible();
+        await expect(component.getByText('out-unlinked')).toBeVisible();
+        await expect(component.getByText('orphan-conn')).toBeVisible();
+        await expect(component.getByText('out-files')).toBeVisible();
+
+        const inboundBadges = component.getByText('NATS \u2192 MATTERMOST');
+        const outboundBadges = component.getByText('MATTERMOST \u2192 NATS');
+        await expect(inboundBadges).toHaveCount(2);
+        await expect(outboundBadges).toHaveCount(2);
+
+        await expect(component.getByRole('button', {name: 'Unlink', exact: true}).first()).toBeVisible();
+        await expect(component.getByRole('button', {name: 'Link', exact: true}).first()).toBeVisible();
+
+        const orphanMarker = component.locator('span[title="Connection no longer in configuration"]');
+        await expect(orphanMarker).toBeVisible();
+
+        await expect(component.getByText('Allow .pdf')).toBeVisible();
+        await expect(component.getByText('Deny .exe,.bat')).toBeVisible();
+        await expect(component.getByText('All types')).toBeVisible();
+        await expect(component.getByText('Files: Disabled')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Status timer behavior
+// ---------------------------------------------------------------------------
+test.describe('Status timer behavior', () => {
+    test('new action replaces previous status banner', async ({mount, page}) => {
+        const body = statusResponse({
+            team_connections: [
+                connStatus({name: 'first-action', linked: false}),
+                connStatus({name: 'second-action', direction: 'outbound', linked: true}),
+            ],
+        });
+        await routeStatusOk(page, body);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch1');
+        await expect(component.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+
+        await page.route('**/plugins/crossguard/api/v1/channels/ch1/init*', (route: any) => {
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({status: 'ok'})});
+        });
+        await setCsrfCookie(page);
+        await component.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(component.getByText('Connection "first-action" linked.')).toBeVisible();
+
+        await page.route('**/plugins/crossguard/api/v1/channels/ch1/teardown*', (route: any) => {
+            route.fulfill({status: 400, contentType: 'application/json', body: JSON.stringify({error: 'Teardown failed'})});
+        });
+        await component.getByRole('button', {name: 'Unlink', exact: true}).click();
+        await expect(component.getByText('Teardown failed')).toBeVisible();
+        await expect(component.getByText('Connection "first-action" linked.')).not.toBeVisible();
+    });
+});

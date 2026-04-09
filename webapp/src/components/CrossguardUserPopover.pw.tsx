@@ -170,3 +170,86 @@ test.describe('CrossguardUserPopover', () => {
         await expect(component.getByText('Relayed from: 12345 (via conn)')).toBeVisible();
     });
 });
+
+test.describe('CrossguardUserPopover - parsing and null/undefined edge cases', () => {
+    test('last_name "(via )" with only closing paren after via falls back to unknown', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: 'alice'},
+                    last_name: '(via )',
+                }}
+            />,
+        );
+        await expect(component.getByText('Relayed from: alice (via unknown)')).toBeVisible();
+    });
+
+    test('last_name undefined falls back to unknown', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: 'bob'},
+                    last_name: undefined,
+                }}
+            />,
+        );
+        await expect(component.getByText('Relayed from: bob (via unknown)')).toBeVisible();
+    });
+
+    test('last_name without via pattern falls back to unknown', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: 'carol'},
+                    last_name: 'Smith',
+                }}
+            />,
+        );
+        await expect(component.getByText('Relayed from: carol (via unknown)')).toBeVisible();
+    });
+
+    test('last_name with hyphenated connection name extracts correctly', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: 'dave'},
+                    last_name: '(via multi-word-connection)',
+                }}
+            />,
+        );
+        await expect(component.getByText('Relayed from: dave (via multi-word-connection)')).toBeVisible();
+    });
+
+    test('props as empty object with no CrossguardRemoteUsername renders empty', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover user={{props: {}}}/>,
+        );
+        await expect(component).toBeEmpty();
+    });
+
+    test('props explicitly set to undefined renders empty', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover user={{props: undefined}}/>,
+        );
+        await expect(component).toBeEmpty();
+    });
+
+    test('user object with no props key renders empty', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover user={{last_name: 'test'} as any}/>,
+        );
+        await expect(component).toBeEmpty();
+    });
+
+    test('CrossguardRemoteUsername as empty string renders empty', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: ''},
+                    last_name: '(via SomeConn)',
+                }}
+            />,
+        );
+        await expect(component).toBeEmpty();
+    });
+});

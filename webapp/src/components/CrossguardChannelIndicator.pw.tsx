@@ -201,4 +201,101 @@ test.describe('CrossguardChannelIndicator', () => {
             await expect(page.getByTestId('SharedChannelIcon')).toHaveAttribute('title', 'Updated');
         });
     });
+
+    test.describe('Subscription lifecycle', () => {
+        test('external connection update causes icon to appear', async ({mount, page}) => {
+            const component = await mount(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-sub-appear'}
+                    connections={''}
+                />,
+            );
+            await expect(page.getByTestId('SharedChannelIcon')).not.toBeAttached();
+
+            await component.update(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-sub-appear'}
+                    connections={'NewConnection'}
+                />,
+            );
+            await expect(page.getByTestId('SharedChannelIcon')).toBeAttached();
+            await expect(page.getByTestId('SharedChannelIcon')).toHaveAttribute('title', 'NewConnection');
+        });
+
+        test('external clear causes icon to disappear', async ({mount, page}) => {
+            const component = await mount(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-sub-clear'}
+                    connections={'ActiveConn'}
+                />,
+            );
+            await expect(page.getByTestId('SharedChannelIcon')).toBeAttached();
+
+            await component.update(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-sub-clear'}
+                    connections={''}
+                />,
+            );
+            await expect(page.getByTestId('SharedChannelIcon')).not.toBeAttached();
+        });
+
+        test('multiple rapid updates show correct final value in title', async ({mount, page}) => {
+            const component = await mount(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-sub-rapid'}
+                    connections={'First'}
+                />,
+            );
+            await expect(page.getByTestId('SharedChannelIcon')).toBeAttached();
+
+            await component.update(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-sub-rapid'}
+                    connections={'Second'}
+                />,
+            );
+            await component.update(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-sub-rapid'}
+                    connections={'Third'}
+                />,
+            );
+
+            await expect(page.getByTestId('SharedChannelIcon')).toHaveAttribute('title', 'Third');
+        });
+    });
+
+    test.describe('Channel prop edge cases', () => {
+        test('channel with undefined id renders null without crashing', async ({mount, page}) => {
+            await mount(
+                <CrossguardChannelIndicator channel={{id: undefined as unknown as string}}/>,
+            );
+            await expect(page.getByTestId('SharedChannelIcon')).not.toBeAttached();
+        });
+
+        test('empty connections string renders null', async ({mount, page}) => {
+            await mount(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-prop-empty'}
+                    connections={''}
+                />,
+            );
+            await expect(page.getByTestId('SharedChannelIcon')).not.toBeAttached();
+        });
+
+        test('title attribute matches exact connections string value', async ({mount, page}) => {
+            const connectionsValue = 'ConnAlpha, ConnBeta, ConnGamma';
+            await mount(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-prop-title'}
+                    connections={connectionsValue}
+                />,
+            );
+            const icon = page.getByTestId('SharedChannelIcon');
+            await expect(icon).toBeAttached();
+            const title = await icon.getAttribute('title');
+            expect(title).toBe(connectionsValue);
+        });
+    });
 });

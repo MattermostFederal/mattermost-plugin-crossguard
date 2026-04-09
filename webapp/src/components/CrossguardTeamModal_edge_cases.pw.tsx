@@ -462,3 +462,207 @@ test.describe('Mixed states edge cases', () => {
         await expect(page.getByText('Files: Disabled').first()).toBeVisible();
     });
 });
+
+// ---------------------------------------------------------------------------
+// 7. handleToggle error paths
+// ---------------------------------------------------------------------------
+test.describe('handleToggle error paths', () => {
+    test('network abort during toggle shows Network error banner', async ({mount, page}) => {
+        const body = teamStatusResponse({
+            connections: [connStatus({name: 'net-fail', linked: false})],
+        });
+        await routeStatusOk(page, body);
+        await mount(<CrossguardTeamModal/>);
+        await openModal(page, 'team1');
+        await expect(page.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+
+        await page.route('**/plugins/crossguard/api/v1/teams/team1/init*', (route: any) => {
+            route.abort('connectionfailed');
+        });
+        await setCsrfCookie(page);
+        await page.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(page.getByText('Network error.')).toBeVisible();
+    });
+
+    test('API error without error field shows fallback message', async ({mount, page}) => {
+        const body = teamStatusResponse({
+            connections: [connStatus({name: 'fallback-conn', linked: false})],
+        });
+        await routeStatusOk(page, body);
+        await mount(<CrossguardTeamModal/>);
+        await openModal(page, 'team1');
+        await expect(page.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+
+        await page.route('**/plugins/crossguard/api/v1/teams/team1/init*', (route: any) => {
+            route.fulfill({status: 400, contentType: 'application/json', body: JSON.stringify({status: 'fail'})});
+        });
+        await setCsrfCookie(page);
+        await page.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(page.getByText('Failed to link connection.')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 8. handleSaveRewrite error paths
+// ---------------------------------------------------------------------------
+test.describe('handleSaveRewrite error paths', () => {
+    test('network abort during save rewrite shows Network error banner', async ({mount, page}) => {
+        await setCsrfCookie(page);
+        const body = teamStatusResponse({
+            connections: [connStatus({name: 'save-fail', direction: 'inbound', remote_team_name: ''})],
+        });
+        await routeStatusOk(page, body);
+        await mount(<CrossguardTeamModal/>);
+        await openModal(page, 'team1');
+        await page.getByRole('button', {name: 'Set'}).click();
+        await page.getByPlaceholder('Remote team name').fill('new-team');
+
+        await page.route('**/plugins/crossguard/api/v1/teams/team1/rewrite', (route: any) => {
+            if (route.request().method() === 'POST') {
+                route.abort('connectionfailed');
+            } else {
+                route.continue();
+            }
+        });
+        await page.getByRole('button', {name: 'Save'}).click();
+        await expect(page.getByText('Network error.')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 9. handleClearRewrite error paths
+// ---------------------------------------------------------------------------
+test.describe('handleClearRewrite error paths', () => {
+    test('network abort during clear rewrite shows Network error banner', async ({mount, page}) => {
+        await setCsrfCookie(page);
+        const body = teamStatusResponse({
+            connections: [connStatus({name: 'clear-fail', direction: 'inbound', remote_team_name: 'old-team'})],
+        });
+        await routeStatusOk(page, body);
+        await mount(<CrossguardTeamModal/>);
+        await openModal(page, 'team1');
+        await expect(page.getByText('old-team')).toBeVisible();
+
+        await page.route('**/plugins/crossguard/api/v1/teams/team1/rewrite*', (route: any) => {
+            route.abort('connectionfailed');
+        });
+        await page.getByRole('button', {name: 'Clear'}).click();
+        await expect(page.getByText('Network error.')).toBeVisible();
+    });
+
+    test('API error during clear shows error message', async ({mount, page}) => {
+        await setCsrfCookie(page);
+        const body = teamStatusResponse({
+            connections: [connStatus({name: 'clear-err', direction: 'inbound', remote_team_name: 'existing-team'})],
+        });
+        await routeStatusOk(page, body);
+        await mount(<CrossguardTeamModal/>);
+        await openModal(page, 'team1');
+        await expect(page.getByText('existing-team')).toBeVisible();
+
+        await page.route('**/plugins/crossguard/api/v1/teams/team1/rewrite*', (route: any) => {
+            route.fulfill({status: 400, contentType: 'application/json', body: JSON.stringify({error: 'Rewrite not found'})});
+        });
+        await page.getByRole('button', {name: 'Clear'}).click();
+        await expect(page.getByText('Rewrite not found')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 10. CSRF token in team modal
+// ---------------------------------------------------------------------------
+test.describe('CSRF token in team modal', () => {
+    test('callAPI POST includes X-CSRF-Token header', async ({mount, page}) => {
+        const body = teamStatusResponse({
+            connections: [connStatus({name: 'csrf-conn', linked: false})],
+        });
+        await routeStatusOk(page, body);
+        await mount(<CrossguardTeamModal/>);
+        await openModal(page, 'team1');
+        await expect(page.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+
+        let capturedHeaders: Record<string, string> = {};
+        await page.route('**/plugins/crossguard/api/v1/teams/team1/init*', (route: any) => {
+            capturedHeaders = route.request().headers();
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({status: 'ok'})});
+        });
+        await setCsrfCookie(page);
+        await page.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(() => {
+            expect(capturedHeaders['x-csrf-token']).toBe('test-csrf-token');
+        }).toPass();
+    });
+
+    test('handleClearRewrite DELETE includes X-CSRF-Token header', async ({mount, page}) => {
+        await setCsrfCookie(page);
+        const body = teamStatusResponse({
+            connections: [connStatus({name: 'csrf-clear', direction: 'inbound', remote_team_name: 'some-team'})],
+        });
+        await routeStatusOk(page, body);
+        await mount(<CrossguardTeamModal/>);
+        await openModal(page, 'team1');
+        await expect(page.getByText('some-team')).toBeVisible();
+
+        let capturedHeaders: Record<string, string> = {};
+        await page.route('**/plugins/crossguard/api/v1/teams/team1/rewrite*', (route: any) => {
+            capturedHeaders = route.request().headers();
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({status: 'ok'})});
+        });
+        await page.getByRole('button', {name: 'Clear'}).click();
+        await expect(() => {
+            expect(capturedHeaders['x-csrf-token']).toBe('test-csrf-token');
+        }).toPass();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Full rewrite lifecycle
+// ---------------------------------------------------------------------------
+test.describe('Full rewrite lifecycle', () => {
+    test('complete cycle: Set -> Save -> Edit -> Change -> Save -> Clear', async ({mount, page}) => {
+        await setCsrfCookie(page);
+        let fetchCount = 0;
+        await page.route('**/plugins/crossguard/api/v1/teams/*/status', (route: any) => {
+            fetchCount++;
+            let conns;
+            if (fetchCount <= 1) {
+                conns = [connStatus({name: 'lifecycle-conn', direction: 'inbound', remote_team_name: ''})];
+            } else if (fetchCount <= 2) {
+                conns = [connStatus({name: 'lifecycle-conn', direction: 'inbound', remote_team_name: 'first-value'})];
+            } else if (fetchCount <= 3) {
+                conns = [connStatus({name: 'lifecycle-conn', direction: 'inbound', remote_team_name: 'second-value'})];
+            } else {
+                conns = [connStatus({name: 'lifecycle-conn', direction: 'inbound', remote_team_name: ''})];
+            }
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify(teamStatusResponse({connections: conns}))});
+        });
+        await page.route('**/plugins/crossguard/api/v1/teams/*/rewrite*', (route: any) => {
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({status: 'ok'})});
+        });
+
+        await mount(<CrossguardTeamModal/>);
+        await openModal(page, 'team1');
+
+        // Step 1: Set initial value
+        await expect(page.getByText('No remote team rewrite')).toBeVisible();
+        await page.getByRole('button', {name: 'Set'}).click();
+        await page.getByPlaceholder('Remote team name').fill('first-value');
+        await page.getByRole('button', {name: 'Save'}).click();
+        await expect(page.getByText('Remote team rewrite updated for "lifecycle-conn".')).toBeVisible();
+
+        // Step 2: Edit and change the value
+        await expect(page.getByRole('button', {name: 'Edit'})).toBeVisible();
+        await page.getByRole('button', {name: 'Edit'}).click();
+        const input = page.getByPlaceholder('Remote team name');
+        await expect(input).toHaveValue('first-value');
+        await input.fill('second-value');
+        await page.getByRole('button', {name: 'Save'}).click();
+        await expect(page.getByText('Remote team rewrite updated for "lifecycle-conn".')).toBeVisible();
+
+        // Step 3: Clear the rewrite
+        await expect(page.getByRole('button', {name: 'Clear'})).toBeVisible();
+        await page.getByRole('button', {name: 'Clear'}).click();
+        await expect(page.getByText('Remote team rewrite cleared for "lifecycle-conn".')).toBeVisible();
+        await expect(page.getByText('No remote team rewrite')).toBeVisible();
+    });
+});

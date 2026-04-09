@@ -49,4 +49,30 @@ test.describe('AdminPanel', () => {
         const link = component.getByRole('link', {name: 'View Cross Guard Documentation'});
         await expect(link).toHaveCSS('color', 'rgb(28, 88, 217)');
     });
+
+    test('help link href contains the full plugin help path', async ({mount}) => {
+        const component = await mount(<AdminPanel/>);
+        const link = component.getByRole('link', {name: 'View Cross Guard Documentation'});
+        const href = await link.getAttribute('href');
+        expect(href).toContain('/plugins/crossguard/public/help/help.html');
+    });
+
+    test('documentation link has target _blank attribute', async ({mount}) => {
+        const component = await mount(<AdminPanel/>);
+        const link = component.getByRole('link', {name: 'View Cross Guard Documentation'});
+        await expect(link).toHaveAttribute('target', '_blank');
+    });
+
+    test('documentation link has rel noopener noreferrer attribute', async ({mount}) => {
+        const component = await mount(<AdminPanel/>);
+        const link = component.getByRole('link', {name: 'View Cross Guard Documentation'});
+        await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    });
+
+    test('version text contains a semantic version pattern', async ({mount}) => {
+        const component = await mount(<AdminPanel/>);
+        const versionText = await component.locator('p').filter({hasText: 'Version:'}).textContent();
+        expect(versionText).toBeTruthy();
+        expect(versionText).toMatch(/\d+\.\d+\.\d+/);
+    });
 });

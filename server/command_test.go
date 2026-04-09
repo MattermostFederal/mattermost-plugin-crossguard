@@ -1238,3 +1238,70 @@ func TestExecuteHelp(t *testing.T) {
 		assert.Contains(t, resp.Text, "status")
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Helper function tests
+// ---------------------------------------------------------------------------
+
+func TestFileTransferLabel(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		assert.Equal(t, "files off", fileTransferLabel(false, "", ""))
+	})
+	t.Run("enabled no filter", func(t *testing.T) {
+		assert.Equal(t, "files on", fileTransferLabel(true, "", ""))
+	})
+	t.Run("allow mode", func(t *testing.T) {
+		assert.Equal(t, "files on, allow: .pdf,.docx", fileTransferLabel(true, "allow", ".pdf,.docx"))
+	})
+	t.Run("deny mode", func(t *testing.T) {
+		assert.Equal(t, "files on, deny: .exe", fileTransferLabel(true, "deny", ".exe"))
+	})
+}
+
+func TestConnectionLabel(t *testing.T) {
+	t.Run("json format", func(t *testing.T) {
+		label := connectionLabel("json", true, "", "")
+		assert.Equal(t, "files on", label)
+	})
+	t.Run("xml format", func(t *testing.T) {
+		label := connectionLabel("xml", false, "", "")
+		assert.Equal(t, "xml, files off", label)
+	})
+	t.Run("empty format defaults to no prefix", func(t *testing.T) {
+		label := connectionLabel("", true, "allow", ".pdf")
+		assert.Equal(t, "files on, allow: .pdf", label)
+	})
+}
+
+func TestFileTransferLabelEmoji(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		assert.Equal(t, ":x: Off", fileTransferLabelEmoji(false, "", ""))
+	})
+	t.Run("enabled no filter", func(t *testing.T) {
+		assert.Equal(t, ":white_check_mark: On", fileTransferLabelEmoji(true, "", ""))
+	})
+	t.Run("allow mode", func(t *testing.T) {
+		assert.Equal(t, ":white_check_mark: On (allow: .pdf)", fileTransferLabelEmoji(true, "allow", ".pdf"))
+	})
+	t.Run("deny mode", func(t *testing.T) {
+		assert.Equal(t, ":white_check_mark: On (deny: .exe)", fileTransferLabelEmoji(true, "deny", ".exe"))
+	})
+}
+
+func TestGetAutocompleteData_Structure(t *testing.T) {
+	data := getAutocompleteData()
+	assert.Equal(t, commandTrigger, data.Trigger)
+	subcommands := make(map[string]bool)
+	for _, sub := range data.SubCommands {
+		subcommands[sub.Trigger] = true
+	}
+	assert.True(t, subcommands["init-team"])
+	assert.True(t, subcommands["init-channel"])
+	assert.True(t, subcommands["teardown-team"])
+	assert.True(t, subcommands["teardown-channel"])
+	assert.True(t, subcommands["status"])
+	assert.True(t, subcommands["help"])
+	assert.True(t, subcommands["reset-prompt"])
+	assert.True(t, subcommands["reset-channel-prompt"])
+	assert.True(t, subcommands["rewrite-team"])
+}

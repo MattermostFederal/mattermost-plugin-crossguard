@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
+	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
@@ -721,4 +724,78 @@ func TestAzureConfigValidation(t *testing.T) {
 		cfg := &configuration{OutboundConnections: string(data)}
 		assert.NoError(t, cfg.validate())
 	})
+}
+
+func TestParseFilterTypes_MultipleCommas(t *testing.T) {
+	result := parseFilterTypes(",,pdf,,docx,,")
+	assert.Equal(t, []string{".pdf", ".docx"}, result)
+}
+
+func TestParseFilterTypes_WhitespaceHandling(t *testing.T) {
+	result := parseFilterTypes("  .pdf , docx , .PNG ")
+	assert.Equal(t, []string{".pdf", ".docx", ".png"}, result)
+}
+
+func TestParseFilterTypes_EmptyString(t *testing.T) {
+	result := parseFilterTypes("")
+	assert.Nil(t, result)
+}
+
+func TestIsFileAllowed_NoExtension(t *testing.T) {
+	allowed := isFileAllowed("Makefile", "allow", ".txt")
+	assert.False(t, allowed)
+}
+
+func TestIsFileAllowed_CaseSensitivity(t *testing.T) {
+	allowed := isFileAllowed("REPORT.PDF", "allow", ".pdf")
+	assert.True(t, allowed)
+}
+
+func TestIsFileAllowed_DoubleExtension(t *testing.T) {
+	allowed := isFileAllowed("archive.tar.gz", "allow", ".gz")
+	assert.True(t, allowed)
+}
+
+func TestIsFileAllowed_EmptyFilename(t *testing.T) {
+	// An empty filename has no extension; in allow mode it should not match any type.
+	allowed := isFileAllowed("", "allow", ".pdf")
+	assert.False(t, allowed)
+}
+
+func TestGetConfiguration_NilReturnsEmpty(t *testing.T) {
+	p := &Plugin{}
+	// configuration field is nil by default.
+	cfg := p.getConfiguration()
+	require.NotNil(t, cfg)
+	assert.Equal(t, &configuration{}, cfg)
+}
+
+func TestOnConfigurationChange_LoadError(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("LoadPluginConfiguration", mock.Anything).Return(fmt.Errorf("storage unavailable"))
+
+	p := &Plugin{}
+	p.SetAPI(api)
+
+	err := p.OnConfigurationChange()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to load plugin configuration")
+	assert.Contains(t, err.Error(), "storage unavailable")
+}
+
+func TestOnConfigurationChange_NoReconnectBeforeActivation(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("LoadPluginConfiguration", mock.Anything).Return(nil)
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	p := &Plugin{}
+	p.SetAPI(api)
+	// relaySem is nil (plugin not yet activated), so reconnect methods must not be called.
+
+	err := p.OnConfigurationChange()
+	require.NoError(t, err)
+
+	// Verify configuration was set despite relaySem being nil.
+	cfg := p.getConfiguration()
+	require.NotNil(t, cfg)
 }

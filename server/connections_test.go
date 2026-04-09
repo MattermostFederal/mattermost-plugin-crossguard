@@ -689,3 +689,233 @@ func TestPublishToOutbound(t *testing.T) {
 		assert.NoError(t, err)
 	})
 }
+
+func TestCreateProvider_UnknownProvider(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	cfg := ConnectionConfig{
+		Name:     "test-conn",
+		Provider: "unknown",
+	}
+	_, err := p.createProvider(cfg, "Outbound")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown provider")
+}
+
+func TestCreateProvider_MissingNATSConfig(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	cfg := ConnectionConfig{
+		Name:     "test-conn",
+		Provider: "nats",
+		NATS:     nil,
+	}
+	_, err := p.createProvider(cfg, "Outbound")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errMissingNATSConfig)
+}
+
+func TestCreateProvider_MissingAzureConfig(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	cfg := ConnectionConfig{
+		Name:     "test-conn",
+		Provider: "azure",
+		Azure:    nil,
+	}
+	_, err := p.createProvider(cfg, "Outbound")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errMissingAzureConfig)
+}
+
+func TestUploadPostFiles_NoFileEnabledConns(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	p.outboundConns = []outboundConn{{
+		provider:            &mockQueueProvider{},
+		name:                "high",
+		fileTransferEnabled: false,
+		healthy:             true,
+		lastCheckTime:       time.Now(),
+	}}
+
+	post := &mmModel.Post{
+		Id:        "post-1",
+		ChannelId: "ch1",
+		FileIds:   mmModel.StringArray{"file-1", "file-2"},
+	}
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+
+	// GetFileInfo should never be called because no connections have file transfer enabled.
+	p.uploadPostFiles(post, conns)
+	p.wg.Wait()
+
+	api.AssertNotCalled(t, "GetFileInfo", mock.Anything)
+}
+
+func TestUploadPostFiles_GetFileInfoError(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	p.outboundConns = []outboundConn{{
+		provider:            &mockQueueProvider{},
+		name:                "high",
+		fileTransferEnabled: true,
+		healthy:             true,
+		lastCheckTime:       time.Now(),
+	}}
+
+	api.On("GetConfig").Return(&mmModel.Config{}).Maybe()
+	api.On("GetFileInfo", "file-1").Return(nil, &mmModel.AppError{Message: "file not found"})
+
+	post := &mmModel.Post{
+		Id:        "post-1",
+		ChannelId: "ch1",
+		FileIds:   mmModel.StringArray{"file-1"},
+	}
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+
+	p.uploadPostFiles(post, conns)
+	p.wg.Wait()
+
+	api.AssertCalled(t, "GetFileInfo", "file-1")
+	// GetFile should not be called because GetFileInfo failed.
+	api.AssertNotCalled(t, "GetFile", mock.Anything)
+}
+
+func TestUploadPostFiles_OversizedFile(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	uploaded := false
+	p.outboundConns = []outboundConn{{
+		provider: &mockQueueProvider{
+			uploadFileFn: func(ctx context.Context, key string, data []byte, headers map[string]string) error {
+				uploaded = true
+				return nil
+			},
+		},
+		name:                "high",
+		fileTransferEnabled: true,
+		healthy:             true,
+		lastCheckTime:       time.Now(),
+	}}
+
+	maxSize := int64(1024)
+	api.On("GetConfig").Return(&mmModel.Config{
+		FileSettings: mmModel.FileSettings{
+			MaxFileSize: &maxSize,
+		},
+	}).Maybe()
+	api.On("GetFileInfo", "file-1").Return(&mmModel.FileInfo{
+		Id:   "file-1",
+		Name: "bigfile.bin",
+		Size: 2048, // Exceeds maxSize of 1024
+	}, nil)
+
+	post := &mmModel.Post{
+		Id:        "post-1",
+		ChannelId: "ch1",
+		FileIds:   mmModel.StringArray{"file-1"},
+	}
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+
+	p.uploadPostFiles(post, conns)
+	p.wg.Wait()
+
+	// File should be skipped due to size, so no GetFile call and no upload.
+	api.AssertNotCalled(t, "GetFile", mock.Anything)
+	assert.False(t, uploaded)
+}
+
+func TestUploadPostFiles_FileFilteredByPolicy(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	uploaded := false
+	p.outboundConns = []outboundConn{{
+		provider: &mockQueueProvider{
+			uploadFileFn: func(ctx context.Context, key string, data []byte, headers map[string]string) error {
+				uploaded = true
+				return nil
+			},
+		},
+		name:                "high",
+		fileTransferEnabled: true,
+		fileFilterMode:      "allow",
+		fileFilterTypes:     ".pdf",
+		healthy:             true,
+		lastCheckTime:       time.Now(),
+	}}
+
+	api.On("GetConfig").Return(&mmModel.Config{}).Maybe()
+	api.On("GetFileInfo", "file-1").Return(&mmModel.FileInfo{
+		Id:   "file-1",
+		Name: "test.txt",
+		Size: 100,
+	}, nil)
+	api.On("GetFile", "file-1").Return([]byte("file content"), nil)
+
+	post := &mmModel.Post{
+		Id:        "post-1",
+		ChannelId: "ch1",
+		FileIds:   mmModel.StringArray{"file-1"},
+	}
+	conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+
+	p.uploadPostFiles(post, conns)
+	p.wg.Wait()
+
+	// File is .txt but only .pdf is allowed, so UploadFile should not be called.
+	assert.False(t, uploaded)
+}
+
+func TestUpdateOutboundHealth_SetsHealthy(t *testing.T) {
+	p := &Plugin{}
+	p.outboundConns = []outboundConn{
+		{name: "conn-0", healthy: false, lastCheckTime: time.Now().Add(-time.Minute)},
+	}
+
+	p.updateOutboundHealth(0, true)
+
+	assert.True(t, p.outboundConns[0].healthy)
+	assert.WithinDuration(t, time.Now(), p.outboundConns[0].lastCheckTime, 2*time.Second)
+}
+
+func TestUpdateOutboundHealth_SetsUnhealthy(t *testing.T) {
+	p := &Plugin{}
+	p.outboundConns = []outboundConn{
+		{name: "conn-0", healthy: true, lastCheckTime: time.Now().Add(-time.Minute)},
+	}
+
+	p.updateOutboundHealth(0, false)
+
+	assert.False(t, p.outboundConns[0].healthy)
+	assert.WithinDuration(t, time.Now(), p.outboundConns[0].lastCheckTime, 2*time.Second)
+}
+
+func TestUpdateOutboundHealth_IndexOutOfRange(t *testing.T) {
+	p := &Plugin{}
+	p.outboundConns = []outboundConn{
+		{name: "conn-0", healthy: true},
+	}
+
+	// Should not panic when index is beyond the slice length.
+	assert.NotPanics(t, func() {
+		p.updateOutboundHealth(5, false)
+	})
+
+	// Original entry should be unchanged.
+	assert.True(t, p.outboundConns[0].healthy)
+}

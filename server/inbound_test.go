@@ -880,6 +880,123 @@ func TestHandleInboundMessage_TestMessageType(t *testing.T) {
 	api.AssertExpectations(t)
 }
 
+func TestGetInboundConn_Found(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	p.inboundConns = []inboundConn{
+		{name: "low", provider: &mockQueueProvider{}},
+		{name: "high", provider: &mockQueueProvider{}},
+	}
+
+	got := p.getInboundConn("high")
+	require.NotNil(t, got)
+	assert.Equal(t, "high", got.name)
+}
+
+func TestGetInboundConn_NotFound(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	p.inboundConns = []inboundConn{
+		{name: "low", provider: &mockQueueProvider{}},
+		{name: "high", provider: &mockQueueProvider{}},
+	}
+
+	got := p.getInboundConn("nonexistent")
+	assert.Nil(t, got)
+}
+
+func TestGetInboundConn_EmptyPool(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	got := p.getInboundConn("high")
+	assert.Nil(t, got)
+}
+
+func TestHandleInboundMessage_PostMissingPayload(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	api.On("LogError", "Inbound post: missing payload", "conn", "high").Return()
+
+	env := &model.Envelope{Type: model.MessageTypePost}
+	data, err := model.Marshal(env, model.FormatJSON)
+	require.NoError(t, err)
+
+	handler := p.handleInboundMessage("high")
+	err = handler(data)
+	require.NoError(t, err)
+
+	p.wg.Wait()
+	api.AssertExpectations(t)
+}
+
+func TestFindTeamByRewrite_NoMapping(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	team, err := p.findTeamByRewrite("high", "remote-team")
+	require.NoError(t, err)
+	assert.Nil(t, team)
+}
+
+func TestFindTeamByRewrite_MappingExists(t *testing.T) {
+	api := &plugintest.API{}
+	p := &Plugin{}
+	p.SetAPI(api)
+	p.botUserID = "bot-user-id"
+	ctx, cancel := context.WithCancel(context.Background())
+	p.ctx = ctx
+	p.cancel = cancel
+	p.relaySem = make(chan struct{}, 50)
+
+	expectedTeam := &mmModel.Team{Id: "local-team-id", Name: "local-team"}
+	api.On("GetTeam", "local-team-id").Return(expectedTeam, nil)
+
+	kvs := &flexibleKVStore{testKVStore: newTestKVStore()}
+	kvs.getTeamRewriteIndexFn = func(connName, remoteTeamName string) (string, error) {
+		if connName == "high" && remoteTeamName == "remote-team" {
+			return "local-team-id", nil
+		}
+		return "", nil
+	}
+	p.kvstore = kvs
+
+	team, err := p.findTeamByRewrite("high", "remote-team")
+	require.NoError(t, err)
+	require.NotNil(t, team)
+	assert.Equal(t, "local-team-id", team.Id)
+	api.AssertExpectations(t)
+}
+
+func TestFindTeamByRewrite_GetTeamError(t *testing.T) {
+	api := &plugintest.API{}
+	p := &Plugin{}
+	p.SetAPI(api)
+	p.botUserID = "bot-user-id"
+	ctx, cancel := context.WithCancel(context.Background())
+	p.ctx = ctx
+	p.cancel = cancel
+	p.relaySem = make(chan struct{}, 50)
+
+	api.On("GetTeam", "bad-team-id").Return(nil, &mmModel.AppError{Message: "team not found"})
+
+	kvs := &flexibleKVStore{testKVStore: newTestKVStore()}
+	kvs.getTeamRewriteIndexFn = func(connName, remoteTeamName string) (string, error) {
+		return "bad-team-id", nil
+	}
+	p.kvstore = kvs
+
+	team, err := p.findTeamByRewrite("high", "remote-team")
+	require.Error(t, err)
+	assert.Nil(t, team)
+	assert.Contains(t, err.Error(), "rewrite target team")
+	assert.Contains(t, err.Error(), "not found")
+	api.AssertExpectations(t)
+}
+
 func TestHandleInboundFile_MissingHeaders(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)

@@ -1580,3 +1580,61 @@ func TestGetGlobalStatus(t *testing.T) {
 		assert.Nil(t, resp.Teams[0].LinkedConnections)
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Additional helper function tests
+// ---------------------------------------------------------------------------
+
+func TestAddCrossguardHeaderPrefix(t *testing.T) {
+	t.Run("adds prefix", func(t *testing.T) {
+		result := addCrossguardHeaderPrefix("My Channel")
+		assert.Equal(t, crossguardHeaderPrefix+"My Channel", result)
+	})
+	t.Run("already prefixed is idempotent", func(t *testing.T) {
+		prefixed := addCrossguardHeaderPrefix("My Channel")
+		result := addCrossguardHeaderPrefix(prefixed)
+		assert.Equal(t, prefixed, result)
+	})
+	t.Run("empty string gets prefix", func(t *testing.T) {
+		result := addCrossguardHeaderPrefix("")
+		assert.Equal(t, crossguardHeaderPrefix, result)
+	})
+}
+
+func TestRemoveCrossguardHeaderPrefix(t *testing.T) {
+	t.Run("removes prefix", func(t *testing.T) {
+		result := removeCrossguardHeaderPrefix(crossguardHeaderPrefix + "My Channel")
+		assert.Equal(t, "My Channel", result)
+	})
+	t.Run("not prefixed returns as-is", func(t *testing.T) {
+		result := removeCrossguardHeaderPrefix("Plain Header")
+		assert.Equal(t, "Plain Header", result)
+	})
+}
+
+func TestPublishChannelConnectionUpdate(t *testing.T) {
+	t.Run("empty connections", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLogCalls(api)
+		p, _ := setupTestPluginWithRouter(api)
+		api.On("PublishWebSocketEvent", "channel_connections_updated", mock.Anything, mock.Anything).Return()
+		p.publishChannelConnectionUpdate("ch1", nil)
+		api.AssertCalled(t, "PublishWebSocketEvent", "channel_connections_updated",
+			map[string]any{"channel_id": "ch1", "connections": ""},
+			mock.Anything)
+	})
+	t.Run("multiple connections", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLogCalls(api)
+		p, _ := setupTestPluginWithRouter(api)
+		api.On("PublishWebSocketEvent", "channel_connections_updated", mock.Anything, mock.Anything).Return()
+		conns := []store.TeamConnection{
+			{Direction: "outbound", Connection: "high"},
+			{Direction: "inbound", Connection: "low"},
+		}
+		p.publishChannelConnectionUpdate("ch1", conns)
+		api.AssertCalled(t, "PublishWebSocketEvent", "channel_connections_updated",
+			map[string]any{"channel_id": "ch1", "connections": "outbound:high,inbound:low"},
+			mock.Anything)
+	})
+}

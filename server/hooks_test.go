@@ -703,3 +703,88 @@ func TestRelayToOutbound(t *testing.T) {
 		assert.Equal(t, 0, len(p.relaySem))
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Additional hook edge-case tests
+// ---------------------------------------------------------------------------
+
+func TestMessageHasBeenPosted_BotUserFiltered(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+	p.configuration = defaultTestConfig()
+
+	post := &mmModel.Post{
+		Id:        "post1",
+		UserId:    p.botUserID, // bot post should be skipped
+		ChannelId: "chan1",
+		Message:   "hello",
+	}
+	// No KV calls expected since bot is filtered early
+	p.MessageHasBeenPosted(nil, post)
+}
+
+func TestMessageHasBeenPosted_RelayedPostFiltered(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+	p.configuration = defaultTestConfig()
+
+	post := &mmModel.Post{
+		Id:        "post1",
+		UserId:    "user1",
+		ChannelId: "chan1",
+		Message:   "hello",
+	}
+	post.AddProp("crossguard_relayed", true)
+	// No KV calls expected since relayed post is filtered
+	p.MessageHasBeenPosted(nil, post)
+}
+
+func TestMessageHasBeenUpdated_BotUserFiltered(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+	p.configuration = defaultTestConfig()
+
+	post := &mmModel.Post{
+		Id:        "post1",
+		UserId:    p.botUserID,
+		ChannelId: "chan1",
+		Message:   "updated",
+	}
+	p.MessageHasBeenUpdated(nil, post, post)
+}
+
+func TestMessageHasBeenDeleted_DeletingFlagTrue(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.configuration = defaultTestConfig()
+
+	kvs.isDeletingFlagSetFn = func(postID string) (bool, error) {
+		return true, nil
+	}
+
+	post := &mmModel.Post{
+		Id:        "post1",
+		UserId:    "user1",
+		ChannelId: "chan1",
+	}
+	// Should skip since deleting flag is set (prevents relay loops)
+	p.MessageHasBeenDeleted(nil, post)
+}
+
+func TestRelayToOutbound_EmptyConnNames(t *testing.T) {
+	api := &plugintest.API{}
+	hooksLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+	p.configuration = defaultTestConfig()
+
+	env := &model.Envelope{}
+	// Empty slice means no connections to relay to
+	p.relayToOutbound(env, []store.TeamConnection{}, "test")
+	p.wg.Wait()
+	// Semaphore should be released
+	assert.Equal(t, 0, len(p.relaySem))
+}

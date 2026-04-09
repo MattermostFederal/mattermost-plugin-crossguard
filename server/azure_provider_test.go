@@ -116,3 +116,27 @@ func TestProviderMaxMessageSize(t *testing.T) {
 		assert.Equal(t, 0, p.MaxMessageSize())
 	})
 }
+
+func TestAzureCloseIdempotent(t *testing.T) {
+	p := &azureProvider{}
+	assert.NoError(t, p.Close())
+	assert.NoError(t, p.Close())
+}
+
+func TestAzureCloseNilFields(t *testing.T) {
+	p := &azureProvider{
+		cancel:   nil,
+		pollDone: nil,
+	}
+	assert.NoError(t, p.Close())
+}
+
+func TestExtractBlobHeaders_EmptyHeadersMap(t *testing.T) {
+	emptyHeaders := map[string]string{}
+	meta := azureBlobMetadata{Headers: emptyHeaders}
+	metaJSON, err := json.Marshal(meta)
+	require.NoError(t, err)
+	encoded := base64.StdEncoding.EncodeToString(metaJSON)
+	headers := extractBlobHeaders(map[string]*string{"crossguard_headers": &encoded})
+	assert.Empty(t, headers)
+}

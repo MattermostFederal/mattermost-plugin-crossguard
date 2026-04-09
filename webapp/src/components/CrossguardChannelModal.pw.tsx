@@ -569,3 +569,535 @@ test.describe('API error handling', () => {
         await expect(component.getByText('Network error loading channel status.')).toBeVisible();
     });
 });
+
+// ---------------------------------------------------------------------------
+// 10. Modal state reset
+// ---------------------------------------------------------------------------
+test.describe('Modal state reset', () => {
+    test('resets state when re-opened for a different channel', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/channels/ch-first/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-first',
+                    channel_name: 'first-channel',
+                    channel_display_name: 'First Channel',
+                    team_name: 'Team A',
+                    team_connections: [{name: 'conn-a', direction: 'inbound', linked: true, file_transfer_enabled: false}],
+                }),
+            });
+        });
+        await page.route('**/plugins/crossguard/api/v1/channels/ch-second/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-second',
+                    channel_name: 'second-channel',
+                    channel_display_name: 'Second Channel',
+                    team_name: 'Team B',
+                    team_connections: [{name: 'conn-b', direction: 'outbound', linked: false, file_transfer_enabled: false}],
+                }),
+            });
+        });
+
+        const component = await mount(<CrossguardChannelModal/>);
+
+        // Open for first channel
+        await page.evaluate(() => {
+            document.dispatchEvent(new CustomEvent('crossguard:open-modal', {detail: {channelID: 'ch-first'}}));
+        });
+        await expect(component.getByText('First Channel')).toBeVisible();
+        await expect(component.getByText('conn-a')).toBeVisible();
+
+        // Close
+        await page.keyboard.press('Escape');
+        await expect(component).toBeEmpty();
+
+        // Open for second channel
+        await page.evaluate(() => {
+            document.dispatchEvent(new CustomEvent('crossguard:open-modal', {detail: {channelID: 'ch-second'}}));
+        });
+        await expect(component.getByText('Second Channel')).toBeVisible();
+        await expect(component.getByText('conn-b')).toBeVisible();
+        await expect(component.getByText('conn-a')).not.toBeVisible();
+    });
+
+    test('ignores event with no channelID in detail', async ({mount, page}) => {
+        const component = await mount(<CrossguardChannelModal/>);
+        await page.evaluate(() => {
+            document.dispatchEvent(new CustomEvent('crossguard:open-modal', {detail: {}}));
+        });
+        await expect(component).toBeEmpty();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Link/unlink actions - extended
+// ---------------------------------------------------------------------------
+test.describe('Link/unlink actions - extended', () => {
+    test('uses POST method for link action', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/channels/*/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-method',
+                    channel_name: 'method-ch',
+                    channel_display_name: 'Method Channel',
+                    team_name: 'Team',
+                    team_connections: [{name: 'conn-method', direction: 'inbound', linked: false, file_transfer_enabled: false}],
+                }),
+            });
+        });
+
+        let capturedMethod = '';
+        await page.route('**/plugins/crossguard/api/v1/channels/*/init*', (route) => {
+            capturedMethod = route.request().method();
+            route.fulfill({status: 200, contentType: 'application/json', body: '{}'});
+        });
+
+        const component = await mount(<CrossguardChannelModal/>);
+        await page.evaluate(() => {
+            document.dispatchEvent(new CustomEvent('crossguard:open-modal', {detail: {channelID: 'ch-method'}}));
+        });
+        await component.getByRole('button', {name: 'Link'}).click();
+        expect(capturedMethod).toBe('POST');
+    });
+
+    test('includes Content-Type application/json header', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/channels/*/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-ct',
+                    channel_name: 'ct-ch',
+                    channel_display_name: 'CT Channel',
+                    team_name: 'Team',
+                    team_connections: [{name: 'conn-ct', direction: 'inbound', linked: false, file_transfer_enabled: false}],
+                }),
+            });
+        });
+
+        let capturedContentType = '';
+        await page.route('**/plugins/crossguard/api/v1/channels/*/init*', (route) => {
+            capturedContentType = route.request().headers()['content-type'] || '';
+            route.fulfill({status: 200, contentType: 'application/json', body: '{}'});
+        });
+
+        const component = await mount(<CrossguardChannelModal/>);
+        await page.evaluate(() => {
+            document.dispatchEvent(new CustomEvent('crossguard:open-modal', {detail: {channelID: 'ch-ct'}}));
+        });
+        await component.getByRole('button', {name: 'Link'}).click();
+        expect(capturedContentType).toBe('application/json');
+    });
+
+    test('shows fallback error when API returns no error field', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/channels/*/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-fallback',
+                    channel_name: 'fallback-ch',
+                    channel_display_name: 'Fallback',
+                    team_name: 'Team',
+                    team_connections: [{name: 'conn-fb', direction: 'inbound', linked: false, file_transfer_enabled: false}],
+                }),
+            });
+        });
+        await page.route('**/plugins/crossguard/api/v1/channels/*/init*', (route) => {
+            route.fulfill({status: 400, contentType: 'application/json', body: '{}'});
+        });
+
+        const component = await mount(<CrossguardChannelModal/>);
+        await page.evaluate(() => {
+            document.dispatchEvent(new CustomEvent('crossguard:open-modal', {detail: {channelID: 'ch-fallback'}}));
+        });
+        await component.getByRole('button', {name: 'Link'}).click();
+        await expect(component.getByText('Failed to link connection.')).toBeVisible();
+    });
+
+    test('shows success banner for unlink with correct verb', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/channels/*/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-verb',
+                    channel_name: 'verb-ch',
+                    channel_display_name: 'Verb Channel',
+                    team_name: 'Team',
+                    team_connections: [{name: 'verb-conn', direction: 'outbound', linked: true, file_transfer_enabled: false}],
+                }),
+            });
+        });
+        await page.route('**/plugins/crossguard/api/v1/channels/*/teardown*', (route) => {
+            route.fulfill({status: 200, contentType: 'application/json', body: '{}'});
+        });
+
+        const component = await mount(<CrossguardChannelModal/>);
+        await page.evaluate(() => {
+            document.dispatchEvent(new CustomEvent('crossguard:open-modal', {detail: {channelID: 'ch-verb'}}));
+        });
+        await component.getByRole('button', {name: 'Unlink'}).click();
+        await expect(component.getByText('Connection "verb-conn" unlinked.')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 12. API error handling - extended
+// ---------------------------------------------------------------------------
+test.describe('API error handling - extended', () => {
+    test('handles non-JSON error response from status endpoint', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/channels/*/status', (route) => {
+            route.fulfill({status: 500, contentType: 'text/plain', body: 'Internal Server Error'});
+        });
+
+        const component = await mount(<CrossguardChannelModal/>);
+        await page.evaluate(() => {
+            document.dispatchEvent(new CustomEvent('crossguard:open-modal', {detail: {channelID: 'ch-nonjson'}}));
+        });
+        await expect(component.getByText('Network error loading channel status.')).toBeVisible();
+    });
+
+    test('handles team_connections being null in response', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/channels/*/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-null',
+                    channel_name: 'null-ch',
+                    channel_display_name: 'Null Channel',
+                    team_name: 'Team',
+                    team_connections: null,
+                }),
+            });
+        });
+
+        const component = await mount(<CrossguardChannelModal/>);
+        await page.evaluate(() => {
+            document.dispatchEvent(new CustomEvent('crossguard:open-modal', {detail: {channelID: 'ch-null'}}));
+        });
+        await expect(component.getByText('No connections available.')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 13. fetchStatus error paths (detailed)
+// ---------------------------------------------------------------------------
+test.describe('fetchStatus error paths', () => {
+    test('500 with data.error shows the server-provided error message', async ({mount, page}) => {
+        await routeStatusError(page, 500, {error: 'Internal server error'});
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-123');
+        await expect(component.getByText('Internal server error')).toBeVisible();
+    });
+
+    test('403 with empty body shows fallback error message', async ({mount, page}) => {
+        await routeStatusError(page, 403, {});
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-123');
+        await expect(component.getByText('Failed to load channel status.')).toBeVisible();
+    });
+
+    test('network failure shows network error message', async ({mount, page}) => {
+        await routeStatusNetworkError(page);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-123');
+        await expect(component.getByText('Network error loading channel status.')).toBeVisible();
+    });
+
+    test('200 with team_connections undefined does not crash and shows empty state', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/channels/*/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-undef',
+                    channel_name: 'undef-ch',
+                    channel_display_name: 'Undef Channel',
+                    team_name: 'Team Undef',
+                }),
+            });
+        });
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-undef');
+        await expect(component.getByText('No connections available. Configure connections in the System Console.')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 14. Empty and edge states (detailed)
+// ---------------------------------------------------------------------------
+test.describe('Empty and edge states', () => {
+    test('empty team_connections array shows the empty-state message', async ({mount, page}) => {
+        const emptyStatus = {
+            channel_id: 'ch-empty',
+            channel_name: 'empty-ch',
+            channel_display_name: 'Empty Channel',
+            team_name: 'Team Empty',
+            team_connections: [],
+        };
+        await routeStatusOk(page, emptyStatus);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-empty');
+        await expect(component.getByText('No connections available. Configure connections in the System Console.')).toBeVisible();
+    });
+
+    test('help link is always present after modal opens', async ({mount, page}) => {
+        await routeStatusOk(page);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-123');
+        const link = component.getByRole('link', {name: 'View Cross Guard Documentation'});
+        await expect(link).toBeVisible();
+        await expect(link).toHaveAttribute('href', '/plugins/crossguard/public/help/help.html');
+    });
+
+    test('help link has target _blank and rel noopener noreferrer', async ({mount, page}) => {
+        await routeStatusOk(page);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-123');
+        const link = component.getByRole('link', {name: 'View Cross Guard Documentation'});
+        await expect(link).toHaveAttribute('target', '_blank');
+        await expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    });
+
+    test('renders all connection cards when there are 5+ connections', async ({mount, page}) => {
+        const manyConnections = {
+            channel_id: 'ch-many',
+            channel_name: 'many-ch',
+            channel_display_name: 'Many Channel',
+            team_name: 'Team Many',
+            team_connections: [
+                {name: 'conn-alpha', direction: 'inbound', linked: false, file_transfer_enabled: true},
+                {name: 'conn-bravo', direction: 'outbound', linked: true, file_transfer_enabled: false},
+                {name: 'conn-charlie', direction: 'inbound', linked: false, file_transfer_enabled: true, file_filter_mode: 'deny', file_filter_types: '.exe'},
+                {name: 'conn-delta', direction: 'outbound', linked: false, file_transfer_enabled: true, file_filter_mode: 'allow', file_filter_types: '.pdf'},
+                {name: 'conn-echo', direction: 'inbound', linked: true, file_transfer_enabled: false},
+            ],
+        };
+        await routeStatusOk(page, manyConnections);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-many');
+        await expect(component.getByText('conn-alpha')).toBeVisible();
+        await expect(component.getByText('conn-bravo')).toBeVisible();
+        await expect(component.getByText('conn-charlie')).toBeVisible();
+        await expect(component.getByText('conn-delta')).toBeVisible();
+        await expect(component.getByText('conn-echo')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 15. Multi-open state reset (detailed)
+// ---------------------------------------------------------------------------
+test.describe('Multi-open state reset', () => {
+    test('header updates with new channel name when opened for a different channel', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/channels/ch-one/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-one',
+                    channel_name: 'one-ch',
+                    channel_display_name: 'Channel One',
+                    team_name: 'Team X',
+                    team_connections: [{name: 'conn-x', direction: 'inbound', linked: false, file_transfer_enabled: false}],
+                }),
+            });
+        });
+        await page.route('**/plugins/crossguard/api/v1/channels/ch-two/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-two',
+                    channel_name: 'two-ch',
+                    channel_display_name: 'Channel Two',
+                    team_name: 'Team Y',
+                    team_connections: [{name: 'conn-y', direction: 'outbound', linked: true, file_transfer_enabled: false}],
+                }),
+            });
+        });
+
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-one');
+        await expect(component.getByText('Cross Guard Settings for Team X > Channel One')).toBeVisible();
+
+        // Directly open for ch-two without closing (simulates rapid switch)
+        await openModal(page, 'ch-two');
+        await expect(component.getByText('Cross Guard Settings for Team Y > Channel Two')).toBeVisible();
+    });
+
+    test('previous connections from first channel are not visible after opening second channel', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/channels/ch-prev/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-prev',
+                    channel_name: 'prev-ch',
+                    channel_display_name: 'Prev Channel',
+                    team_name: 'Team Prev',
+                    team_connections: [{name: 'conn-prev', direction: 'inbound', linked: false, file_transfer_enabled: false}],
+                }),
+            });
+        });
+        await page.route('**/plugins/crossguard/api/v1/channels/ch-next/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-next',
+                    channel_name: 'next-ch',
+                    channel_display_name: 'Next Channel',
+                    team_name: 'Team Next',
+                    team_connections: [{name: 'conn-next', direction: 'outbound', linked: true, file_transfer_enabled: false}],
+                }),
+            });
+        });
+
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-prev');
+        await expect(component.getByText('conn-prev')).toBeVisible();
+
+        await openModal(page, 'ch-next');
+        await expect(component.getByText('conn-next')).toBeVisible();
+        await expect(component.getByText('conn-prev')).not.toBeVisible();
+    });
+
+    test('status banner is cleared when modal is closed and reopened', async ({mount, page}) => {
+        await routeStatusOk(page);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-123');
+        await expect(component.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+
+        // Trigger a link action to get a status banner
+        await page.route('**/plugins/crossguard/api/v1/channels/ch-123/init*', (route) => {
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({status: 'ok'})});
+        });
+        await setCsrfCookie(page);
+        await component.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(component.getByText('Connection "inbound-conn" linked.')).toBeVisible();
+
+        // Close and reopen
+        await page.keyboard.press('Escape');
+        await expect(component).toBeEmpty();
+        await openModal(page, 'ch-123');
+        await expect(component.getByText('inbound-conn')).toBeVisible();
+        const staleSuccessBanner = component.getByText('Connection "inbound-conn" linked.');
+        await expect(staleSuccessBanner).toHaveCount(0);
+    });
+
+    test('actionInProgress text is not visible after close and reopen', async ({mount, page}) => {
+        await routeStatusOk(page);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-123');
+        await expect(component.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+
+        // Start a slow link action so "Linking..." appears
+        await page.route('**/plugins/crossguard/api/v1/channels/ch-123/init*', async (route) => {
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({status: 'ok'})});
+        });
+        await setCsrfCookie(page);
+        await component.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(component.getByText('Linking...')).toBeVisible();
+
+        // Close via Escape and reopen
+        await page.keyboard.press('Escape');
+        await expect(component).toBeEmpty();
+        await openModal(page, 'ch-123');
+        await expect(component.getByText('inbound-conn')).toBeVisible();
+        const staleLinkingText = component.getByText('Linking...');
+        await expect(staleLinkingText).toHaveCount(0);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 16. Status banner behavior (detailed)
+// ---------------------------------------------------------------------------
+test.describe('Status banner behavior', () => {
+    test('successful link action shows banner with connection name and "linked" verb', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/channels/*/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-banner',
+                    channel_name: 'banner-ch',
+                    channel_display_name: 'Banner Channel',
+                    team_name: 'Team Banner',
+                    team_connections: [{name: 'banner-conn', direction: 'inbound', linked: false, file_transfer_enabled: false}],
+                }),
+            });
+        });
+        await page.route('**/plugins/crossguard/api/v1/channels/*/init*', (route) => {
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({status: 'ok'})});
+        });
+
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-banner');
+        await expect(component.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+        await setCsrfCookie(page);
+        await component.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(component.getByText('Connection "banner-conn" linked.')).toBeVisible();
+    });
+
+    test('failed action shows server error from data.error field', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/channels/*/status', (route) => {
+            route.fulfill({
+                status: 200,
+                contentType: 'application/json',
+                body: JSON.stringify({
+                    channel_id: 'ch-fail',
+                    channel_name: 'fail-ch',
+                    channel_display_name: 'Fail Channel',
+                    team_name: 'Team Fail',
+                    team_connections: [{name: 'fail-conn', direction: 'inbound', linked: false, file_transfer_enabled: false}],
+                }),
+            });
+        });
+        await page.route('**/plugins/crossguard/api/v1/channels/*/init*', (route) => {
+            route.fulfill({status: 409, contentType: 'application/json', body: JSON.stringify({error: 'Conflict: channel is locked.'})});
+        });
+
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-fail');
+        await expect(component.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+        await setCsrfCookie(page);
+        await component.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(component.getByText('Conflict: channel is locked.')).toBeVisible();
+    });
+
+    test('starting a new action clears the previous status banner', async ({mount, page}) => {
+        await routeStatusOk(page);
+        const component = await mount(<CrossguardChannelModal/>);
+        await openModal(page, 'ch-123');
+        await expect(component.getByRole('button', {name: 'Link', exact: true})).toBeVisible();
+
+        // First action: succeed to get a banner
+        await page.route('**/plugins/crossguard/api/v1/channels/ch-123/init*', (route) => {
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({status: 'ok'})});
+        });
+        await setCsrfCookie(page);
+        await component.getByRole('button', {name: 'Link', exact: true}).click();
+        await expect(component.getByText('Connection "inbound-conn" linked.')).toBeVisible();
+
+        // Second action: click Unlink on the outbound connection
+        // The handleToggle sets status to {loading: true} which hides the banner
+        await page.route('**/plugins/crossguard/api/v1/channels/ch-123/teardown*', async (route) => {
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({status: 'ok'})});
+        });
+        await component.getByRole('button', {name: 'Unlink', exact: true}).click();
+
+        // The old "linked" banner should be gone because status was set to {loading: true}
+        const oldBanner = component.getByText('Connection "inbound-conn" linked.');
+        await expect(oldBanner).toHaveCount(0);
+    });
+});

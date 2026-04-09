@@ -112,4 +112,61 @@ test.describe('CrossguardUserPopover', () => {
         );
         await expect(component).toBeEmpty();
     });
+
+    test('renders null when user object is null', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover user={null as any}/>,
+        );
+        await expect(component).toBeEmpty();
+    });
+
+    test('handles connection name with special characters in last_name', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: 'alice'},
+                    last_name: '(via server-2/alpha)',
+                }}
+            />,
+        );
+        await expect(component.getByText('Relayed from: alice (via server-2/alpha)')).toBeVisible();
+    });
+
+    test('handles very long remote username', async ({mount}) => {
+        const longName = 'u'.repeat(500);
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: longName},
+                    last_name: '(via conn)',
+                }}
+            />,
+        );
+        const text = await component.locator('span').textContent();
+        expect(text).toContain(longName);
+    });
+
+    test('shows unknown when last_name is "(via )" with empty connection after via', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: 'bob'},
+                    last_name: '(via )',
+                }}
+            />,
+        );
+        await expect(component.getByText('(via unknown)')).toBeVisible();
+    });
+
+    test('handles numeric string CrossguardRemoteUsername', async ({mount}) => {
+        const component = await mount(
+            <CrossguardUserPopover
+                user={{
+                    props: {CrossguardRemoteUsername: '12345'},
+                    last_name: '(via conn)',
+                }}
+            />,
+        );
+        await expect(component.getByText('Relayed from: 12345 (via conn)')).toBeVisible();
+    });
 });

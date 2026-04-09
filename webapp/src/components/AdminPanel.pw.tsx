@@ -37,4 +37,16 @@ test.describe('AdminPanel', () => {
         const container = page.locator('[style*="padding"]').first();
         await expect(container).toHaveCSS('padding', '20px');
     });
+
+    test('renders the exact version value from manifest', async ({mount}) => {
+        const component = await mount(<AdminPanel/>);
+        const versionText = await component.locator('p').filter({hasText: 'Version:'}).textContent();
+        expect(versionText).toContain('0.1.');
+    });
+
+    test('documentation link has blue color styling', async ({mount}) => {
+        const component = await mount(<AdminPanel/>);
+        const link = component.getByRole('link', {name: 'View Cross Guard Documentation'});
+        await expect(link).toHaveCSS('color', 'rgb(28, 88, 217)');
+    });
 });

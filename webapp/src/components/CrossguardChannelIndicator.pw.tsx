@@ -113,4 +113,92 @@ test.describe('CrossguardChannelIndicator', () => {
         );
         await expect(page.getByTestId('SharedChannelIcon')).not.toBeAttached();
     });
+
+    test('icon has correct inline styles', async ({mount, page}) => {
+        await mount(
+            <CrossguardChannelIndicatorStory
+                channelId={'ch-style'}
+                connections={'Styled'}
+            />,
+        );
+        const icon = page.getByTestId('SharedChannelIcon');
+        await expect(icon).toBeAttached();
+        await expect(icon).toHaveCSS('font-size', '14px');
+        await expect(icon).toHaveCSS('margin-left', '4px');
+    });
+
+    test('re-renders when channel ID prop changes to a channel without connections', async ({mount, page}) => {
+        const component = await mount(
+            <CrossguardChannelIndicatorStory
+                channelId={'ch-switch-a'}
+                connections={'HasConn'}
+            />,
+        );
+        await expect(page.getByTestId('SharedChannelIcon')).toBeAttached();
+
+        await component.update(
+            <CrossguardChannelIndicator channel={{id: 'ch-switch-b'}}/>,
+        );
+        await expect(page.getByTestId('SharedChannelIcon')).not.toBeAttached();
+    });
+
+    test('empty string connections from Story treated as no connections', async ({mount, page}) => {
+        await mount(
+            <CrossguardChannelIndicatorStory
+                channelId={'ch-empty-str'}
+                connections={''}
+            />,
+        );
+        await expect(page.getByTestId('SharedChannelIcon')).not.toBeAttached();
+    });
+
+    test.describe('Edge cases', () => {
+        test('channel with undefined id renders null without crashing', async ({mount, page}) => {
+            await mount(
+                <CrossguardChannelIndicator channel={{id: undefined as unknown as string}}/>,
+            );
+            await expect(page.getByTestId('SharedChannelIcon')).not.toBeAttached();
+        });
+
+        test('tooltip title updates when connection string changes', async ({mount, page}) => {
+            const component = await mount(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-tooltip'}
+                    connections={'ConnA'}
+                />,
+            );
+            await expect(page.getByTestId('SharedChannelIcon')).toHaveAttribute('title', 'ConnA');
+
+            await component.update(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-tooltip'}
+                    connections={'ConnA, ConnB'}
+                />,
+            );
+            await expect(page.getByTestId('SharedChannelIcon')).toHaveAttribute('title', 'ConnA, ConnB');
+        });
+
+        test('unmounting component and then remounting with new state does not cause errors', async ({mount, page}) => {
+            const component = await mount(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-unmount'}
+                    connections={'Active'}
+                />,
+            );
+            await expect(page.getByTestId('SharedChannelIcon')).toBeAttached();
+
+            await component.unmount();
+            await expect(page.getByTestId('SharedChannelIcon')).not.toBeAttached();
+
+            // Remount with updated connections after prior unmount; no crash
+            await mount(
+                <CrossguardChannelIndicatorStory
+                    channelId={'ch-unmount'}
+                    connections={'Updated'}
+                />,
+            );
+            await expect(page.getByTestId('SharedChannelIcon')).toBeAttached();
+            await expect(page.getByTestId('SharedChannelIcon')).toHaveAttribute('title', 'Updated');
+        });
+    });
 });

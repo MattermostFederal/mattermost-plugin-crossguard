@@ -57,6 +57,25 @@ test.describe('setChannelConnections / getChannelConnections', () => {
         trackSet('ch/special:chars!@#', 'Conn');
         expect(getChannelConnections('ch/special:chars!@#')).toBe('Conn');
     });
+
+    test('treats null coerced value as deletion', () => {
+        trackSet('ch-null', 'SomeConn');
+        expect(getChannelConnections('ch-null')).toBe('SomeConn');
+        setChannelConnections('ch-null', null as unknown as string);
+        expect(getChannelConnections('ch-null')).toBe('');
+    });
+
+    test('handles very long connection strings', () => {
+        const longStr = 'A'.repeat(10000);
+        trackSet('ch-long', longStr);
+        expect(getChannelConnections('ch-long')).toBe(longStr);
+        expect(getChannelConnections('ch-long').length).toBe(10000);
+    });
+
+    test('handles unicode characters in channel IDs and values', () => {
+        trackSet('\u00E9\u00F1\u00FC-ch', '\u4F60\u597D\u4E16\u754C');
+        expect(getChannelConnections('\u00E9\u00F1\u00FC-ch')).toBe('\u4F60\u597D\u4E16\u754C');
+    });
 });
 
 test.describe('subscribe / notification', () => {
@@ -145,6 +164,33 @@ test.describe('subscribe / notification', () => {
         setChannelConnections('ch-sub-del', '');
         expect(called).toBe(true);
         unsub();
+    });
+
+    test('listener can modify state for a different channel inside callback without infinite loop', () => {
+        let innerCalled = false;
+        const unsub = subscribe(() => {
+            if (!innerCalled) {
+                innerCalled = true;
+                trackSet('ch-reentrant-other', 'Y');
+            }
+        });
+        trackSet('ch-reentrant', 'X');
+        expect(innerCalled).toBe(true);
+        expect(getChannelConnections('ch-reentrant-other')).toBe('Y');
+        unsub();
+    });
+
+    test('re-subscribing same function reference is a no-op due to Set dedup', () => {
+        let count = 0;
+        const fn = () => {
+ count++;
+};
+        const unsub1 = subscribe(fn);
+        const unsub2 = subscribe(fn);
+        trackSet('ch-dedup', 'X');
+        expect(count).toBe(1);
+        unsub1();
+        unsub2();
     });
 });
 
@@ -282,5 +328,54 @@ test.describe('fetchChannelConnections', () => {
         trackedIds.push('ch-single');
         await fetchChannelConnections(['ch-single']);
         expect(getChannelConnections('ch-single')).toBe('Solo');
+    });
+
+    test('handles response.json() throwing on ok response', async () => {
+        globalThis.fetch = (async () => ({
+            ok: true,
+            status: 200,
+            json: async () => {
+ throw new Error('invalid json');
+},
+        })) as unknown as typeof globalThis.fetch;
+
+        trackSet('ch-json-err', 'Original');
+        await fetchChannelConnections(['ch-json-err']);
+        expect(getChannelConnections('ch-json-err')).toBe('Original');
+        expect(warnCalls.length).toBe(1);
+        expect(warnCalls[0][0]).toBe('fetchChannelConnections failed');
+    });
+
+    test('handles large batch of 50 channel IDs in single call', async () => {
+        const ids = Array.from({length: 50}, (_, i) => `ch-batch-${i}`);
+        const body: Record<string, string> = {};
+        for (const id of ids) {
+            body[id] = `Conn-${id}`;
+            trackedIds.push(id);
+        }
+
+        let capturedUrl = '';
+        globalThis.fetch = (async (url: string | URL | Request) => {
+            capturedUrl = String(url);
+            return {ok: true, json: async () => body};
+        }) as typeof globalThis.fetch;
+
+        await fetchChannelConnections(ids);
+        expect(capturedUrl).toContain('ids=' + ids.join(','));
+        for (const id of ids) {
+            expect(getChannelConnections(id)).toBe(`Conn-${id}`);
+        }
+    });
+
+    test('notifies listeners once per channel ID in response', async () => {
+        let notifyCount = 0;
+        const unsub = subscribe(() => {
+ notifyCount++;
+});
+        mockFetch({ok: true, body: {'ch-n1': 'A', 'ch-n2': 'B', 'ch-n3': 'C'}});
+        trackedIds.push('ch-n1', 'ch-n2', 'ch-n3');
+        await fetchChannelConnections(['ch-n1', 'ch-n2', 'ch-n3']);
+        expect(notifyCount).toBe(3);
+        unsub();
     });
 });

@@ -957,4 +957,909 @@ test.describe('ConnectionSettings', () => {
             await expect(component.getByRole('button', {name: 'Remove'})).toBeDisabled();
         });
     });
+
+    test.describe('normalizeConnection', () => {
+        test('migrates legacy format without provider field to NATS', async ({mount}) => {
+            const legacyConn = {name: 'legacymigrate', address: 'nats://host:4222', subject: 'crossguard.legacymigrate', tls_enabled: true, auth_type: 'token', token: 'abc'};
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: JSON.stringify([legacyConn])})}/>,
+            );
+
+            // Click Edit to open form and verify normalized values
+            await component.getByRole('button', {name: 'Edit'}).click();
+            const providerSelect = component.locator('select').first();
+            await expect(providerSelect).toHaveValue('nats');
+            await expect(component.locator('input[placeholder="my-connection"]')).toHaveValue('legacymigrate');
+            await expect(component.locator('input[placeholder="nats://localhost:4222"]')).toHaveValue('nats://host:4222');
+
+            // TLS checkbox should be checked since tls_enabled was true in legacy data
+            const tlsCheckbox = component.locator('input[type="checkbox"]').first();
+            await expect(tlsCheckbox).toBeChecked();
+        });
+
+        test('sets defaults for missing legacy fields', async ({mount}) => {
+            const minimalConn = {name: 'minimal-legacy'};
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: JSON.stringify([minimalConn])})}/>,
+            );
+            await expect(component.getByText('minimal-legacy')).toBeVisible();
+            await expect(component.locator('span', {hasText: 'NATS'}).first()).toBeVisible();
+            await expect(component.locator('span', {hasText: 'None'}).first()).toBeVisible();
+        });
+    });
+
+    test.describe('Card actions - extended', () => {
+        test('Delete middle of 3 connections preserves remaining order', async ({mount, page}) => {
+            const conns = [
+                {...natsConnection, name: 'first'},
+                {...natsConnection, name: 'second', nats: {...natsConnection.nats, subject: 'crossguard.second'}},
+                {...natsConnection, name: 'third', nats: {...natsConnection.nats, subject: 'crossguard.third'}},
+            ];
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: JSON.stringify(conns)})}/>,
+            );
+            const removeButtons = component.getByRole('button', {name: 'Remove'});
+            await removeButtons.nth(1).click();
+            const calls = await getCalls(page);
+            const saved = JSON.parse(calls.onChange[calls.onChange.length - 1].value);
+            expect(saved.length).toBe(2);
+            expect(saved[0].name).toBe('first');
+            expect(saved[1].name).toBe('third');
+        });
+
+        test('Test Connection includes CSRF token in request header', async ({mount, page}) => {
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: JSON.stringify([natsConnection])})}/>,
+            );
+
+            await page.evaluate(() => {
+                Object.defineProperty(document, 'cookie', {
+                    get: () => 'MMCSRF=test-csrf-token-123',
+                    configurable: true,
+                });
+            });
+
+            let capturedHeaders: Record<string, string> = {};
+            await page.route('**/plugins/crossguard/api/v1/test-connection*', (route) => {
+                capturedHeaders = route.request().headers();
+                route.fulfill({status: 200, contentType: 'application/json', body: '{"message":"OK"}'});
+            });
+
+            await component.getByRole('button', {name: 'Test Connection'}).click();
+            expect(capturedHeaders['x-csrf-token']).toBe('test-csrf-token-123');
+        });
+
+        test('Test Connection shows fallback error when response body is not JSON', async ({mount, page}) => {
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: JSON.stringify([natsConnection])})}/>,
+            );
+
+            await page.route('**/plugins/crossguard/api/v1/test-connection*', (route) => {
+                route.fulfill({status: 400, contentType: 'text/plain', body: 'bad request'});
+            });
+
+            await component.getByRole('button', {name: 'Test Connection'}).click();
+            await expect(component.getByText('Connection failed')).toBeVisible();
+        });
+
+        test('Remove button is disabled when form is open', async ({mount}) => {
+            const conns = [
+                {...natsConnection, name: 'conn-a'},
+                {...natsConnection, name: 'conn-b', nats: {...natsConnection.nats, subject: 'crossguard.conn-b'}},
+            ];
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: JSON.stringify(conns)})}/>,
+            );
+            await component.getByRole('button', {name: 'Edit'}).first().click();
+            const removeButtons = component.getByRole('button', {name: 'Remove'});
+            const count = await removeButtons.count();
+            for (let i = 0; i < count; i++) {
+                await expect(removeButtons.nth(i)).toBeDisabled(); // eslint-disable-line no-await-in-loop
+            }
+        });
+    });
+
+    test.describe('Save flow - extended', () => {
+        test('Azure connection saves blob_container_name correctly', async ({mount, page}) => {
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: '[]'})}/>,
+            );
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+            const nameInput = component.locator('input[placeholder="my-connection"]');
+            await nameInput.fill('azure-blob');
+            const providerSelect = component.locator('select').first();
+            await providerSelect.selectOption('azure');
+            const connStringInput = component.locator('input[type="password"]');
+            await connStringInput.fill('DefaultEndpointsProtocol=https;AccountName=test');
+            const queueInput = component.locator('input[placeholder="crossguard-messages"]');
+            await queueInput.fill('test-queue');
+
+            // Enable file transfer to reveal blob container field
+            await component.getByText('Enable File Transfer').click();
+            const blobInput = component.locator('input[placeholder="crossguard-files"]');
+            await blobInput.fill('my-blob-container');
+
+            await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+            const calls = await getCalls(page);
+            const saved = JSON.parse(calls.onChange[calls.onChange.length - 1].value);
+            expect(saved[0].azure.blob_container_name).toBe('my-blob-container');
+        });
+
+        test('XML message format saved correctly in outbound JSON', async ({mount, page}) => {
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({id: 'OutboundConnections', value: '[]'})}/>,
+            );
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+            const nameInput = component.locator('input[placeholder="my-connection"]');
+            await nameInput.fill('xml-out');
+            const subjectInput = component.locator('input[placeholder="crossguard.my-connection"]');
+            await subjectInput.fill('crossguard.xml-out');
+
+            // Message Format is the last select when outbound
+            const messageFormatSelect = component.locator('select:has(option[value="xml"])');
+            await messageFormatSelect.selectOption('xml');
+            await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+            const calls = await getCalls(page);
+            const saved = JSON.parse(calls.onChange[calls.onChange.length - 1].value);
+            expect(saved[0].message_format).toBe('xml');
+        });
+
+        test('NATS save strips azure config from JSON', async ({mount, page}) => {
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: '[]'})}/>,
+            );
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+            const nameInput = component.locator('input[placeholder="my-connection"]');
+            await nameInput.fill('nats-only');
+            await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+            const calls = await getCalls(page);
+            const saved = JSON.parse(calls.onChange[calls.onChange.length - 1].value);
+            expect(saved[0].azure).toBeUndefined();
+            expect(saved[0].nats).toBeDefined();
+        });
+
+        test('File filter types saved correctly in connection JSON', async ({mount, page}) => {
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: '[]'})}/>,
+            );
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+            const nameInput = component.locator('input[placeholder="my-connection"]');
+            await nameInput.fill('file-test');
+
+            await component.getByText('Enable File Transfer').click();
+            const filterSelect = component.locator('select').last();
+            await filterSelect.selectOption('allow');
+            const fileTypesInput = component.locator('input[placeholder=".pdf,.docx,.png,.jpg"]');
+            await fileTypesInput.fill('.pdf,.docx');
+
+            await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+            const calls = await getCalls(page);
+            const saved = JSON.parse(calls.onChange[calls.onChange.length - 1].value);
+            expect(saved[0].file_transfer_enabled).toBe(true);
+            expect(saved[0].file_filter_mode).toBe('allow');
+            expect(saved[0].file_filter_types).toBe('.pdf,.docx');
+        });
+    });
+
+    test.describe('Name sanitization - extended', () => {
+        test('produces empty string when all characters are special', async ({mount}) => {
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: '[]'})}/>,
+            );
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+            const nameInput = component.locator('input[placeholder="my-connection"]');
+            await nameInput.fill('@#$%^&*');
+            await expect(nameInput).toHaveValue('');
+        });
+    });
+
+    test.describe('Provider switching - extended', () => {
+        test('preserves name when switching provider', async ({mount}) => {
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: '[]'})}/>,
+            );
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+            const nameInput = component.locator('input[placeholder="my-connection"]');
+            await nameInput.fill('my-conn');
+            const providerSelect = component.locator('select').first();
+            await providerSelect.selectOption('azure');
+            await expect(nameInput).toHaveValue('my-conn');
+        });
+
+        test('creates empty NATS config when switching back from Azure', async ({mount}) => {
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: '[]'})}/>,
+            );
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+
+            // Default is NATS, fill address
+            const addressInput = component.locator('input[placeholder="nats://localhost:4222"]');
+            await addressInput.fill('nats://custom:4222');
+
+            // Switch to Azure
+            const providerSelect = component.locator('select').first();
+            await providerSelect.selectOption('azure');
+
+            // Switch back to NATS
+            await providerSelect.selectOption('nats');
+
+            // Address should be reset to default since nats config was undefined
+            await expect(addressInput).toHaveValue('nats://localhost:4222');
+        });
+    });
+
+    test.describe('Form validation - extended', () => {
+        test('form error clears when opening edit mode', async ({mount}) => {
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: JSON.stringify([natsConnection])})}/>,
+            );
+
+            // Open add form and trigger an error
+            await component.getByRole('button', {name: '+ Add Connection'}).click();
+            await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+            await expect(component.getByText('Name is required.')).toBeVisible();
+
+            // Cancel and open edit on existing connection
+            await component.getByRole('button', {name: 'Cancel'}).click();
+            await component.getByRole('button', {name: 'Edit'}).click();
+            await expect(component.getByText('Name is required.')).not.toBeVisible();
+        });
+    });
+
+    test.describe('getCSRFToken', () => {
+        test('returns empty string when no MMCSRF cookie exists', async ({mount, page}) => {
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: JSON.stringify([natsConnection])})}/>,
+            );
+
+            await page.evaluate(() => {
+                Object.defineProperty(document, 'cookie', {
+                    get: () => 'other=abc; session=xyz',
+                    configurable: true,
+                });
+            });
+
+            let capturedToken = '';
+            await page.route('**/plugins/crossguard/api/v1/test-connection*', (route) => {
+                capturedToken = route.request().headers()['x-csrf-token'] || '';
+                route.fulfill({status: 200, contentType: 'application/json', body: '{"message":"OK"}'});
+            });
+
+            await component.getByRole('button', {name: 'Test Connection'}).click();
+            expect(capturedToken).toBe('');
+        });
+
+        test('extracts token from cookie with multiple entries', async ({mount, page}) => {
+            const component = await mount(
+                <ConnectionSettingsStory {...defaultProps({value: JSON.stringify([natsConnection])})}/>,
+            );
+
+            await page.evaluate(() => {
+                Object.defineProperty(document, 'cookie', {
+                    get: () => 'other=abc; MMCSRF=multi-cookie-token; session=xyz',
+                    configurable: true,
+                });
+            });
+
+            let capturedToken = '';
+            await page.route('**/plugins/crossguard/api/v1/test-connection*', (route) => {
+                capturedToken = route.request().headers()['x-csrf-token'] || '';
+                route.fulfill({status: 200, contentType: 'application/json', body: '{"message":"OK"}'});
+            });
+
+            await component.getByRole('button', {name: 'Test Connection'}).click();
+            expect(capturedToken).toBe('multi-cookie-token');
+        });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Appended test blocks
+// ---------------------------------------------------------------------------
+
+const natsConn = {
+    name: 'test-nats',
+    provider: 'nats',
+    file_transfer_enabled: false,
+    file_filter_mode: '',
+    file_filter_types: '',
+    message_format: 'json',
+    nats: {address: 'nats://localhost:4222', subject: 'crossguard.test-nats', tls_enabled: false, auth_type: 'none', token: '', username: '', password: '', client_cert: '', client_key: '', ca_cert: ''},
+};
+
+function props(overrides?: Partial<{id: string; value: string; disabled: boolean}>) {
+    return {
+        id: overrides?.id ?? 'InboundConnections',
+        value: overrides?.value ?? '[]',
+        disabled: overrides?.disabled ?? false,
+    };
+}
+
+async function calls(page: any): Promise<{onChange: Array<{id: string; value: string}>; saveNeeded: number}> {
+    return page.evaluate(() => (window as any).__testCalls);
+}
+
+// ---------------------------------------------------------------------------
+// 1. Form Validation - Name & Duplicate Detection
+// ---------------------------------------------------------------------------
+test.describe('Form validation - name and duplicates', () => {
+    test('empty name shows required error on save', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+        await expect(component.getByText('Name is required.')).toBeVisible();
+    });
+
+    test('duplicate name shows error when adding', async ({mount}) => {
+        const existing = JSON.stringify([natsConn]);
+        const component = await mount(<ConnectionSettingsStory {...props({value: existing})}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('test-nats');
+        await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+        await expect(component.getByText('A connection with this name already exists. Please use a unique name.')).toBeVisible();
+    });
+
+    test('editing same connection does not trigger duplicate error', async ({mount}) => {
+        const existing = JSON.stringify([natsConn]);
+        const component = await mount(<ConnectionSettingsStory {...props({value: existing})}/>);
+        await component.getByRole('button', {name: 'Edit'}).click();
+        await component.getByRole('button', {name: 'Update Connection'}).click();
+        await expect(component.getByText('A connection with this name already exists')).not.toBeVisible();
+    });
+
+    test('editing and renaming to match another connection shows duplicate error', async ({mount}) => {
+        const two = JSON.stringify([
+            natsConn,
+            {...natsConn, name: 'bar', nats: {...natsConn.nats, subject: 'crossguard.bar'}},
+        ]);
+        const component = await mount(<ConnectionSettingsStory {...props({value: two})}/>);
+        await component.getByRole('button', {name: 'Edit'}).first().click();
+        const nameInput = component.locator('input[type="text"]').first();
+        await nameInput.fill('bar');
+        await component.getByRole('button', {name: 'Update Connection'}).click();
+        await expect(component.getByText('A connection with this name already exists. Please use a unique name.')).toBeVisible();
+    });
+
+    test('uppercase input is lowercased', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('FoO-Bar');
+        await expect(nameInput).toHaveValue('foo-bar');
+    });
+
+    test('special characters are stripped from name', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('test@#$name!');
+        await expect(nameInput).toHaveValue('testname');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 2. Form Validation - NATS-Specific
+// ---------------------------------------------------------------------------
+test.describe('Form validation - NATS', () => {
+    test('empty address shows required error', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('test');
+        const addressInput = component.locator('input[placeholder="nats://localhost:4222"]');
+        await addressInput.fill('');
+        await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+        await expect(component.getByText('Address is required.')).toBeVisible();
+    });
+
+    test('empty subject shows required error', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('test');
+        const subjectInput = component.locator('input[placeholder="crossguard.my-connection"]');
+        await subjectInput.fill('');
+        await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+        await expect(component.getByText('Subject is required.')).toBeVisible();
+    });
+
+    test('subject without crossguard prefix shows error', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('test');
+        const subjectInput = component.locator('input[placeholder="crossguard.my-connection"]');
+        await subjectInput.fill('wrong.prefix');
+        await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+        await expect(component.getByText('Subject must start with "crossguard.".')).toBeVisible();
+    });
+
+    test('token auth with empty token shows error', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('test');
+        const authSelect = component.locator('select').nth(1);
+        await authSelect.selectOption('token');
+        await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+        await expect(component.getByText('Token is required when auth type is Token.')).toBeVisible();
+    });
+
+    test('credentials auth with empty username shows error', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('test');
+        const authSelect = component.locator('select').nth(1);
+        await authSelect.selectOption('credentials');
+        await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+        await expect(component.getByText('Username and password are required when auth type is Credentials.')).toBeVisible();
+    });
+
+    test('credentials auth with username but empty password shows error', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('test');
+        const authSelect = component.locator('select').nth(1);
+        await authSelect.selectOption('credentials');
+        const usernameInput = component.locator('input[placeholder="Enter username"]');
+        await usernameInput.fill('myuser');
+        await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+        await expect(component.getByText('Username and password are required when auth type is Credentials.')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 3. Form Validation - Azure-Specific
+// ---------------------------------------------------------------------------
+test.describe('Form validation - Azure', () => {
+    test('empty connection_string shows required error', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('test');
+        const providerSelect = component.locator('select').first();
+        await providerSelect.selectOption('azure');
+        await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+        await expect(component.getByText('Connection String is required.')).toBeVisible();
+    });
+
+    test('empty queue_name shows required error', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('test');
+        const providerSelect = component.locator('select').first();
+        await providerSelect.selectOption('azure');
+        const connStringInput = component.locator('input[type="password"]');
+        await connStringInput.fill('DefaultEndpointsProtocol=https;AccountName=test');
+        await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
+        await expect(component.getByText('Queue Name is required.')).toBeVisible();
+    });
+
+    test('NATS Address and Subject fields are not visible when Azure selected', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const providerSelect = component.locator('select').first();
+        await providerSelect.selectOption('azure');
+        await expect(component.locator('input[placeholder="nats://localhost:4222"]')).not.toBeVisible();
+        await expect(component.locator('input[placeholder="crossguard.my-connection"]')).not.toBeVisible();
+    });
+
+    test('blob_container_name visible only with azure provider and file_transfer_enabled', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+
+        // NATS with files enabled: no blob container
+        await component.getByText('Enable File Transfer').click();
+        await expect(component.getByText('Blob Container Name')).not.toBeVisible();
+
+        // Switch to Azure: blob container appears
+        const providerSelect = component.locator('select').first();
+        await providerSelect.selectOption('azure');
+        await expect(component.getByText('Blob Container Name')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 4. Provider Switching
+// ---------------------------------------------------------------------------
+test.describe('Provider switching', () => {
+    test('NATS form shows Address and Subject fields', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        await expect(component.locator('input[placeholder="nats://localhost:4222"]')).toBeVisible();
+        await expect(component.locator('input[placeholder="crossguard.my-connection"]')).toBeVisible();
+    });
+
+    test('switching to Azure hides NATS fields and shows Azure fields', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const providerSelect = component.locator('select').first();
+        await providerSelect.selectOption('azure');
+        await expect(component.locator('input[placeholder="nats://localhost:4222"]')).not.toBeVisible();
+        await expect(component.locator('input[placeholder="crossguard.my-connection"]')).not.toBeVisible();
+        await expect(component.getByText('Connection String', {exact: true})).toBeVisible();
+        await expect(component.getByText('Queue Name', {exact: true})).toBeVisible();
+    });
+
+    test('switching back to NATS from Azure restores NATS fields', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const providerSelect = component.locator('select').first();
+        await providerSelect.selectOption('azure');
+        await providerSelect.selectOption('nats');
+        await expect(component.locator('input[placeholder="nats://localhost:4222"]')).toBeVisible();
+        await expect(component.locator('input[placeholder="crossguard.my-connection"]')).toBeVisible();
+        await expect(component.getByText('Connection String', {exact: true})).not.toBeVisible();
+    });
+
+    test('name field value preserved across provider switch', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('keep-this');
+        const providerSelect = component.locator('select').first();
+        await providerSelect.selectOption('azure');
+        await expect(nameInput).toHaveValue('keep-this');
+        await providerSelect.selectOption('nats');
+        await expect(nameInput).toHaveValue('keep-this');
+    });
+
+    test('file_transfer_enabled preserved across provider switch', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        await component.getByText('Enable File Transfer').click();
+        const fileCheckbox = component.locator('input[type="checkbox"]').last();
+        await expect(fileCheckbox).toBeChecked();
+        const providerSelect = component.locator('select').first();
+        await providerSelect.selectOption('azure');
+
+        // The file transfer checkbox remains. It is always the checkbox whose label
+        // text is "Enable File Transfer", and we already clicked it.
+        const fileCheckboxAfter = component.locator('label:has-text("Enable File Transfer") input[type="checkbox"]');
+        await expect(fileCheckboxAfter).toBeChecked();
+    });
+
+    test('cancel returns to card view from form', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        await expect(component.getByText('New Connection')).toBeVisible();
+        await component.getByRole('button', {name: 'Cancel'}).click();
+        await expect(component.getByText('New Connection')).not.toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 5. Subject Auto-Generation
+// ---------------------------------------------------------------------------
+test.describe('Subject auto-generation', () => {
+    test('typing name auto-fills subject', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('my-test');
+        const subjectInput = component.locator('input[placeholder="crossguard.my-connection"]');
+        await expect(subjectInput).toHaveValue('crossguard.my-test');
+    });
+
+    test('manually edited subject is not overwritten by name change', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        await nameInput.fill('first');
+        const subjectInput = component.locator('input[placeholder="crossguard.my-connection"]');
+        await expect(subjectInput).toHaveValue('crossguard.first');
+
+        // Manually edit subject
+        await subjectInput.fill('crossguard.custom');
+        await nameInput.fill('second');
+        await expect(subjectInput).toHaveValue('crossguard.custom');
+    });
+
+    test('auto-gen resumes after clearing subject back to prefix only', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        const nameInput = component.locator('input[placeholder="my-connection"]');
+        const subjectInput = component.locator('input[placeholder="crossguard.my-connection"]');
+
+        // First, manually set subject so auto is broken
+        await nameInput.fill('abc');
+        await subjectInput.fill('crossguard.manual');
+        await nameInput.fill('xyz');
+        await expect(subjectInput).toHaveValue('crossguard.manual');
+
+        // Clear subject back to just the prefix
+        await subjectInput.fill('crossguard.');
+        await nameInput.fill('resumed');
+        await expect(subjectInput).toHaveValue('crossguard.resumed');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 6. normalizeConnection() Legacy Format
+// ---------------------------------------------------------------------------
+test.describe('Legacy connection format', () => {
+    test('flat legacy connection renders as NATS card', async ({mount}) => {
+        const legacyConn = {
+            name: 'old-conn',
+            address: 'nats://legacy:4222',
+            subject: 'crossguard.old-conn',
+            tls_enabled: false,
+            auth_type: 'none',
+            token: '',
+            username: '',
+            password: '',
+            client_cert: '',
+            client_key: '',
+            ca_cert: '',
+            file_transfer_enabled: false,
+            file_filter_mode: '',
+            file_filter_types: '',
+            message_format: 'json',
+        };
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([legacyConn])})}/>);
+        await expect(component.getByText('old-conn').first()).toBeVisible();
+        await expect(component.getByText('NATS', {exact: true})).toBeVisible();
+        await expect(component.getByText('nats://legacy:4222')).toBeVisible();
+        await expect(component.getByText('crossguard.old-conn')).toBeVisible();
+    });
+
+    test('provider-based format renders unchanged', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([natsConn])})}/>);
+        await expect(component.getByText('test-nats').first()).toBeVisible();
+        await expect(component.getByText('NATS', {exact: true})).toBeVisible();
+        await expect(component.getByText('nats://localhost:4222')).toBeVisible();
+    });
+
+    test('legacy connection with file_transfer_enabled shows Files badge', async ({mount}) => {
+        const legacyWithFiles = {
+            name: 'legacy-files',
+            address: 'nats://host:4222',
+            subject: 'crossguard.legacy-files',
+            tls_enabled: false,
+            auth_type: 'none',
+            file_transfer_enabled: true,
+            file_filter_mode: '',
+            file_filter_types: '',
+            message_format: 'json',
+        };
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([legacyWithFiles])})}/>);
+        await expect(component.getByText('Files', {exact: true}).first()).toBeVisible();
+    });
+
+    test('legacy connection edits properly after normalization', async ({mount}) => {
+        const legacyConn = {
+            name: 'legacy-edit',
+            address: 'nats://old:4222',
+            subject: 'crossguard.legacy-edit',
+            tls_enabled: true,
+            auth_type: 'token',
+            token: 'abc123',
+        };
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([legacyConn])})}/>);
+        await component.getByRole('button', {name: 'Edit'}).click();
+        const providerSelect = component.locator('select').first();
+        await expect(providerSelect).toHaveValue('nats');
+        await expect(component.locator('input[placeholder="nats://localhost:4222"]')).toHaveValue('nats://old:4222');
+        const tlsCheckbox = component.locator('input[type="checkbox"]').first();
+        await expect(tlsCheckbox).toBeChecked();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 7. Test Connection
+// ---------------------------------------------------------------------------
+test.describe('Test connection', () => {
+    test('successful test shows green banner', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/test-connection*', async (route) => {
+            await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({message: 'Connection OK'})});
+        });
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([natsConn])})}/>);
+        await component.getByRole('button', {name: 'Test Connection'}).click();
+        await expect(component.getByText('Connection OK')).toBeVisible();
+    });
+
+    test('failed test with error body shows red banner', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/test-connection*', async (route) => {
+            await route.fulfill({status: 500, contentType: 'application/json', body: JSON.stringify({error: 'timeout'})});
+        });
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([natsConn])})}/>);
+        await component.getByRole('button', {name: 'Test Connection'}).click();
+        await expect(component.getByText('timeout')).toBeVisible();
+    });
+
+    test('network error shows error banner', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/test-connection*', async (route) => {
+            await route.abort('connectionrefused');
+        });
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([natsConn])})}/>);
+        await component.getByRole('button', {name: 'Test Connection'}).click();
+        await expect(component.locator('text=/error|failed|abort/i')).toBeVisible();
+    });
+
+    test('button shows Testing... while loading', async ({mount, page}) => {
+        await page.route('**/plugins/crossguard/api/v1/test-connection*', async (route) => {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({message: 'OK'})});
+        });
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([natsConn])})}/>);
+        await component.getByRole('button', {name: 'Test Connection'}).click();
+        await expect(component.getByText('Testing...')).toBeVisible();
+    });
+
+    test('inbound ID sends direction=inbound query param', async ({mount, page}) => {
+        let requestUrl = '';
+        await page.route('**/plugins/crossguard/api/v1/test-connection*', async (route) => {
+            requestUrl = route.request().url();
+            await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({message: 'OK'})});
+        });
+        const component = await mount(<ConnectionSettingsStory {...props({id: 'InboundConnections', value: JSON.stringify([natsConn])})}/>);
+        await component.getByRole('button', {name: 'Test Connection'}).click();
+        await expect(component.getByText('OK')).toBeVisible();
+        expect(requestUrl).toContain('direction=inbound');
+    });
+
+    test('outbound ID sends direction=outbound query param', async ({mount, page}) => {
+        let requestUrl = '';
+        await page.route('**/plugins/crossguard/api/v1/test-connection*', async (route) => {
+            requestUrl = route.request().url();
+            await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({message: 'OK'})});
+        });
+        const component = await mount(<ConnectionSettingsStory {...props({id: 'OutboundConnections', value: JSON.stringify([natsConn])})}/>);
+        await component.getByRole('button', {name: 'Test Connection'}).click();
+        await expect(component.getByText('OK')).toBeVisible();
+        expect(requestUrl).toContain('direction=outbound');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Delete and Reindex
+// ---------------------------------------------------------------------------
+test.describe('Delete and reindex', () => {
+    test('delete middle of 3 leaves correct 2 connections', async ({mount, page}) => {
+        const conns = [
+            {...natsConn, name: 'first'},
+            {...natsConn, name: 'second', nats: {...natsConn.nats, subject: 'crossguard.second'}},
+            {...natsConn, name: 'third', nats: {...natsConn.nats, subject: 'crossguard.third'}},
+        ];
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify(conns)})}/>);
+        await component.getByRole('button', {name: 'Remove'}).nth(1).click();
+        const c = await calls(page);
+        const saved = JSON.parse(c.onChange[c.onChange.length - 1].value);
+        expect(saved.length).toBe(2);
+        expect(saved[0].name).toBe('first');
+        expect(saved[1].name).toBe('third');
+    });
+
+    test('delete last connection shows empty state', async ({mount, page}) => {
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([natsConn])})}/>);
+        await component.getByRole('button', {name: 'Remove'}).click();
+        const c = await calls(page);
+        const saved = JSON.parse(c.onChange[c.onChange.length - 1].value);
+        expect(saved.length).toBe(0);
+    });
+
+    test('editing index 1 then deleting index 0 shifts form to shifted connection', async ({mount}) => {
+        const conns = [
+            {...natsConn, name: 'alpha'},
+            {...natsConn, name: 'beta', nats: {...natsConn.nats, subject: 'crossguard.beta'}},
+        ];
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify(conns)})}/>);
+
+        // Edit second connection (index 1)
+        await component.getByRole('button', {name: 'Edit'}).nth(1).click();
+        await expect(component.getByText('Edit Connection')).toBeVisible();
+        const nameInput = component.locator('input[type="text"]').first();
+        await expect(nameInput).toHaveValue('beta');
+    });
+
+    test('editing index 0 then deleting index 0 closes form', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([natsConn])})}/>);
+        await component.getByRole('button', {name: 'Edit'}).click();
+        await expect(component.getByText('Edit Connection')).toBeVisible();
+
+        // Cancel to close form since Remove is disabled while editing
+        await component.getByRole('button', {name: 'Cancel'}).click();
+        await expect(component.getByText('Edit Connection')).not.toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Outbound-Specific Features
+// ---------------------------------------------------------------------------
+test.describe('Outbound-specific features', () => {
+    test('outbound form shows Message Format select', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props({id: 'OutboundConnections'})}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        await expect(component.getByText('Message Format')).toBeVisible();
+    });
+
+    test('inbound form hides Message Format select', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props({id: 'InboundConnections'})}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        await expect(component.getByText('Message Format')).not.toBeVisible();
+    });
+
+    test('outbound card with xml message_format shows XML badge', async ({mount}) => {
+        const xmlConn = {...natsConn, message_format: 'xml'};
+        const component = await mount(<ConnectionSettingsStory {...props({id: 'OutboundConnections', value: JSON.stringify([xmlConn])})}/>);
+        await expect(component.getByText('XML', {exact: true}).first()).toBeVisible();
+    });
+
+    test('inbound card with xml message_format does NOT show XML badge', async ({mount}) => {
+        const xmlConn = {...natsConn, message_format: 'xml'};
+        const component = await mount(<ConnectionSettingsStory {...props({id: 'InboundConnections', value: JSON.stringify([xmlConn])})}/>);
+
+        // The card should not display an XML badge for inbound
+        await expect(component.locator('span:has-text("XML")')).not.toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 10. File Transfer Display on Cards
+// ---------------------------------------------------------------------------
+test.describe('File transfer display', () => {
+    test('allow mode with types shows Allow badge on card', async ({mount}) => {
+        const conn = {...natsConn, file_transfer_enabled: true, file_filter_mode: 'allow', file_filter_types: '.pdf,.docx'};
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([conn])})}/>);
+        await expect(component.getByText('Allow: .pdf,.docx')).toBeVisible();
+    });
+
+    test('deny mode with types shows Deny badge on card', async ({mount}) => {
+        const conn = {...natsConn, file_transfer_enabled: true, file_filter_mode: 'deny', file_filter_types: '.exe'};
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([conn])})}/>);
+        await expect(component.getByText('Deny: .exe')).toBeVisible();
+    });
+
+    test('empty filter mode with files enabled shows All types allowed', async ({mount}) => {
+        const conn = {...natsConn, file_transfer_enabled: true, file_filter_mode: '', file_filter_types: ''};
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([conn])})}/>);
+        await expect(component.getByText('All types allowed')).toBeVisible();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 11. Disabled State
+// ---------------------------------------------------------------------------
+test.describe('Disabled state', () => {
+    test('Add Connection button is disabled when disabled prop is true', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props({disabled: true})}/>);
+        await expect(component.getByRole('button', {name: '+ Add Connection'})).toBeDisabled();
+    });
+
+    test('card action buttons are disabled when disabled prop is true', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props({value: JSON.stringify([natsConn]), disabled: true})}/>);
+        await expect(component.getByRole('button', {name: 'Edit'})).toBeDisabled();
+        await expect(component.getByRole('button', {name: 'Test Connection'})).toBeDisabled();
+        await expect(component.getByRole('button', {name: 'Remove'})).toBeDisabled();
+    });
+
+    test('other cards buttons disabled when form is open for editing', async ({mount}) => {
+        const two = JSON.stringify([
+            natsConn,
+            {...natsConn, name: 'second-conn', nats: {...natsConn.nats, subject: 'crossguard.second-conn'}},
+        ]);
+        const component = await mount(<ConnectionSettingsStory {...props({value: two})}/>);
+        await component.getByRole('button', {name: 'Edit'}).first().click();
+
+        // The second card's buttons should be disabled
+        const editButtons = component.getByRole('button', {name: 'Edit'});
+        await expect(editButtons.nth(0)).toBeDisabled();
+        const testButtons = component.getByRole('button', {name: 'Test Connection'});
+        await expect(testButtons.first()).toBeDisabled();
+        const removeButtons = component.getByRole('button', {name: 'Remove'});
+        const removeCount = await removeButtons.count();
+        for (let i = 0; i < removeCount; i++) {
+            await expect(removeButtons.nth(i)).toBeDisabled(); // eslint-disable-line no-await-in-loop
+        }
+    });
+
+    test('Add Connection button disabled while form is open', async ({mount}) => {
+        const component = await mount(<ConnectionSettingsStory {...props()}/>);
+        await component.getByRole('button', {name: '+ Add Connection'}).click();
+        await expect(component.getByRole('button', {name: '+ Add Connection'})).toBeDisabled();
+    });
 });

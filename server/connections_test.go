@@ -1,15 +1,22 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
+	mmModel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
 func makeEnvelope(text string) *model.Envelope {
@@ -117,5 +124,568 @@ func TestSplitMessage(t *testing.T) {
 		for i, p := range parts {
 			assert.Contains(t, p, fmt.Sprintf("[Part %d/%d]", i+1, len(parts)))
 		}
+	})
+}
+
+// addLogMocks registers permissive log expectations on the mock API.
+func addLogMocks(api *plugintest.API) {
+	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+}
+
+func TestBuildPostEnvelope(t *testing.T) {
+	t.Run("creates correct post envelope", func(t *testing.T) {
+		post := &mmModel.Post{
+			Id:        "post-id",
+			RootId:    "root-id",
+			ChannelId: "chan-id",
+			UserId:    "user-id",
+			Message:   "hello",
+			CreateAt:  1234567890,
+		}
+		channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
+
+		env := buildPostEnvelope(model.MessageTypePost, post, channel, "test-team", "alice")
+
+		assert.Equal(t, model.MessageTypePost, env.Type)
+		assert.NotEmpty(t, env.Timestamp)
+		require.NotNil(t, env.PostMessage)
+		assert.Equal(t, "post-id", env.PostMessage.PostID)
+		assert.Equal(t, "root-id", env.PostMessage.RootID)
+		assert.Equal(t, "chan-id", env.PostMessage.ChannelID)
+		assert.Equal(t, "town-square", env.PostMessage.ChannelName)
+		assert.Equal(t, "team-id", env.PostMessage.TeamID)
+		assert.Equal(t, "test-team", env.PostMessage.TeamName)
+		assert.Equal(t, "user-id", env.PostMessage.UserID)
+		assert.Equal(t, "alice", env.PostMessage.Username)
+		assert.Equal(t, "hello", env.PostMessage.MessageText)
+		assert.Equal(t, int64(1234567890), env.PostMessage.CreateAt)
+	})
+
+	t.Run("update type uses correct message type", func(t *testing.T) {
+		post := &mmModel.Post{Id: "post-id", ChannelId: "chan-id", Message: "edited"}
+		channel := &mmModel.Channel{Id: "chan-id", Name: "ch", TeamId: "team-id"}
+
+		env := buildPostEnvelope(model.MessageTypeUpdate, post, channel, "team", "bob")
+		assert.Equal(t, model.MessageTypeUpdate, env.Type)
+		require.NotNil(t, env.PostMessage)
+		assert.Equal(t, "edited", env.PostMessage.MessageText)
+	})
+
+	t.Run("timestamp is valid RFC3339", func(t *testing.T) {
+		post := &mmModel.Post{Id: "p1", ChannelId: "c1"}
+		channel := &mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}
+
+		env := buildPostEnvelope(model.MessageTypePost, post, channel, "team", "user")
+
+		_, err := time.Parse(time.RFC3339, env.Timestamp)
+		assert.NoError(t, err, "timestamp should be valid RFC3339")
+	})
+
+	t.Run("empty fields are preserved", func(t *testing.T) {
+		post := &mmModel.Post{Id: "p1", ChannelId: "c1", Message: ""}
+		channel := &mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}
+
+		env := buildPostEnvelope(model.MessageTypePost, post, channel, "", "")
+
+		assert.Empty(t, env.PostMessage.RootID)
+		assert.Empty(t, env.PostMessage.TeamName)
+		assert.Empty(t, env.PostMessage.Username)
+		assert.Empty(t, env.PostMessage.MessageText)
+	})
+}
+
+func TestBuildDeleteEnvelope(t *testing.T) {
+	t.Run("creates correct delete envelope", func(t *testing.T) {
+		post := &mmModel.Post{Id: "post-id", ChannelId: "chan-id"}
+		channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
+
+		env := buildDeleteEnvelope(post, channel, "test-team")
+
+		assert.Equal(t, model.MessageTypeDelete, env.Type)
+		assert.NotEmpty(t, env.Timestamp)
+		require.NotNil(t, env.DeleteMessage)
+		assert.Equal(t, "post-id", env.DeleteMessage.PostID)
+		assert.Equal(t, "chan-id", env.DeleteMessage.ChannelID)
+		assert.Equal(t, "town-square", env.DeleteMessage.ChannelName)
+		assert.Equal(t, "team-id", env.DeleteMessage.TeamID)
+		assert.Equal(t, "test-team", env.DeleteMessage.TeamName)
+	})
+
+	t.Run("no post or reaction message fields set", func(t *testing.T) {
+		post := &mmModel.Post{Id: "p1", ChannelId: "c1"}
+		channel := &mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}
+
+		env := buildDeleteEnvelope(post, channel, "team")
+
+		assert.Nil(t, env.PostMessage)
+		assert.Nil(t, env.ReactionMessage)
+	})
+}
+
+func TestBuildReactionEnvelope(t *testing.T) {
+	t.Run("creates correct add reaction envelope", func(t *testing.T) {
+		reaction := &mmModel.Reaction{PostId: "post-id", UserId: "user-id", EmojiName: "thumbsup"}
+		channel := &mmModel.Channel{Id: "chan-id", Name: "ch", TeamId: "team-id"}
+
+		env := buildReactionEnvelope(model.MessageTypeReactionAdd, reaction, channel, "team", "alice")
+
+		assert.Equal(t, model.MessageTypeReactionAdd, env.Type)
+		assert.NotEmpty(t, env.Timestamp)
+		require.NotNil(t, env.ReactionMessage)
+		assert.Equal(t, "post-id", env.ReactionMessage.PostID)
+		assert.Equal(t, "chan-id", env.ReactionMessage.ChannelID)
+		assert.Equal(t, "ch", env.ReactionMessage.ChannelName)
+		assert.Equal(t, "team-id", env.ReactionMessage.TeamID)
+		assert.Equal(t, "team", env.ReactionMessage.TeamName)
+		assert.Equal(t, "user-id", env.ReactionMessage.UserID)
+		assert.Equal(t, "alice", env.ReactionMessage.Username)
+		assert.Equal(t, "thumbsup", env.ReactionMessage.EmojiName)
+	})
+
+	t.Run("creates correct remove reaction envelope", func(t *testing.T) {
+		reaction := &mmModel.Reaction{PostId: "post-id", UserId: "user-id", EmojiName: "thumbsup"}
+		channel := &mmModel.Channel{Id: "chan-id", Name: "ch", TeamId: "team-id"}
+
+		env := buildReactionEnvelope(model.MessageTypeReactionRemove, reaction, channel, "team", "bob")
+
+		assert.Equal(t, model.MessageTypeReactionRemove, env.Type)
+		require.NotNil(t, env.ReactionMessage)
+		assert.Equal(t, "bob", env.ReactionMessage.Username)
+	})
+
+	t.Run("no post or delete message fields set", func(t *testing.T) {
+		reaction := &mmModel.Reaction{PostId: "p1", UserId: "u1", EmojiName: "smile"}
+		channel := &mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}
+
+		env := buildReactionEnvelope(model.MessageTypeReactionAdd, reaction, channel, "team", "user")
+
+		assert.Nil(t, env.PostMessage)
+		assert.Nil(t, env.DeleteMessage)
+	})
+}
+
+func TestBuildTestMessageFormats(t *testing.T) {
+	t.Run("JSON format produces valid envelope", func(t *testing.T) {
+		data, msgID, err := buildTestMessage(model.FormatJSON)
+		require.NoError(t, err)
+		assert.NotEmpty(t, msgID)
+		assert.NotEmpty(t, data)
+
+		env, unmarshalErr := model.Unmarshal(data, model.FormatJSON)
+		require.NoError(t, unmarshalErr)
+		assert.Equal(t, model.MessageTypeTest, env.Type)
+		require.NotNil(t, env.TestMessage)
+		assert.Equal(t, msgID, env.TestMessage.ID)
+	})
+
+	t.Run("XML format produces valid envelope", func(t *testing.T) {
+		data, msgID, err := buildTestMessage(model.FormatXML)
+		require.NoError(t, err)
+		assert.NotEmpty(t, msgID)
+		assert.NotEmpty(t, data)
+
+		env, unmarshalErr := model.Unmarshal(data, model.FormatXML)
+		require.NoError(t, unmarshalErr)
+		assert.Equal(t, model.MessageTypeTest, env.Type)
+		require.NotNil(t, env.TestMessage)
+		assert.Equal(t, msgID, env.TestMessage.ID)
+	})
+
+	t.Run("each call produces a unique message ID", func(t *testing.T) {
+		_, id1, err1 := buildTestMessage(model.FormatJSON)
+		_, id2, err2 := buildTestMessage(model.FormatJSON)
+		require.NoError(t, err1)
+		require.NoError(t, err2)
+		assert.NotEqual(t, id1, id2)
+	})
+
+	t.Run("timestamp is present in serialized data", func(t *testing.T) {
+		data, _, err := buildTestMessage(model.FormatJSON)
+		require.NoError(t, err)
+
+		env, unmarshalErr := model.Unmarshal(data, model.FormatJSON)
+		require.NoError(t, unmarshalErr)
+		assert.NotEmpty(t, env.Timestamp)
+	})
+}
+
+func TestPublishToOutbound(t *testing.T) {
+	t.Run("empty outbound pool is no-op", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+		p.outboundConns = nil
+
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: "hi"},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+		p.publishToOutbound(context.Background(), env, conns)
+		// No panic, no provider calls
+	})
+
+	t.Run("unlinked connection is skipped", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		published := false
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{publishFn: func(ctx context.Context, data []byte) error {
+				published = true
+				return nil
+			}},
+			name:          "high",
+			healthy:       true,
+			lastCheckTime: time.Now(),
+		}}
+
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: "hi"},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+
+		// Link "other" not "high"
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "other"}}
+		p.publishToOutbound(context.Background(), env, conns)
+		assert.False(t, published)
+	})
+
+	t.Run("unhealthy connection within recheck interval is skipped", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		published := false
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{publishFn: func(ctx context.Context, data []byte) error {
+				published = true
+				return nil
+			}},
+			name:          "high",
+			healthy:       false,
+			lastCheckTime: time.Now(), // Just checked, within 30s
+		}}
+
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: "hi"},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+		p.publishToOutbound(context.Background(), env, conns)
+		assert.False(t, published)
+	})
+
+	t.Run("unhealthy connection past recheck interval is retried", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		published := false
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{publishFn: func(ctx context.Context, data []byte) error {
+				published = true
+				return nil
+			}},
+			name:          "high",
+			healthy:       false,
+			lastCheckTime: time.Now().Add(-31 * time.Second), // Past 30s recheck
+		}}
+
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: "hi"},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+		p.publishToOutbound(context.Background(), env, conns)
+		assert.True(t, published)
+	})
+
+	t.Run("publish failure marks connection unhealthy", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{publishFn: func(ctx context.Context, data []byte) error {
+				return errors.New("connection refused")
+			}},
+			name:          "high",
+			healthy:       true,
+			lastCheckTime: time.Now(),
+		}}
+
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: "hi"},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+		p.publishToOutbound(context.Background(), env, conns)
+
+		assert.False(t, p.outboundConns[0].healthy)
+	})
+
+	t.Run("publish success marks connection healthy", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		p.outboundConns = []outboundConn{{
+			provider:      &mockQueueProvider{},
+			name:          "high",
+			healthy:       false, // Was unhealthy
+			lastCheckTime: time.Now().Add(-31 * time.Second),
+		}}
+
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: "hi"},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+		p.publishToOutbound(context.Background(), env, conns)
+
+		assert.True(t, p.outboundConns[0].healthy)
+	})
+
+	t.Run("message exceeding MaxMessageSize triggers split", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		var publishCount int
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{
+				publishFn: func(ctx context.Context, data []byte) error {
+					publishCount++
+					return nil
+				},
+				maxMsgSize: 200, // Very small limit to force split
+			},
+			name:          "high",
+			healthy:       true,
+			lastCheckTime: time.Now(),
+		}}
+
+		longText := strings.Repeat("a", 500)
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: longText},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+		p.publishToOutbound(context.Background(), env, conns)
+
+		assert.Greater(t, publishCount, 1, "should publish multiple parts")
+	})
+
+	t.Run("non-post message exceeding MaxMessageSize is not split", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		var publishCount int
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{
+				publishFn: func(ctx context.Context, data []byte) error {
+					publishCount++
+					return nil
+				},
+				maxMsgSize: 10, // Very small, but delete messages cannot be split
+			},
+			name:          "high",
+			healthy:       true,
+			lastCheckTime: time.Now(),
+		}}
+
+		// Delete envelope has no PostMessage, so split path is not taken.
+		env := buildDeleteEnvelope(
+			&mmModel.Post{Id: "p1", ChannelId: "c1"},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team")
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+		p.publishToOutbound(context.Background(), env, conns)
+
+		// Should still publish once (no split for non-post messages).
+		assert.Equal(t, 1, publishCount)
+	})
+
+	t.Run("healthy connection with zero MaxMessageSize publishes without split", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		var publishCount int
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{
+				publishFn: func(ctx context.Context, data []byte) error {
+					publishCount++
+					return nil
+				},
+				maxMsgSize: 0, // Zero means no limit
+			},
+			name:          "high",
+			healthy:       true,
+			lastCheckTime: time.Now(),
+		}}
+
+		longText := strings.Repeat("x", 5000)
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: longText},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+		p.publishToOutbound(context.Background(), env, conns)
+
+		assert.Equal(t, 1, publishCount, "no split when MaxMessageSize is 0")
+	})
+
+	t.Run("multiple outbound connections each receive the message", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		var countA, countB int
+		p.outboundConns = []outboundConn{
+			{
+				provider: &mockQueueProvider{publishFn: func(ctx context.Context, data []byte) error {
+					countA++
+					return nil
+				}},
+				name:          "conn-a",
+				healthy:       true,
+				lastCheckTime: time.Now(),
+			},
+			{
+				provider: &mockQueueProvider{publishFn: func(ctx context.Context, data []byte) error {
+					countB++
+					return nil
+				}},
+				name:          "conn-b",
+				healthy:       true,
+				lastCheckTime: time.Now(),
+			},
+		}
+
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: "hi"},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+		conns := []store.TeamConnection{
+			{Direction: "outbound", Connection: "conn-a"},
+			{Direction: "outbound", Connection: "conn-b"},
+		}
+		p.publishToOutbound(context.Background(), env, conns)
+
+		assert.Equal(t, 1, countA)
+		assert.Equal(t, 1, countB)
+	})
+
+	t.Run("inbound direction connection is not published to", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		published := false
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{publishFn: func(ctx context.Context, data []byte) error {
+				published = true
+				return nil
+			}},
+			name:          "high",
+			healthy:       true,
+			lastCheckTime: time.Now(),
+		}}
+
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: "hi"},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+		// Direction is "inbound", not "outbound"
+		conns := []store.TeamConnection{{Direction: "inbound", Connection: "high"}}
+		p.publishToOutbound(context.Background(), env, conns)
+		assert.False(t, published)
+	})
+
+	t.Run("split part failure marks connection unhealthy", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		callNum := 0
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{
+				publishFn: func(ctx context.Context, data []byte) error {
+					callNum++
+					if callNum == 2 {
+						return errors.New("part 2 failed")
+					}
+					return nil
+				},
+				maxMsgSize: 200,
+			},
+			name:          "high",
+			healthy:       true,
+			lastCheckTime: time.Now(),
+		}}
+
+		longText := strings.Repeat("z", 500)
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: longText},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+		p.publishToOutbound(context.Background(), env, conns)
+
+		assert.False(t, p.outboundConns[0].healthy)
+	})
+
+	t.Run("default format is JSON when messageFormat is empty", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		var capturedData []byte
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{publishFn: func(ctx context.Context, data []byte) error {
+				capturedData = data
+				return nil
+			}},
+			name:          "high",
+			messageFormat: "", // Empty, should default to JSON
+			healthy:       true,
+			lastCheckTime: time.Now(),
+		}}
+
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: "test"},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+		p.publishToOutbound(context.Background(), env, conns)
+
+		require.NotNil(t, capturedData)
+		// Verify the data is valid JSON by unmarshalling.
+		_, err := model.Unmarshal(capturedData, model.FormatJSON)
+		assert.NoError(t, err)
+	})
+
+	t.Run("XML format connection serializes as XML", func(t *testing.T) {
+		api := &plugintest.API{}
+		addLogMocks(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		var capturedData []byte
+		p.outboundConns = []outboundConn{{
+			provider: &mockQueueProvider{publishFn: func(ctx context.Context, data []byte) error {
+				capturedData = data
+				return nil
+			}},
+			name:          "high",
+			messageFormat: string(model.FormatXML),
+			healthy:       true,
+			lastCheckTime: time.Now(),
+		}}
+
+		env := buildPostEnvelope(model.MessageTypePost,
+			&mmModel.Post{Id: "p1", ChannelId: "c1", Message: "test"},
+			&mmModel.Channel{Id: "c1", Name: "ch", TeamId: "t1"}, "team", "user")
+		conns := []store.TeamConnection{{Direction: "outbound", Connection: "high"}}
+		p.publishToOutbound(context.Background(), env, conns)
+
+		require.NotNil(t, capturedData)
+		// Verify the data is valid XML by unmarshalling.
+		_, err := model.Unmarshal(capturedData, model.FormatXML)
+		assert.NoError(t, err)
 	})
 }

@@ -888,3 +888,215 @@ func TestSetTeamRewriteIndex_InvalidatesNegativeCache(t *testing.T) {
 	assert.Equal(t, "team-123", val)
 	assert.Equal(t, 2, lookupCalls, "should re-fetch after invalidation")
 }
+
+func TestSetTeamConnections_InvalidatesCache(t *testing.T) {
+	getCalls := 0
+	inner := &mockKVStore{
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
+			getCalls++
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
+		},
+		setTeamConnectionsFn: func(teamID string, conns []TeamConnection) error {
+			return nil
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	_, err := c.GetTeamConnections("team1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, getCalls)
+
+	err = c.SetTeamConnections("team1", []TeamConnection{
+		{Direction: "outbound", Connection: "a"},
+		{Direction: "inbound", Connection: "a"},
+	})
+	require.NoError(t, err)
+
+	_, err = c.GetTeamConnections("team1")
+	require.NoError(t, err)
+	assert.Equal(t, 2, getCalls)
+}
+
+func TestSetTeamConnections_ErrorDoesNotInvalidate(t *testing.T) {
+	getCalls := 0
+	inner := &mockKVStore{
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
+			getCalls++
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
+		},
+		setTeamConnectionsFn: func(teamID string, conns []TeamConnection) error {
+			return fmt.Errorf("write failed")
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	_, err := c.GetTeamConnections("team1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, getCalls)
+
+	err = c.SetTeamConnections("team1", []TeamConnection{
+		{Direction: "outbound", Connection: "a"},
+		{Direction: "inbound", Connection: "a"},
+	})
+	require.Error(t, err)
+
+	_, err = c.GetTeamConnections("team1")
+	require.NoError(t, err)
+	assert.Equal(t, 1, getCalls)
+}
+
+func TestIsTeamInitialized_WithConnections(t *testing.T) {
+	inner := &mockKVStore{
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	ok, err := c.IsTeamInitialized("team1")
+	require.NoError(t, err)
+	assert.True(t, ok)
+}
+
+func TestIsTeamInitialized_Empty(t *testing.T) {
+	inner := &mockKVStore{
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
+			return []TeamConnection{}, nil
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	ok, err := c.IsTeamInitialized("team1")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestIsTeamInitialized_Error(t *testing.T) {
+	inner := &mockKVStore{
+		getTeamConnectionsFn: func(teamID string) ([]TeamConnection, error) {
+			return nil, fmt.Errorf("kv store unavailable")
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	ok, err := c.IsTeamInitialized("team1")
+	require.Error(t, err)
+	assert.False(t, ok)
+}
+
+func TestIsChannelInitialized_WithConnections(t *testing.T) {
+	inner := &mockKVStore{
+		getChannelConnectionsFn: func(channelID string) ([]TeamConnection, error) {
+			return []TeamConnection{{Direction: "outbound", Connection: "a"}}, nil
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	ok, err := c.IsChannelInitialized("chan1")
+	require.NoError(t, err)
+	assert.True(t, ok)
+}
+
+func TestIsChannelInitialized_Empty(t *testing.T) {
+	inner := &mockKVStore{
+		getChannelConnectionsFn: func(channelID string) ([]TeamConnection, error) {
+			return []TeamConnection{}, nil
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	ok, err := c.IsChannelInitialized("chan1")
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestIsChannelInitialized_Error(t *testing.T) {
+	inner := &mockKVStore{
+		getChannelConnectionsFn: func(channelID string) ([]TeamConnection, error) {
+			return nil, fmt.Errorf("kv store unavailable")
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	ok, err := c.IsChannelInitialized("chan1")
+	require.Error(t, err)
+	assert.False(t, ok)
+}
+
+func TestDeleteTeamRewriteIndex_InvalidatesCache(t *testing.T) {
+	lookupCalls := 0
+	inner := &mockKVStore{
+		getTeamRewriteIndexFn: func(connName, remoteTeamName string) (string, error) {
+			lookupCalls++
+			return "team-123", nil
+		},
+		deleteTeamRewriteIndexFn: func(connName, remoteTeamName string) error {
+			return nil
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	val, err := c.GetTeamRewriteIndex("loopback", "remote-team")
+	require.NoError(t, err)
+	assert.Equal(t, "team-123", val)
+	assert.Equal(t, 1, lookupCalls)
+
+	err = c.DeleteTeamRewriteIndex("loopback", "remote-team")
+	require.NoError(t, err)
+
+	val, err = c.GetTeamRewriteIndex("loopback", "remote-team")
+	require.NoError(t, err)
+	assert.Equal(t, "team-123", val)
+	assert.Equal(t, 2, lookupCalls, "should re-fetch after invalidation")
+}
+
+func TestDeleteTeamRewriteIndex_ErrorDoesNotInvalidate(t *testing.T) {
+	lookupCalls := 0
+	inner := &mockKVStore{
+		getTeamRewriteIndexFn: func(connName, remoteTeamName string) (string, error) {
+			lookupCalls++
+			return "team-123", nil
+		},
+		deleteTeamRewriteIndexFn: func(connName, remoteTeamName string) error {
+			return fmt.Errorf("delete failed")
+		},
+	}
+	c, _ := newTestCaching(inner)
+
+	val, err := c.GetTeamRewriteIndex("loopback", "remote-team")
+	require.NoError(t, err)
+	assert.Equal(t, "team-123", val)
+	assert.Equal(t, 1, lookupCalls)
+
+	err = c.DeleteTeamRewriteIndex("loopback", "remote-team")
+	require.Error(t, err)
+
+	val, err = c.GetTeamRewriteIndex("loopback", "remote-team")
+	require.NoError(t, err)
+	assert.Equal(t, "team-123", val)
+	assert.Equal(t, 1, lookupCalls, "should still hit cache after failed delete")
+}
+
+func TestInvalidate_PublishFailure(t *testing.T) {
+	inner := &mockKVStore{
+		setTeamConnectionsFn: func(teamID string, conns []TeamConnection) error {
+			return nil
+		},
+	}
+	api := &plugintest.API{}
+	api.On("PublishPluginClusterEvent", mock.Anything, mock.Anything).Return(fmt.Errorf("cluster event publish failed"))
+	api.On("LogWarn", "Failed to publish cache invalidation event",
+		"event", ClusterEventInvalidateTeamInit,
+		"key", "team1",
+		"error", "cluster event publish failed").Return()
+
+	c := NewCachingKVStore(inner, api)
+
+	err := c.SetTeamConnections("team1", []TeamConnection{{Direction: "outbound", Connection: "a"}})
+	require.NoError(t, err, "mutation should succeed even when publish fails")
+
+	api.AssertCalled(t, "LogWarn", "Failed to publish cache invalidation event",
+		"event", ClusterEventInvalidateTeamInit,
+		"key", "team1",
+		"error", "cluster event publish failed")
+}

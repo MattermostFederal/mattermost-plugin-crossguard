@@ -1445,3 +1445,229 @@ func TestExecuteStatus_RegularUser(t *testing.T) {
 	// Should NOT contain "Initialized Teams" (that is system admin only).
 	assert.NotContains(t, resp.Text, "Initialized Teams")
 }
+
+func TestRegisterCommand(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		api := &plugintest.API{}
+		p, _ := setupTestPlugin(api)
+
+		api.On("RegisterCommand", mock.AnythingOfType("*model.Command")).Return(nil)
+
+		err := p.registerCommand()
+		assert.Nil(t, err)
+		api.AssertCalled(t, "RegisterCommand", mock.AnythingOfType("*model.Command"))
+	})
+
+	t.Run("error", func(t *testing.T) {
+		api := &plugintest.API{}
+		p, _ := setupTestPlugin(api)
+
+		api.On("RegisterCommand", mock.AnythingOfType("*model.Command")).Return(fmt.Errorf("registration failed"))
+
+		err := p.registerCommand()
+		assert.EqualError(t, err, "registration failed")
+	})
+}
+
+func TestExecuteTeardownChannel_GetUserError(t *testing.T) {
+	api := &plugintest.API{}
+	addCmdLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+	p.setConfiguration(&configuration{})
+
+	// isChannelAdminOrHigher: config not restricted, channel member SchemeAdmin true
+	// => returns true without calling GetUser.
+	api.On("GetChannelMember", "chan-id", "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+	// Line 522: GetUser returns error.
+	api.On("GetUser", "admin-id").Return(nil, &mmModel.AppError{Message: "user lookup failed"})
+
+	args := &mmModel.CommandArgs{
+		Command:   "/crossguard teardown-channel",
+		UserId:    "admin-id",
+		TeamId:    "team-id",
+		ChannelId: "chan-id",
+	}
+	resp := p.executeTeardownChannel(args)
+	assert.Contains(t, resp.Text, "Failed to look up user")
+}
+
+func TestExecuteTeardownChannel_GetChannelConnectionsError(t *testing.T) {
+	api := &plugintest.API{}
+	addCmdLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.setConfiguration(&configuration{})
+
+	adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+	api.On("GetUser", "admin-id").Return(adminUser, nil)
+	api.On("GetChannelMember", "chan-id", "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+
+	kvs.getChannelConnectionsFn = func(channelID string) ([]store.TeamConnection, error) {
+		return nil, fmt.Errorf("kv store error")
+	}
+
+	args := &mmModel.CommandArgs{
+		Command:   "/crossguard teardown-channel",
+		UserId:    "admin-id",
+		TeamId:    "team-id",
+		ChannelId: "chan-id",
+	}
+	resp := p.executeTeardownChannel(args)
+	assert.Contains(t, resp.Text, "Failed to check channel connections")
+}
+
+func TestExecuteTeardownChannel_ExplicitNameNotFound(t *testing.T) {
+	api := &plugintest.API{}
+	addCmdLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.setConfiguration(singleOutboundConfig())
+
+	adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+	api.On("GetUser", "admin-id").Return(adminUser, nil)
+	api.On("GetChannelMember", "chan-id", "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+
+	kvs.getChannelConnectionsFn = func(channelID string) ([]store.TeamConnection, error) {
+		return []store.TeamConnection{{Direction: "outbound", Connection: "high"}}, nil
+	}
+
+	args := &mmModel.CommandArgs{
+		Command:   "/crossguard teardown-channel nonexistent:conn",
+		UserId:    "admin-id",
+		TeamId:    "team-id",
+		ChannelId: "chan-id",
+	}
+	resp := p.executeTeardownChannel(args)
+	assert.Contains(t, resp.Text, "connection not found")
+	assert.Contains(t, resp.Text, "Linked connections")
+}
+
+func TestExecuteTeardownChannel_MultipleConnectionsOpensDialog(t *testing.T) {
+	api := &plugintest.API{}
+	addCmdLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.setConfiguration(multiConnectionConfig())
+
+	adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+	api.On("GetUser", "admin-id").Return(adminUser, nil)
+	api.On("GetChannelMember", "chan-id", "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+	api.On("OpenInteractiveDialog", mock.Anything).Return(nil)
+
+	kvs.getChannelConnectionsFn = func(channelID string) ([]store.TeamConnection, error) {
+		return []store.TeamConnection{
+			{Direction: "outbound", Connection: "high"},
+			{Direction: "inbound", Connection: "high"},
+		}, nil
+	}
+
+	args := &mmModel.CommandArgs{
+		Command:   "/crossguard teardown-channel",
+		UserId:    "admin-id",
+		TeamId:    "team-id",
+		ChannelId: "chan-id",
+		TriggerId: "trigger-id",
+	}
+	resp := p.executeTeardownChannel(args)
+	assert.Empty(t, resp.Text)
+	api.AssertCalled(t, "OpenInteractiveDialog", mock.Anything)
+}
+
+func TestExecuteTeardownChannel_ServiceError(t *testing.T) {
+	api := &plugintest.API{}
+	addCmdLogMocks(api)
+	p, kvs := setupTestPluginWithRouter(api)
+	p.setConfiguration(singleOutboundConfig())
+
+	adminUser := &mmModel.User{Id: "admin-id", Username: "admin", Roles: mmModel.SystemAdminRoleId}
+	api.On("GetUser", "admin-id").Return(adminUser, nil)
+	api.On("GetChannelMember", "chan-id", "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+
+	// GetChannel fails inside teardownChannelForCrossGuard
+	api.On("GetChannel", "chan-id").Return(nil, &mmModel.AppError{Message: "channel not found"})
+
+	kvs.getChannelConnectionsFn = func(channelID string) ([]store.TeamConnection, error) {
+		return []store.TeamConnection{{Direction: "outbound", Connection: "high"}}, nil
+	}
+
+	args := &mmModel.CommandArgs{
+		Command:   "/crossguard teardown-channel",
+		UserId:    "admin-id",
+		TeamId:    "team-id",
+		ChannelId: "chan-id",
+	}
+	resp := p.executeTeardownChannel(args)
+	assert.Contains(t, resp.Text, "channel not found")
+}
+
+func TestExecuteCommand_DispatchAllSubcommands(t *testing.T) {
+	// Each subcommand is dispatched via ExecuteCommand. We use a regular user
+	// so the permission-denied response proves the routing reached the handler.
+
+	// Subcommands that use a simple permission gate (regular user gets denied).
+	permGated := []struct {
+		name    string
+		command string
+		expect  string
+	}{
+		{"init-channel", "/crossguard init-channel", "channel admin"},
+		{"teardown-team", "/crossguard teardown-team", "permissions"},
+		{"teardown-channel", "/crossguard teardown-channel", "channel admin"},
+		{"reset-prompt", "/crossguard reset-prompt", "team admin or system admin"},
+		{"reset-channel-prompt", "/crossguard reset-channel-prompt", "team admin or system admin"},
+		{"rewrite-team", "/crossguard rewrite-team", "team admin or system admin"},
+	}
+
+	for _, tc := range permGated {
+		t.Run("dispatches "+tc.name, func(t *testing.T) {
+			api := &plugintest.API{}
+			addCmdLogMocks(api)
+			p, _ := setupTestPluginWithRouter(api)
+			p.setConfiguration(&configuration{})
+
+			regularUser := &mmModel.User{Id: "user-id", Roles: mmModel.SystemUserRoleId}
+			api.On("GetUser", "user-id").Return(regularUser, nil)
+			api.On("GetTeamMember", "team-id", "user-id").Return(&mmModel.TeamMember{SchemeAdmin: false}, nil)
+			api.On("GetChannelMember", "chan-id", "user-id").Return(&mmModel.ChannelMember{SchemeAdmin: false}, nil)
+
+			args := &mmModel.CommandArgs{
+				Command:   tc.command,
+				UserId:    "user-id",
+				TeamId:    "team-id",
+				ChannelId: "chan-id",
+			}
+			resp, appErr := p.ExecuteCommand(nil, args)
+			assert.Nil(t, appErr)
+			assert.NotNil(t, resp)
+			assert.Contains(t, resp.Text, tc.expect)
+		})
+	}
+
+	t.Run("dispatches status", func(t *testing.T) {
+		api := &plugintest.API{}
+		addCmdLogMocks(api)
+		p, kvs := setupTestPluginWithRouter(api)
+		p.setConfiguration(&configuration{})
+
+		// status calls GetUser, then (for non-admin) executeStatusTeam which needs GetTeam.
+		regularUser := &mmModel.User{Id: "user-id", Roles: mmModel.SystemUserRoleId}
+		api.On("GetUser", "user-id").Return(regularUser, nil)
+		api.On("GetTeam", "team-id").Return(&mmModel.Team{Id: "team-id", Name: "test", DisplayName: "Test"}, nil)
+		api.On("GetChannel", "chan-id").Return(&mmModel.Channel{Id: "chan-id", Name: "test-chan", DisplayName: "Test Chan"}, nil)
+
+		kvs.getTeamConnectionsFn = func(teamID string) ([]store.TeamConnection, error) {
+			return nil, nil
+		}
+		kvs.getChannelConnectionsFn = func(channelID string) ([]store.TeamConnection, error) {
+			return nil, nil
+		}
+
+		args := &mmModel.CommandArgs{
+			Command:   "/crossguard status",
+			UserId:    "user-id",
+			TeamId:    "team-id",
+			ChannelId: "chan-id",
+		}
+		resp, appErr := p.ExecuteCommand(nil, args)
+		assert.Nil(t, appErr)
+		assert.NotNil(t, resp)
+		assert.Contains(t, resp.Text, "Cross Guard Status")
+	})
+}

@@ -15,8 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
@@ -393,4 +395,278 @@ func TestNATSMaxMessageSize(t *testing.T) {
 	addr := startEmbeddedNATS(t)
 	provider := connectToEmbeddedNATS(t, addr, "test.maxmsg")
 	assert.Equal(t, 0, provider.MaxMessageSize())
+}
+
+// ---------------------------------------------------------------------------
+// newNATSProvider / newNATSProviderForTest / connection tests
+// ---------------------------------------------------------------------------
+
+func TestNewNATSProvider_Success(t *testing.T) {
+	addr := startEmbeddedNATS(t)
+	api := &plugintest.API{}
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	cfg := NATSProviderConfig{
+		Name:    "test-conn",
+		Address: addr,
+		Subject: "crossguard.test",
+	}
+
+	provider, err := newNATSProvider(cfg, api, "Outbound")
+	require.NoError(t, err)
+	require.NotNil(t, provider)
+	defer func() { _ = provider.Close() }()
+
+	np, ok := provider.(*natsProvider)
+	require.True(t, ok)
+	assert.True(t, np.IsConnected())
+	assert.Equal(t, "crossguard.test", np.subject)
+}
+
+func TestNewNATSProvider_InvalidAddress(t *testing.T) {
+	api := &plugintest.API{}
+
+	cfg := NATSProviderConfig{
+		Name:    "bad",
+		Address: "nats://invalid:9999",
+		Subject: "crossguard.bad",
+	}
+
+	provider, err := newNATSProvider(cfg, api, "Outbound")
+	assert.Error(t, err)
+	assert.Nil(t, provider)
+}
+
+func TestNewNATSProviderForTest_Success(t *testing.T) {
+	addr := startEmbeddedNATS(t)
+
+	cfg := NATSProviderConfig{
+		Address: addr,
+		Subject: "crossguard.test",
+	}
+
+	nc, err := newNATSProviderForTest(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, nc)
+	defer nc.Close()
+
+	assert.True(t, nc.IsConnected())
+}
+
+func TestNewNATSProviderForTest_InvalidAddress(t *testing.T) {
+	cfg := NATSProviderConfig{
+		Address: "nats://invalid:9999",
+		Subject: "crossguard.bad",
+	}
+
+	nc, err := newNATSProviderForTest(cfg)
+	assert.Error(t, err)
+	assert.Nil(t, nc)
+}
+
+func TestConnectNATSOneShot_Success(t *testing.T) {
+	addr := startEmbeddedNATS(t)
+	cfg := NATSProviderConfig{Address: addr}
+
+	nc, err := connectNATSOneShot(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, nc)
+	defer nc.Close()
+	assert.True(t, nc.IsConnected())
+}
+
+func TestConnectNATSOneShot_WithAuth(t *testing.T) {
+	// Token auth against a server that doesn't require it still connects.
+	addr := startEmbeddedNATS(t)
+	cfg := NATSProviderConfig{
+		Address:  addr,
+		AuthType: AuthTypeToken,
+		Token:    "test-token",
+	}
+
+	nc, err := connectNATSOneShot(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, nc)
+	defer nc.Close()
+}
+
+func TestConnectNATSPersistent_Success(t *testing.T) {
+	addr := startEmbeddedNATS(t)
+	api := &plugintest.API{}
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	cfg := NATSProviderConfig{
+		Name:    "test-conn",
+		Address: addr,
+	}
+
+	nc, err := connectNATSPersistent(cfg, api, "Inbound")
+	require.NoError(t, err)
+	require.NotNil(t, nc)
+	defer nc.Close()
+	assert.True(t, nc.IsConnected())
+}
+
+func TestConnectNATSPersistent_InvalidAddress(t *testing.T) {
+	api := &plugintest.API{}
+
+	cfg := NATSProviderConfig{
+		Name:    "bad",
+		Address: "nats://invalid:9999",
+	}
+
+	nc, err := connectNATSPersistent(cfg, api, "Outbound")
+	assert.Error(t, err)
+	assert.Nil(t, nc)
+}
+
+// ---------------------------------------------------------------------------
+// getOrCreateObjectStore tests
+// ---------------------------------------------------------------------------
+
+func TestGetOrCreateObjectStore_Success(t *testing.T) {
+	addr := startEmbeddedNATS(t)
+	nc, err := nats.Connect(addr, nats.Timeout(natsConnectTimeout))
+	require.NoError(t, err)
+	defer nc.Close()
+
+	obs, err := getOrCreateObjectStore(context.Background(), nc, "test-bucket")
+	require.NoError(t, err)
+	require.NotNil(t, obs)
+}
+
+func TestGetOrCreateObjectStore_ClosedConnection(t *testing.T) {
+	addr := startEmbeddedNATS(t)
+	nc, err := nats.Connect(addr, nats.Timeout(natsConnectTimeout))
+	require.NoError(t, err)
+	nc.Close()
+
+	_, err = getOrCreateObjectStore(context.Background(), nc, "test-bucket")
+	assert.Error(t, err)
+}
+
+// ---------------------------------------------------------------------------
+// UploadFile / WatchFiles integration tests
+// ---------------------------------------------------------------------------
+
+func TestNATSUploadFile_Success(t *testing.T) {
+	addr := startEmbeddedNATS(t)
+	provider := connectToEmbeddedNATS(t, addr, "test.upload")
+
+	headers := map[string]string{
+		"X-Conn-Name": "high",
+		"X-Post-ID":   "post-123",
+		"X-Filename":  "doc.pdf",
+	}
+
+	err := provider.UploadFile(context.Background(), "file-key-1", []byte("file content"), headers)
+	require.NoError(t, err)
+}
+
+func TestNATSUploadFile_ClosedConnection(t *testing.T) {
+	addr := startEmbeddedNATS(t)
+	nc, err := nats.Connect(addr, nats.Timeout(natsConnectTimeout))
+	require.NoError(t, err)
+	nc.Close()
+
+	provider := &natsProvider{nc: nc, subject: "test.upload.closed"}
+	err = provider.UploadFile(context.Background(), "file-key", []byte("data"), nil)
+	assert.Error(t, err)
+}
+
+func TestNATSWatchFiles_ReceivesUpload(t *testing.T) {
+	addr := startEmbeddedNATS(t)
+
+	// Create two providers sharing the same NATS server.
+	uploaderNC, err := nats.Connect(addr, nats.Timeout(natsConnectTimeout))
+	require.NoError(t, err)
+	defer uploaderNC.Close()
+
+	watcherNC, err := nats.Connect(addr, nats.Timeout(natsConnectTimeout))
+	require.NoError(t, err)
+	defer watcherNC.Close()
+
+	api := &plugintest.API{}
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	watcher := &natsProvider{nc: watcherNC, subject: "test.watch", api: api}
+	uploader := &natsProvider{nc: uploaderNC, subject: "test.watch"}
+
+	type fileResult struct {
+		key     string
+		data    []byte
+		headers map[string]string
+	}
+	received := make(chan fileResult, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	watchDone := make(chan error, 1)
+	go func() {
+		watchDone <- watcher.WatchFiles(ctx, func(key string, data []byte, headers map[string]string) error {
+			received <- fileResult{key: key, data: data, headers: headers}
+			return nil
+		})
+	}()
+
+	// Give watcher time to start.
+	time.Sleep(500 * time.Millisecond)
+
+	// Upload a file.
+	headers := map[string]string{"X-Filename": "test.txt"}
+	err = uploader.UploadFile(context.Background(), "watch-file-1", []byte("watched content"), headers)
+	require.NoError(t, err)
+
+	select {
+	case result := <-received:
+		assert.Equal(t, "watch-file-1", result.key)
+		assert.Equal(t, []byte("watched content"), result.data)
+		assert.Equal(t, "test.txt", result.headers["X-Filename"])
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for file watcher to receive upload")
+	}
+
+	cancel()
+	select {
+	case err := <-watchDone:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for watcher to exit")
+	}
+}
+
+func TestNATSWatchFiles_ContextCancelled(t *testing.T) {
+	addr := startEmbeddedNATS(t)
+	nc, err := nats.Connect(addr, nats.Timeout(natsConnectTimeout))
+	require.NoError(t, err)
+	defer nc.Close()
+
+	api := &plugintest.API{}
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	provider := &natsProvider{nc: nc, subject: "test.watch.cancel", api: api}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- provider.WatchFiles(ctx, func(key string, data []byte, headers map[string]string) error {
+			return nil
+		})
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("WatchFiles did not exit after context cancellation")
+	}
 }

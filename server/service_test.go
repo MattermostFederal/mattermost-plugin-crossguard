@@ -1891,3 +1891,8 @@ func TestGetChannelStatus_DMChannel(t *testing.T) {
 	assert.Equal(t, 400, svcErr.Status)
 	assert.Contains(t, svcErr.Message, "direct or group")
 }
+
+func TestApiError_Error(t *testing.T) {
+	e := &apiError{Message: "something went wrong", Status: 500}
+	assert.Equal(t, "something went wrong", e.Error())
+}

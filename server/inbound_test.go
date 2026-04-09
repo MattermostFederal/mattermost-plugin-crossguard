@@ -1604,3 +1604,392 @@ func TestResolveTeamAndChannel_RewriteIndex(t *testing.T) {
 	assert.Equal(t, "dest-team-id", gotTeam.Id)
 	assert.Equal(t, "dest-chan-id", gotChannel.Id)
 }
+
+func TestWatchFiles_Success(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	p, _ := setupTestPlugin(api)
+
+	provider := &mockQueueProvider{
+		watchFilesFn: func(ctx context.Context, handler func(key string, data []byte, headers map[string]string) error) error {
+			return nil
+		},
+	}
+
+	p.watchFiles(p.ctx, "high", provider)
+	// No error logged, so just LogInfo for "File watcher started"
+	api.AssertNotCalled(t, "LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestWatchFiles_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	p, _ := setupTestPlugin(api)
+
+	provider := &mockQueueProvider{
+		watchFilesFn: func(ctx context.Context, handler func(key string, data []byte, headers map[string]string) error) error {
+			return errors.New("watcher failed")
+		},
+	}
+
+	p.watchFiles(p.ctx, "high", provider)
+	api.AssertCalled(t, "LogError", "File watcher exited with error", "conn", "high", "error", "watcher failed")
+}
+
+// ---------------------------------------------------------------------------
+// Missing coverage: envelope-level missing-payload branches
+// ---------------------------------------------------------------------------
+
+func TestHandleInboundMessage_UpdateMissingPayload(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	api.On("LogError", "Inbound update: missing payload", "conn", "high").Return()
+
+	env := &model.Envelope{Type: model.MessageTypeUpdate}
+	data, err := model.Marshal(env, model.FormatJSON)
+	require.NoError(t, err)
+
+	handler := p.handleInboundMessage("high")
+	err = handler(data)
+	require.NoError(t, err)
+
+	p.wg.Wait()
+	api.AssertExpectations(t)
+}
+
+func TestHandleInboundMessage_DeleteMissingPayload(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	api.On("LogError", "Inbound delete: missing payload", "conn", "high").Return()
+
+	env := &model.Envelope{Type: model.MessageTypeDelete}
+	data, err := model.Marshal(env, model.FormatJSON)
+	require.NoError(t, err)
+
+	handler := p.handleInboundMessage("high")
+	err = handler(data)
+	require.NoError(t, err)
+
+	p.wg.Wait()
+	api.AssertExpectations(t)
+}
+
+func TestHandleInboundMessage_ReactionAddMissingPayload(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	api.On("LogError", "Inbound reaction add: missing payload", "conn", "high").Return()
+
+	env := &model.Envelope{Type: model.MessageTypeReactionAdd}
+	data, err := model.Marshal(env, model.FormatJSON)
+	require.NoError(t, err)
+
+	handler := p.handleInboundMessage("high")
+	err = handler(data)
+	require.NoError(t, err)
+
+	p.wg.Wait()
+	api.AssertExpectations(t)
+}
+
+func TestHandleInboundMessage_ReactionRemoveMissingPayload(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	api.On("LogError", "Inbound reaction remove: missing payload", "conn", "high").Return()
+
+	env := &model.Envelope{Type: model.MessageTypeReactionRemove}
+	data, err := model.Marshal(env, model.FormatJSON)
+	require.NoError(t, err)
+
+	handler := p.handleInboundMessage("high")
+	err = handler(data)
+	require.NoError(t, err)
+
+	p.wg.Wait()
+	api.AssertExpectations(t)
+}
+
+// ---------------------------------------------------------------------------
+// Missing coverage: context cancelled before dispatch
+// ---------------------------------------------------------------------------
+
+func TestHandleInboundMessage_ContextCancelled(t *testing.T) {
+	api := &plugintest.API{}
+	p := &Plugin{}
+	p.SetAPI(api)
+	p.botUserID = "bot-user-id"
+	ctx, cancel := context.WithCancel(context.Background())
+	p.ctx = ctx
+	p.cancel = cancel
+	p.relaySem = make(chan struct{}, 50)
+	p.kvstore = newTestKVStore()
+
+	// Cancel context before sending message.
+	cancel()
+
+	env := &model.Envelope{
+		Type: model.MessageTypePost,
+		PostMessage: &model.PostMessage{
+			PostID:      "p1",
+			TeamName:    "team-a",
+			ChannelName: "town-square",
+			Username:    "alice",
+			MessageText: "hello",
+		},
+	}
+	data, err := model.Marshal(env, model.FormatJSON)
+	require.NoError(t, err)
+
+	handler := p.handleInboundMessage("high")
+	err = handler(data)
+	require.NoError(t, err)
+
+	p.wg.Wait()
+	// Should not have attempted to create a post because context was cancelled.
+	api.AssertNotCalled(t, "CreatePost", mock.Anything)
+}
+
+// ---------------------------------------------------------------------------
+// Missing coverage: test message with nil TestMessage (no ID)
+// ---------------------------------------------------------------------------
+
+func TestHandleInboundMessage_TestMessageWithoutID(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	api.On("LogInfo", "Received inbound test message", "conn", "high").Return()
+
+	env := &model.Envelope{Type: model.MessageTypeTest}
+	data, err := model.Marshal(env, model.FormatJSON)
+	require.NoError(t, err)
+
+	handler := p.handleInboundMessage("high")
+	err = handler(data)
+	require.NoError(t, err)
+
+	p.wg.Wait()
+	api.AssertExpectations(t)
+}
+
+// ---------------------------------------------------------------------------
+// Missing coverage: unmarshal error path
+// ---------------------------------------------------------------------------
+
+func TestHandleInboundMessage_UnmarshalError(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	handler := p.handleInboundMessage("high")
+	err := handler([]byte("not valid json or xml"))
+	require.NoError(t, err)
+
+	p.wg.Wait()
+}
+
+// ---------------------------------------------------------------------------
+// Missing coverage: reaction add/remove API failures
+// ---------------------------------------------------------------------------
+
+func TestHandleInboundReaction_AddFails(t *testing.T) {
+	api := &plugintest.API{}
+	p, kvs := setupTestPlugin(api)
+	kvs.postMappings["high-remote-post-1"] = "local-post-1"
+
+	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
+	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
+	syncUser := &mmModel.User{Id: "sync-user-id", Username: "alice.high", Position: syncUserPosition}
+	notFoundErr := &mmModel.AppError{Message: "not found"}
+
+	api.On("GetTeamByName", "test-a").Return(team, nil)
+	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
+	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+		"username", "alice", "conn", "high").Return()
+	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
+	api.On("CreateTeamMember", "team-id", "sync-user-id").Return(&mmModel.TeamMember{}, nil)
+	api.On("AddChannelMember", "chan-id", "sync-user-id").Return(&mmModel.ChannelMember{}, nil)
+
+	api.On("AddReaction", mock.AnythingOfType("*model.Reaction")).Return(nil, &mmModel.AppError{Message: "add failed"})
+	api.On("LogError", "Inbound reaction: add failed", "conn", "high", "post_id", "local-post-1", "error", "add failed").Return()
+
+	reactionMsg := &model.ReactionMessage{
+		PostID:      "remote-post-1",
+		TeamName:    "test-a",
+		ChannelName: "town-square",
+		Username:    "alice",
+		EmojiName:   "thumbsup",
+	}
+
+	p.handleInboundReaction("high", reactionMsg, true)
+	api.AssertExpectations(t)
+}
+
+func TestHandleInboundReaction_RemoveFails(t *testing.T) {
+	api := &plugintest.API{}
+	p, kvs := setupTestPlugin(api)
+	kvs.postMappings["high-remote-post-1"] = "local-post-1"
+
+	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
+	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
+	syncUser := &mmModel.User{Id: "sync-user-id", Username: "alice.high", Position: syncUserPosition}
+	notFoundErr := &mmModel.AppError{Message: "not found"}
+
+	api.On("GetTeamByName", "test-a").Return(team, nil)
+	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
+	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+		"username", "alice", "conn", "high").Return()
+	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
+	api.On("CreateTeamMember", "team-id", "sync-user-id").Return(&mmModel.TeamMember{}, nil)
+	api.On("AddChannelMember", "chan-id", "sync-user-id").Return(&mmModel.ChannelMember{}, nil)
+
+	api.On("RemoveReaction", mock.AnythingOfType("*model.Reaction")).Return(&mmModel.AppError{Message: "remove failed"})
+	api.On("LogError", "Inbound reaction: remove failed", "conn", "high", "post_id", "local-post-1", "error", "remove failed").Return()
+
+	reactionMsg := &model.ReactionMessage{
+		PostID:      "remote-post-1",
+		TeamName:    "test-a",
+		ChannelName: "town-square",
+		Username:    "alice",
+		EmojiName:   "thumbsup",
+	}
+
+	p.handleInboundReaction("high", reactionMsg, false)
+	api.AssertExpectations(t)
+}
+
+// ---------------------------------------------------------------------------
+// Missing coverage: reaction resolve user failure
+// ---------------------------------------------------------------------------
+
+func TestHandleInboundReaction_ResolveUserFails(t *testing.T) {
+	api := &plugintest.API{}
+	p, kvs := setupTestPlugin(api)
+	kvs.postMappings["high-remote-post-1"] = "local-post-1"
+
+	team := &mmModel.Team{Id: "team-id", Name: "test-a"}
+	channel := &mmModel.Channel{Id: "chan-id", Name: "town-square", TeamId: "team-id"}
+	api.On("GetTeamByName", "test-a").Return(team, nil)
+	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
+
+	// Both username lookup and sync user creation fail.
+	api.On("GetUserByUsername", "alice").Return(nil, &mmModel.AppError{Message: "not found"})
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+		"username", "alice", "conn", "high").Return()
+	api.On("GetUserByUsername", "alice.high").Return(nil, &mmModel.AppError{Message: "user not found"})
+	api.On("CreateUser", mock.AnythingOfType("*model.User")).Return(nil, &mmModel.AppError{Message: "create user failed"})
+	api.On("LogError", "Inbound reaction: resolve user failed",
+		"conn", "high", "username", "alice", "error", mock.Anything).Return()
+
+	reactionMsg := &model.ReactionMessage{
+		PostID:      "remote-post-1",
+		TeamName:    "test-a",
+		ChannelName: "town-square",
+		Username:    "alice",
+		EmojiName:   "thumbsup",
+	}
+
+	p.handleInboundReaction("high", reactionMsg, true)
+	api.AssertNotCalled(t, "AddReaction", mock.Anything)
+}
+
+// ---------------------------------------------------------------------------
+// Missing coverage: reaction GetPostMapping store error
+// ---------------------------------------------------------------------------
+
+func TestHandleInboundReaction_GetMappingError(t *testing.T) {
+	api := &plugintest.API{}
+	p := &Plugin{}
+	p.SetAPI(api)
+	p.botUserID = "bot-user-id"
+	ctx, cancel := context.WithCancel(context.Background())
+	p.ctx = ctx
+	p.cancel = cancel
+	p.relaySem = make(chan struct{}, 50)
+
+	kvs := &getPostMappingFailStore{
+		testKVStore:       newTestKVStore(),
+		getPostMappingErr: errors.New("store error"),
+	}
+	p.kvstore = kvs
+
+	api.On("LogError", "Inbound reaction: failed to look up post mapping",
+		"conn", "high", "remote_id", "remote-post-1", "error", "store error").Return()
+
+	reactionMsg := &model.ReactionMessage{
+		PostID:      "remote-post-1",
+		TeamName:    "test-a",
+		ChannelName: "town-square",
+		Username:    "alice",
+		EmojiName:   "thumbsup",
+	}
+
+	p.handleInboundReaction("high", reactionMsg, true)
+	api.AssertNotCalled(t, "AddReaction", mock.Anything)
+	api.AssertExpectations(t)
+}
+
+func TestConnectInbound_Additional(t *testing.T) {
+	t.Run("config parse error", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+
+		p, _ := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			InboundConnections: `[{invalid json`,
+		}
+
+		p.connectInbound()
+
+		// Should log error and return without setting any inbound connections
+		p.inboundMu.RLock()
+		assert.Nil(t, p.inboundConns)
+		p.inboundMu.RUnlock()
+	})
+
+	t.Run("provider creation error continues", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+
+		p, _ := setupTestPluginWithRouter(api)
+		// Use an unknown provider type so createProvider returns an error
+		p.configuration = &configuration{
+			InboundConnections: `[{"name":"bad","provider":"unknown_provider"}]`,
+		}
+
+		p.connectInbound()
+
+		p.inboundMu.RLock()
+		assert.Empty(t, p.inboundConns)
+		p.inboundMu.RUnlock()
+	})
+
+	t.Run("subscribe error closes provider and continues", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+
+		addr := startEmbeddedNATS(t)
+
+		p, _ := setupTestPluginWithRouter(api)
+		// Use a NATS subject containing a space, which is invalid for NATS Subscribe.
+		// newNATSProvider will connect successfully but Subscribe will fail.
+		p.configuration = &configuration{
+			InboundConnections: `[{"name":"bad-sub","provider":"nats","nats":{"address":"` + addr + `","subject":"crossguard. invalid subject"}}]`,
+		}
+
+		p.connectInbound()
+
+		p.inboundMu.RLock()
+		assert.Empty(t, p.inboundConns, "no inbound connections should be established when subscribe fails")
+		p.inboundMu.RUnlock()
+	})
+}

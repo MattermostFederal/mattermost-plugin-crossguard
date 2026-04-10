@@ -79,12 +79,16 @@ jobs:
 
       - name: Start Docker environment
         run: make docker-setup
+        timeout-minutes: 5
 
       - name: Deploy plugin
         run: make docker-deploy
+        timeout-minutes: 3
 
       - name: Run smoke test
         run: make docker-smoke-test
+        timeout-minutes: 3
 
       - name: Run integration tests
         run: make docker-integration-test
+        timeout-minutes: 10

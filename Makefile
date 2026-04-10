@@ -381,14 +381,28 @@ docker-setup: docker-start
 		echo ""; \
 	fi
 	@echo "Waiting for Server A (mattermost-a) to be ready..."
-	@until curl -sf http://localhost:$(MM_PORT_A)/api/v4/system/ping >/dev/null 2>&1; do \
+	@elapsed=0; \
+	while ! curl -sf http://localhost:$(MM_PORT_A)/api/v4/system/ping >/dev/null 2>&1; do \
 		sleep 2; \
-		echo "Waiting for Server A..."; \
+		elapsed=$$((elapsed + 2)); \
+		if [ $$elapsed -ge 120 ]; then \
+			echo "ERROR: Server A failed to start within 120 seconds"; \
+			$(DOCKER_COMPOSE) logs --tail=40 mattermost-a; \
+			exit 1; \
+		fi; \
+		echo "Waiting for Server A... ($${elapsed}s)"; \
 	done
 	@echo "Waiting for Server B (mattermost-b) to be ready..."
-	@until curl -sf http://localhost:$(MM_PORT_B)/api/v4/system/ping >/dev/null 2>&1; do \
+	@elapsed=0; \
+	while ! curl -sf http://localhost:$(MM_PORT_B)/api/v4/system/ping >/dev/null 2>&1; do \
 		sleep 2; \
-		echo "Waiting for Server B..."; \
+		elapsed=$$((elapsed + 2)); \
+		if [ $$elapsed -ge 120 ]; then \
+			echo "ERROR: Server B failed to start within 120 seconds"; \
+			$(DOCKER_COMPOSE) logs --tail=40 mattermost-b; \
+			exit 1; \
+		fi; \
+		echo "Waiting for Server B... ($${elapsed}s)"; \
 	done
 	@echo ""
 	@echo "--- Setting up Server A ---"

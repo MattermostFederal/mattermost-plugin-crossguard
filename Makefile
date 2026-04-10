@@ -324,10 +324,7 @@ MM_PORT_B ?= 8076
 .PHONY: docker-start
 docker-start:
 	@echo "Starting dual Mattermost servers..."
-	@mkdir -p docker/mattermost-a/{plugins,client-plugins}
-	@mkdir -p docker/mattermost-b/{plugins,client-plugins}
 	@mkdir -p docker/postgres-a-data docker/postgres-b-data docker/azurite-data
-	@chmod -R 777 docker/mattermost-a docker/mattermost-b
 	@$(DOCKER_COMPOSE) up -d
 
 ## Stop containers (preserves data)

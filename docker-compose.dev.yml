@@ -72,7 +72,7 @@ services:
       - /mattermost/config:uid=2000,gid=2000
       - /mattermost/logs:uid=2000,gid=2000
       - /mattermost/data:uid=2000,gid=2000
-      - /mattermost/plugins:uid=2000,gid=2000
+      - /mattermost/plugins:uid=2000,gid=2000,exec
       - /mattermost/client/plugins:uid=2000,gid=2000
     environment:
       TZ: UTC
@@ -82,7 +82,7 @@ services:
       MM_SERVICESETTINGS_SITEURL: http://low.test:${MM_PORT_A:-8075}
       MM_SERVICESETTINGS_LISTENADDRESS: :8065
       MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
-      MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"
+      MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "false"
       MM_LOGSETTINGS_CONSOLELEVEL: DEBUG
       MM_LOGSETTINGS_ENABLEFILE: "false"
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
@@ -104,7 +104,7 @@ services:
       - /mattermost/config:uid=2000,gid=2000
       - /mattermost/logs:uid=2000,gid=2000
       - /mattermost/data:uid=2000,gid=2000
-      - /mattermost/plugins:uid=2000,gid=2000
+      - /mattermost/plugins:uid=2000,gid=2000,exec
       - /mattermost/client/plugins:uid=2000,gid=2000
     environment:
       TZ: UTC
@@ -114,7 +114,7 @@ services:
       MM_SERVICESETTINGS_SITEURL: http://high.test:${MM_PORT_B:-8076}
       MM_SERVICESETTINGS_LISTENADDRESS: :8065
       MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
-      MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"
+      MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "false"
       MM_LOGSETTINGS_CONSOLELEVEL: DEBUG
       MM_LOGSETTINGS_ENABLEFILE: "false"
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"

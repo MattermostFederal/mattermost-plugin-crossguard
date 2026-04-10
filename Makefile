@@ -251,6 +251,7 @@ ifneq ($(HAS_SERVER),)
 endif
 ifneq ($(HAS_WEBAPP),)
 	cd webapp && $(NPM) run test;
+	cd webapp && $(NPM) run test:pw-ct;
 endif
 
 ## Runs any lints and unit tests defined for the server and webapp, if they exist, optimized for a CI environment.
@@ -261,15 +262,28 @@ ifneq ($(HAS_SERVER),)
 endif
 ifneq ($(HAS_WEBAPP),)
 	cd webapp && $(NPM) run test;
+	cd webapp && $(NPM) run test:pw-ct;
 endif
 
-## Creates a coverage report for the server code.
-.PHONY: coverage
-coverage: apply webapp/node_modules
+## Prints Go code coverage summary to terminal.
+.PHONY: coverage-backend
+coverage-backend: apply
 ifneq ($(HAS_SERVER),)
 	$(GO) test $(GO_TEST_FLAGS) -coverprofile=server/coverage.txt ./server/...
-	$(GO) tool cover -html=server/coverage.txt
+	$(GO) tool cover -func=server/coverage.txt
 endif
+
+## Prints frontend code coverage summary to terminal.
+.PHONY: coverage-frontend
+coverage-frontend: webapp/node_modules
+ifneq ($(HAS_WEBAPP),)
+	cd webapp && $(NPM) run test:coverage
+	cd webapp && $(NPM) run test:pw-ct-coverage
+endif
+
+## Prints code coverage summary for both backend and frontend.
+.PHONY: coverage
+coverage: coverage-backend coverage-frontend
 
 ## Clean removes all build artifacts (but preserves build tools).
 .PHONY: clean
@@ -283,6 +297,8 @@ ifneq ($(HAS_WEBAPP),)
 	rm -fr webapp/junit.xml
 	rm -fr webapp/dist
 	rm -fr webapp/node_modules
+	rm -fr webapp/coverage
+	rm -fr webapp/coverage-ct
 endif
 
 ## Nuke everything: Docker containers, data, and all build artifacts
@@ -290,7 +306,7 @@ endif
 nuke: docker-kill-orphans
 	@echo "Nuking everything..."
 	@$(DOCKER_COMPOSE) down -v 2>/dev/null || true
-	@rm -rf docker/postgres-a-data docker/postgres-b-data docker/mattermost-a docker/mattermost-b
+	@rm -rf docker/postgres-a-data docker/postgres-b-data docker/mattermost-a docker/mattermost-b docker/azurite-data
 	@rm -fr dist/
 	@rm -fr server/coverage.txt server/dist
 	@rm -fr webapp/junit.xml webapp/dist webapp/node_modules
@@ -308,9 +324,7 @@ MM_PORT_B ?= 8076
 .PHONY: docker-start
 docker-start:
 	@echo "Starting dual Mattermost servers..."
-	@mkdir -p docker/mattermost-a/{config,data,logs,plugins,client-plugins}
-	@mkdir -p docker/mattermost-b/{config,data,logs,plugins,client-plugins}
-	@mkdir -p docker/postgres-a-data docker/postgres-b-data
+	@mkdir -p docker/postgres-a-data docker/postgres-b-data docker/azurite-data
 	@$(DOCKER_COMPOSE) up -d
 
 ## Stop containers (preserves data)
@@ -327,7 +341,7 @@ docker-down:
 .PHONY: docker-clean
 docker-clean:
 	@$(DOCKER_COMPOSE) down -v
-	@rm -rf docker/postgres-a-data docker/postgres-b-data docker/mattermost-a docker/mattermost-b
+	@rm -rf docker/postgres-a-data docker/postgres-b-data docker/mattermost-a docker/mattermost-b docker/azurite-data
 	@echo "Containers and data removed"
 
 ## Kill orphaned Docker containers on the MM ports (useful after deleting a worktree)
@@ -365,14 +379,28 @@ docker-setup: docker-start
 		echo ""; \
 	fi
 	@echo "Waiting for Server A (mattermost-a) to be ready..."
-	@until curl -sf http://localhost:$(MM_PORT_A)/api/v4/system/ping >/dev/null 2>&1; do \
+	@elapsed=0; \
+	while ! curl -sf http://localhost:$(MM_PORT_A)/api/v4/system/ping >/dev/null 2>&1; do \
 		sleep 2; \
-		echo "Waiting for Server A..."; \
+		elapsed=$$((elapsed + 2)); \
+		if [ $$elapsed -ge 120 ]; then \
+			echo "ERROR: Server A failed to start within 120 seconds"; \
+			$(DOCKER_COMPOSE) logs --tail=40 mattermost-a; \
+			exit 1; \
+		fi; \
+		echo "Waiting for Server A... ($${elapsed}s)"; \
 	done
 	@echo "Waiting for Server B (mattermost-b) to be ready..."
-	@until curl -sf http://localhost:$(MM_PORT_B)/api/v4/system/ping >/dev/null 2>&1; do \
+	@elapsed=0; \
+	while ! curl -sf http://localhost:$(MM_PORT_B)/api/v4/system/ping >/dev/null 2>&1; do \
 		sleep 2; \
-		echo "Waiting for Server B..."; \
+		elapsed=$$((elapsed + 2)); \
+		if [ $$elapsed -ge 120 ]; then \
+			echo "ERROR: Server B failed to start within 120 seconds"; \
+			$(DOCKER_COMPOSE) logs --tail=40 mattermost-b; \
+			exit 1; \
+		fi; \
+		echo "Waiting for Server B... ($${elapsed}s)"; \
 	done
 	@echo ""
 	@echo "--- Setting up Server A ---"
@@ -437,9 +465,13 @@ docker-setup: docker-start
 	@echo "NATS: nats://localhost:$${NATS_PORT:-4222}"
 	@echo "NATS Monitor: http://localhost:$${NATS_MONITOR_PORT:-8222}"
 	@echo "NATS (from plugins): nats://nats:4222"
+	@echo ""
+	@echo "Azurite (Azure Storage Emulator):"
+	@echo "  Queue: http://localhost:$${AZURITE_QUEUE_PORT:-10001}"
+	@echo "  Blob:  http://localhost:$${AZURITE_BLOB_PORT:-10000}"
 	@echo "=========================================="
 	@echo ""
-	@echo "Next: run 'make deploy' to build, deploy, and configure NATS connections."
+	@echo "Next: run 'make deploy' to build, deploy, and configure connections."
 
 ## Check if both Mattermost containers are running
 .PHONY: docker-check
@@ -469,14 +501,14 @@ docker-deploy: docker-check dist
 	@$(DOCKER_COMPOSE) exec -T mattermost-b mmctl --local plugin enable $(PLUGIN_ID)
 	@echo "Plugin $(PLUGIN_ID) deployed and enabled on Server B"
 	@echo ""
-	@echo "Configuring NATS connections..."
+	@echo "Configuring connections..."
 	@TOKEN_A=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
 		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
 		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
 	curl -sf -X PUT http://localhost:$(MM_PORT_A)/api/v4/config/patch \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\",\"file_transfer_enabled\":true},{\"name\":\"loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"},{\"name\":\"xml-loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.xml-loopback\",\"auth_type\":\"none\",\"message_format\":\"xml\"}]","inboundconnections":"[{\"name\":\"high-to-low\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\",\"file_transfer_enabled\":true},{\"name\":\"loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"},{\"name\":\"xml-loopback\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.xml-loopback\",\"auth_type\":\"none\",\"message_format\":\"xml\"}]"}}}}' >/dev/null && \
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"[{\"name\":\"low-to-high\",\"provider\":\"nats\",\"file_transfer_enabled\":true,\"nats\":{\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}},{\"name\":\"loopback\",\"provider\":\"nats\",\"nats\":{\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"}},{\"name\":\"xml-loopback\",\"provider\":\"nats\",\"message_format\":\"xml\",\"nats\":{\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.xml-loopback\",\"auth_type\":\"none\"}}]","inboundconnections":"[{\"name\":\"high-to-low\",\"provider\":\"nats\",\"file_transfer_enabled\":true,\"nats\":{\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\"}},{\"name\":\"loopback\",\"provider\":\"nats\",\"nats\":{\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.loopback\",\"auth_type\":\"none\"}},{\"name\":\"xml-loopback\",\"provider\":\"nats\",\"message_format\":\"xml\",\"nats\":{\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.xml-loopback\",\"auth_type\":\"none\"}}]"}}}}' >/dev/null && \
 	echo "Server A configured with outbound:low-to-high(files),loopback,xml-loopback(xml) + inbound:high-to-low(files),loopback,xml-loopback(xml)"
 	@TOKEN_B=$$(curl -sf -X POST http://localhost:$(MM_PORT_B)/api/v4/users/login \
 		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
@@ -484,7 +516,7 @@ docker-deploy: docker-check dist
 	curl -sf -X PUT http://localhost:$(MM_PORT_B)/api/v4/config/patch \
 		-H "Authorization: Bearer $$TOKEN_B" \
 		-H "Content-Type: application/json" \
-		-d '{"PluginSettings":{"Plugins":{"crossguard":{"inboundconnections":"[{\"name\":\"low-to-high\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\",\"file_transfer_enabled\":true}]","outboundconnections":"[{\"name\":\"high-to-low\",\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\",\"file_transfer_enabled\":true}]"}}}}' >/dev/null && \
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"inboundconnections":"[{\"name\":\"low-to-high\",\"provider\":\"nats\",\"file_transfer_enabled\":true,\"nats\":{\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay\",\"auth_type\":\"none\"}}]","outboundconnections":"[{\"name\":\"high-to-low\",\"provider\":\"nats\",\"file_transfer_enabled\":true,\"nats\":{\"address\":\"nats://nats:4222\",\"subject\":\"crossguard.relay.reverse\",\"auth_type\":\"none\"}}]"}}}}' >/dev/null && \
 	echo "Server B configured with inbound:low-to-high(files) + outbound:high-to-low(files)"
 
 ## End-to-end smoke test: init teams/channels, post message on A, verify relay to B
@@ -552,11 +584,13 @@ docker-smoke-test: docker-check
 		-d '{"user_id":"'"$$USERB_ID"'"}' >/dev/null 2>&1 || true && \
 	echo "  Server B: userb added to low-to-high, bi-directional" && \
 	echo "Initializing teams..." && \
-	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+	echo "  Waiting 5s for plugin connections to initialize..." && \
+	sleep 5 && \
+	INIT_RESP=$$(curl -s -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"channel_id":"'"$$LTH_A"'","command":"/crossguard init-team outbound:low-to-high"}' >/dev/null && \
-	echo "  Server A: init-team outbound:low-to-high" && \
+		-d '{"channel_id":"'"$$LTH_A"'","command":"/crossguard init-team outbound:low-to-high"}') && \
+	echo "  Server A: init-team outbound:low-to-high (response: $$INIT_RESP)" && \
 	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
@@ -619,6 +653,10 @@ docker-smoke-test: docker-check
 		-H "Authorization: Bearer $$TOKEN_B" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$SMOKE_ID';found=any('smoke-test:'+sid in p.get('message','') for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
 	echo "Smoke test result: $$FOUND" || \
 	{ echo "Smoke test FAILED: message smoke-test:$$SMOKE_ID not found on Server B low-to-high"; exit 1; }
+
+## Full integration test suite (loopback, file relay, XML, Azure)
+.PHONY: docker-integration-test
+docker-integration-test: docker-check
 	@echo ""
 	@echo "Running loopback rewrite-team test..."
 	@TOKEN_A=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
@@ -830,6 +868,141 @@ docker-smoke-test: docker-check
 		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$XML_ID';found=any('xml-smoke-test:'+sid in p.get('message','') for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
 	echo "XML loopback test result: $$XML_FOUND" || \
 	{ echo "XML loopback test FAILED: message xml-smoke-test:$$XML_ID not found on Server A test/xml-loopback"; exit 1; }
+	@echo ""
+	@echo "Running Azure integration tests..."
+	@$(MAKE) docker-azure-smoke-test
+
+## Azure Queue Storage smoke test using Azurite (local emulator)
+## Configures an Azure loopback on Server A: outbound -> azurite queue -> inbound
+AZURITE_CONN_STR := DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1
+AZURITE_QUEUE := crossguard-azure-test
+AZURITE_BLOB := crossguard-azure-files
+
+.PHONY: docker-azure-smoke-test
+docker-azure-smoke-test: docker-check
+	@echo ""
+	@echo "Creating Azurite queue and blob container..."
+	@$(DOCKER_COMPOSE) exec -T azurite sh -c 'apk add --quiet curl 2>/dev/null; exit 0'
+	@TOKEN_A=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	echo "Getting team IDs..." && \
+	LOOP_TEAM=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/loop \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	TEST_TEAM=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "Creating azure-loopback channels..." && \
+	AZ_LOOP_CH=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"team_id":"'"$$LOOP_TEAM"'","name":"azure-loopback","display_name":"Azure Loopback","type":"O"}' \
+		2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || \
+		curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/loop/channels/name/azure-loopback \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "  Server A loop/azure-loopback channel ($$AZ_LOOP_CH)" && \
+	AZ_LB_CH=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"team_id":"'"$$TEST_TEAM"'","name":"azure-loopback","display_name":"Azure Loopback","type":"O"}' \
+		2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || \
+		curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test/channels/name/azure-loopback \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	echo "  Server A test/azure-loopback channel ($$AZ_LB_CH)" && \
+	echo "Adding users to azure-loopback channels..." && \
+	USERA_ID=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/users/username/usera \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels/$$AZ_LOOP_CH/members \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"user_id":"'"$$USERA_ID"'"}' >/dev/null 2>&1 || true && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/channels/$$AZ_LB_CH/members \
+		-H "Authorization: Bearer $$TOKEN_A" -H "Content-Type: application/json" \
+		-d '{"user_id":"'"$$USERA_ID"'"}' >/dev/null 2>&1 || true && \
+	echo "  usera added to both azure-loopback channels" && \
+	echo "Adding Azure loopback connections to Server A config..." && \
+	EXISTING=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/config \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; c=json.load(sys.stdin); ps=c.get('PluginSettings',{}).get('Plugins',{}).get('crossguard',{}); print(ps.get('outboundconnections','[]'))") && \
+	NEW_OB=$$(python3 -c "import sys,json; existing=json.loads('$$EXISTING'); existing.append({\"name\":\"azure-loopback\",\"provider\":\"azure\",\"message_format\":\"xml\",\"file_transfer_enabled\":True,\"azure\":{\"connection_string\":\"$(AZURITE_CONN_STR)\",\"queue_name\":\"$(AZURITE_QUEUE)\",\"blob_container_name\":\"$(AZURITE_BLOB)\"}}); print(json.dumps(existing))") && \
+	EXISTING_IB=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/config \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; c=json.load(sys.stdin); ps=c.get('PluginSettings',{}).get('Plugins',{}).get('crossguard',{}); print(ps.get('inboundconnections','[]'))") && \
+	NEW_IB=$$(python3 -c "import sys,json; existing=json.loads('$$EXISTING_IB'); existing.append({\"name\":\"azure-loopback\",\"provider\":\"azure\",\"message_format\":\"xml\",\"file_transfer_enabled\":True,\"azure\":{\"connection_string\":\"$(AZURITE_CONN_STR)\",\"queue_name\":\"$(AZURITE_QUEUE)\",\"blob_container_name\":\"$(AZURITE_BLOB)\"}}); print(json.dumps(existing))") && \
+	curl -sf -X PUT http://localhost:$(MM_PORT_A)/api/v4/config/patch \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"PluginSettings":{"Plugins":{"crossguard":{"outboundconnections":"'"$$(echo $$NEW_OB | sed 's/"/\\"/g')"'","inboundconnections":"'"$$(echo $$NEW_IB | sed 's/"/\\"/g')"'"}}}}' >/dev/null && \
+	echo "Server A configured with Azure loopback connection (outbound + inbound)" && \
+	echo "Resetting plugin to pick up new config..." && \
+	$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local plugin disable $(PLUGIN_ID) && \
+	$(DOCKER_COMPOSE) exec -T mattermost-a mmctl --local plugin enable $(PLUGIN_ID) && \
+	sleep 2 && \
+	echo "Initializing Azure loopback teams..." && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$AZ_LOOP_CH"'","command":"/crossguard init-team outbound:azure-loopback"}' >/dev/null && \
+	echo "  Server A loop: init-team outbound:azure-loopback" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$AZ_LB_CH"'","command":"/crossguard init-team inbound:azure-loopback"}' >/dev/null && \
+	echo "  Server A test: init-team inbound:azure-loopback" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$AZ_LOOP_CH"'","command":"/crossguard init-channel outbound:azure-loopback"}' >/dev/null && \
+	echo "  Server A loop/azure-loopback: init-channel outbound:azure-loopback" && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$AZ_LB_CH"'","command":"/crossguard init-channel inbound:azure-loopback"}' >/dev/null && \
+	echo "  Server A test/azure-loopback: init-channel inbound:azure-loopback" && \
+	echo "Setting rewrite-team rule..." && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+		-H "Authorization: Bearer $$TOKEN_A" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$AZ_LB_CH"'","command":"/crossguard rewrite-team azure-loopback loop"}' >/dev/null && \
+	echo "  Server A: rewrite-team azure-loopback loop -> test" && \
+	echo "Posting Azure smoke-test message from Server A loop/azure-loopback..." && \
+	TOKEN_USERA=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"usera","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	AZ_ID=$$(date +%s)-$$$$-az && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/posts \
+		-H "Authorization: Bearer $$TOKEN_USERA" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$AZ_LOOP_CH"'","message":"azure-smoke-test:'"$$AZ_ID"'"}' >/dev/null && \
+	echo "  Posted azure-smoke-test:$$AZ_ID to Server A loop/azure-loopback" && \
+	echo "Waiting for Azure relay (10s for poll interval)..." && \
+	sleep 10 && \
+	AZ_FOUND=$$(curl -sf "http://localhost:$(MM_PORT_A)/api/v4/channels/$$AZ_LB_CH/posts?per_page=10" \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$AZ_ID';found=any('azure-smoke-test:'+sid in p.get('message','') for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
+	echo "Azure message relay test: $$AZ_FOUND" || \
+	{ echo "Azure message relay FAILED: azure-smoke-test:$$AZ_ID not found on Server A test/azure-loopback"; exit 1; }
+	@echo ""
+	@echo "Running Azure file relay test..."
+	@TOKEN_A=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"admin","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	TOKEN_USERA=$$(curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/users/login \
+		-d '{"login_id":"usera","password":"password"}' -i 2>/dev/null \
+		| grep -i '^Token:' | awk '{print $$2}' | tr -d '\r') && \
+	AZ_LOOP_CH=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/loop/channels/name/azure-loopback \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	AZ_LB_CH=$$(curl -sf http://localhost:$(MM_PORT_A)/api/v4/teams/name/test/channels/name/azure-loopback \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])") && \
+	AZ_FILE_ID=$$(date +%s)-$$$$-azf && \
+	echo "Uploading sample.pdf to Server A and posting via Azure connection..." && \
+	FILE_UPLOAD=$$(curl -sf -X POST "http://localhost:$(MM_PORT_A)/api/v4/files?channel_id=$$AZ_LOOP_CH" \
+		-H "Authorization: Bearer $$TOKEN_USERA" \
+		-F "files=@testdata/sample.pdf" | python3 -c "import sys,json; print(json.load(sys.stdin)['file_infos'][0]['id'])") && \
+	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/posts \
+		-H "Authorization: Bearer $$TOKEN_USERA" \
+		-H "Content-Type: application/json" \
+		-d '{"channel_id":"'"$$AZ_LOOP_CH"'","message":"azure-file-test:'"$$AZ_FILE_ID"'","file_ids":["'"$$FILE_UPLOAD"'"]}' >/dev/null && \
+	echo "  Posted azure-file-test:$$AZ_FILE_ID with sample.pdf to Server A loop/azure-loopback" && \
+	echo "Waiting for Azure file relay (20s for blob poll interval)..." && \
+	sleep 20 && \
+	AZ_FILE_FOUND=$$(curl -sf "http://localhost:$(MM_PORT_A)/api/v4/channels/$$AZ_LB_CH/posts?per_page=10" \
+		-H "Authorization: Bearer $$TOKEN_A" | python3 -c "import sys,json;data=json.load(sys.stdin);sid='$$AZ_FILE_ID';found=any('azure-file-test:'+sid in p.get('message','') and len(p.get('file_ids',[]))>0 for p in data.get('posts',{}).values());print('PASS' if found else 'FAIL');sys.exit(0 if found else 1)") && \
+	echo "Azure file relay test: $$AZ_FILE_FOUND" || \
+	{ echo "Azure file relay FAILED: azure-file-test:$$AZ_FILE_ID not found with attachments on Server A test/azure-loopback"; exit 1; }
 
 ## Disable and re-enable plugin on both servers
 .PHONY: docker-reset

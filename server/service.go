@@ -38,24 +38,26 @@ type TeamStatusEntry struct {
 	LinkedConnections []store.TeamConnection `json:"linked_connections"`
 }
 
-// RedactedNATSConnection exposes only safe fields from a NATS connection config.
-type RedactedNATSConnection struct {
+// RedactedConnection exposes only safe fields from a connection config.
+type RedactedConnection struct {
 	Name                string `json:"name"`
 	Direction           string `json:"direction"`
-	Address             string `json:"address"`
-	AuthType            string `json:"auth_type"`
-	Subject             string `json:"subject"`
+	Provider            string `json:"provider"`
+	Address             string `json:"address,omitempty"`
+	AuthType            string `json:"auth_type,omitempty"`
+	Subject             string `json:"subject,omitempty"`
 	FileTransferEnabled bool   `json:"file_transfer_enabled"`
 	FileFilterMode      string `json:"file_filter_mode,omitempty"`
 	FileFilterTypes     string `json:"file_filter_types,omitempty"`
 	MessageFormat       string `json:"message_format,omitempty"`
+	QueueName           string `json:"queue_name,omitempty"`
 }
 
 // GlobalStatusResponse is the JSON response for the system-wide status endpoint.
 type GlobalStatusResponse struct {
-	Teams       []TeamStatusEntry        `json:"teams"`
-	Connections []RedactedNATSConnection `json:"connections"`
-	Warnings    []string                 `json:"warnings,omitempty"`
+	Teams       []TeamStatusEntry    `json:"teams"`
+	Connections []RedactedConnection `json:"connections"`
+	Warnings    []string             `json:"warnings,omitempty"`
 }
 
 const (
@@ -167,7 +169,7 @@ func (p *Plugin) getTeamStatus(teamID string) (*TeamStatusResponse, *apiError) {
 	}
 
 	allConns := p.getAllConnectionNames()
-	natsMap := p.getNATSConnectionMap()
+	connMap := p.getConnectionMap()
 	configSet := make(map[string]store.TeamConnection, len(allConns))
 	connSet := make(map[string]store.TeamConnection)
 	for _, tc := range allConns {
@@ -196,17 +198,17 @@ func (p *Plugin) getTeamStatus(teamID string) (*TeamStatusResponse, *apiError) {
 		tc := connSet[key]
 		_, inConfig := configSet[key]
 		_, isLinked := linkedSet[key]
-		nc := natsMap[key]
+		cc := connMap[key]
 		statuses = append(statuses, ConnectionStatus{
 			Name:                tc.Connection,
 			Direction:           tc.Direction,
 			Linked:              isLinked,
 			Orphaned:            !inConfig,
 			RemoteTeamName:      tc.RemoteTeamName,
-			FileTransferEnabled: nc.FileTransferEnabled,
-			FileFilterMode:      nc.FileFilterMode,
-			FileFilterTypes:     nc.FileFilterTypes,
-			MessageFormat:       nc.MessageFormat,
+			FileTransferEnabled: cc.FileTransferEnabled,
+			FileFilterMode:      cc.FileFilterMode,
+			FileFilterTypes:     cc.FileFilterTypes,
+			MessageFormat:       cc.MessageFormat,
 		})
 	}
 
@@ -220,7 +222,7 @@ func (p *Plugin) getTeamStatus(teamID string) (*TeamStatusResponse, *apiError) {
 	}, nil
 }
 
-// getGlobalStatus returns the status of all initialized teams and redacted NATS connections.
+// getGlobalStatus returns the status of all initialized teams and redacted connections.
 func (p *Plugin) getGlobalStatus() (*GlobalStatusResponse, *apiError) {
 	teamIDs, err := p.kvstore.GetInitializedTeamIDs()
 	if err != nil {
@@ -325,7 +327,7 @@ func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *ap
 	}
 
 	allConns := p.getAllConnectionNames()
-	natsMap := p.getNATSConnectionMap()
+	connMap := p.getConnectionMap()
 	configSet := make(map[string]store.TeamConnection, len(allConns))
 	connSet := make(map[string]store.TeamConnection)
 	for _, tc := range allConns {
@@ -359,17 +361,17 @@ func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *ap
 		tc := connSet[key]
 		_, inConfig := configSet[key]
 		_, isLinked := channelLinkedSet[key]
-		nc := natsMap[key]
+		cc := connMap[key]
 		statuses = append(statuses, ConnectionStatus{
 			Name:                tc.Connection,
 			Direction:           tc.Direction,
 			Linked:              isLinked,
 			Orphaned:            !inConfig,
 			RemoteTeamName:      tc.RemoteTeamName,
-			FileTransferEnabled: nc.FileTransferEnabled,
-			FileFilterMode:      nc.FileFilterMode,
-			FileFilterTypes:     nc.FileFilterTypes,
-			MessageFormat:       nc.MessageFormat,
+			FileTransferEnabled: cc.FileTransferEnabled,
+			FileFilterMode:      cc.FileFilterMode,
+			FileFilterTypes:     cc.FileFilterTypes,
+			MessageFormat:       cc.MessageFormat,
 		})
 	}
 
@@ -624,22 +626,22 @@ func (p *Plugin) getAllConnectionNames() []store.TeamConnection {
 	return conns
 }
 
-// getNATSConnectionMap returns a map of "direction:name" to NATSConnection for config lookups.
-func (p *Plugin) getNATSConnectionMap() map[string]NATSConnection {
+// getConnectionMap returns a map of "direction:name" to ConnectionConfig for config lookups.
+func (p *Plugin) getConnectionMap() map[string]ConnectionConfig {
 	cfg := p.getConfiguration()
 	outbound, outErr := cfg.GetOutboundConnections()
 	inbound, inErr := cfg.GetInboundConnections()
 
-	m := make(map[string]NATSConnection, len(outbound)+len(inbound))
+	m := make(map[string]ConnectionConfig, len(outbound)+len(inbound))
 	if outErr != nil {
-		p.API.LogWarn("Failed to parse outbound connections for NATS map", "error", outErr.Error())
+		p.API.LogWarn("Failed to parse outbound connections for map", "error", outErr.Error())
 	} else {
 		for _, conn := range outbound {
 			m["outbound:"+conn.Name] = conn
 		}
 	}
 	if inErr != nil {
-		p.API.LogWarn("Failed to parse inbound connections for NATS map", "error", inErr.Error())
+		p.API.LogWarn("Failed to parse inbound connections for map", "error", inErr.Error())
 	} else {
 		for _, conn := range inbound {
 			m["inbound:"+conn.Name] = conn
@@ -654,7 +656,7 @@ func (p *Plugin) getNATSConnectionMap() map[string]NATSConnection {
 // means the caller should report it to the user.
 func (p *Plugin) resolveConnectionName(connName string, available []store.TeamConnection) (store.TeamConnection, []store.TeamConnection, string) {
 	if len(available) == 0 {
-		return store.TeamConnection{}, nil, "no NATS connections configured"
+		return store.TeamConnection{}, nil, "no connections configured"
 	}
 
 	if connName == "" {
@@ -673,34 +675,35 @@ func (p *Plugin) resolveConnectionName(connName string, available []store.TeamCo
 	return store.TeamConnection{}, available, fmt.Sprintf("connection not found: %s", connName)
 }
 
-// redactConnections strips sensitive fields from NATS connections for the status response.
-func redactConnections(outbound, inbound []NATSConnection) []RedactedNATSConnection {
-	connections := make([]RedactedNATSConnection, 0, len(outbound)+len(inbound))
+// redactConnections strips sensitive fields from connections for the status response.
+func redactConnections(outbound, inbound []ConnectionConfig) []RedactedConnection {
+	connections := make([]RedactedConnection, 0, len(outbound)+len(inbound))
 	for _, conn := range outbound {
-		connections = append(connections, RedactedNATSConnection{
-			Name:                conn.Name,
-			Direction:           "outbound",
-			Address:             conn.Address,
-			AuthType:            conn.AuthType,
-			Subject:             conn.Subject,
-			FileTransferEnabled: conn.FileTransferEnabled,
-			FileFilterMode:      conn.FileFilterMode,
-			FileFilterTypes:     conn.FileFilterTypes,
-			MessageFormat:       conn.MessageFormat,
-		})
+		connections = append(connections, redactConnection(conn, "outbound"))
 	}
 	for _, conn := range inbound {
-		connections = append(connections, RedactedNATSConnection{
-			Name:                conn.Name,
-			Direction:           "inbound",
-			Address:             conn.Address,
-			AuthType:            conn.AuthType,
-			Subject:             conn.Subject,
-			FileTransferEnabled: conn.FileTransferEnabled,
-			FileFilterMode:      conn.FileFilterMode,
-			FileFilterTypes:     conn.FileFilterTypes,
-			MessageFormat:       conn.MessageFormat,
-		})
+		connections = append(connections, redactConnection(conn, "inbound"))
 	}
 	return connections
+}
+
+func redactConnection(conn ConnectionConfig, direction string) RedactedConnection {
+	rc := RedactedConnection{
+		Name:                conn.Name,
+		Direction:           direction,
+		Provider:            conn.Provider,
+		FileTransferEnabled: conn.FileTransferEnabled,
+		FileFilterMode:      conn.FileFilterMode,
+		FileFilterTypes:     conn.FileFilterTypes,
+		MessageFormat:       conn.MessageFormat,
+	}
+	if conn.NATS != nil {
+		rc.Address = conn.NATS.Address
+		rc.AuthType = conn.NATS.AuthType
+		rc.Subject = conn.NATS.Subject
+	}
+	if conn.Azure != nil {
+		rc.QueueName = conn.Azure.QueueName
+	}
+	return rc
 }

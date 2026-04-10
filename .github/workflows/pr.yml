@@ -46,3 +46,58 @@ jobs:
           name: plugin-dist
           path: dist/*.tar.gz
           retention-days: 7
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: webapp/package-lock.json
+
+      - name: Install Go tools
+        run: make install-go-tools
+
+      - name: Install webapp dependencies
+        run: cd webapp && npm install
+
+      - name: Setup hosts
+        run: echo '127.0.0.1 low.test high.test' | sudo tee -a /etc/hosts
+
+      - name: Start Docker environment
+        run: make docker-setup
+        timeout-minutes: 5
+
+      - name: Deploy plugin
+        run: make docker-deploy
+        timeout-minutes: 3
+
+      - name: Dump plugin logs
+        if: always()
+        run: |
+          echo "=== Server A plugin logs ==="
+          docker compose -f docker-compose.dev.yml logs mattermost-a 2>&1 | grep -i "crossguard\|plugin\|error\|panic" | tail -60 || true
+          echo ""
+          echo "=== Server B plugin logs ==="
+          docker compose -f docker-compose.dev.yml logs mattermost-b 2>&1 | grep -i "crossguard\|plugin\|error\|panic" | tail -60 || true
+
+      - name: Run smoke test
+        run: make docker-smoke-test
+        timeout-minutes: 3
+
+      - name: Run integration tests
+        run: make docker-integration-test
+        timeout-minutes: 10

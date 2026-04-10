@@ -98,17 +98,31 @@ Cross Guard is a Mattermost Federal plugin built on the mattermost-plugin-starte
 - `go.mod` - Go dependencies
 - `Makefile` - Build commands
 - `.golangci.yml` - Go linter configuration
+- `docker-compose.dev.yml` - Docker development environment
+- `.nvmrc` - Node.js version (20.11)
+- `CHANGELOG.md` - Version history
+
+## Project Structure
+
+- `server/` - Go backend (plugin API, providers, store, model)
+- `webapp/` - React/TypeScript frontend (admin console components)
+- `build/` - Build tooling (manifest generation, deployment scripts)
+- `docker/` - Docker compose config and plugin volumes
+- `schema/` - Data schemas (XSD)
+- `implementation-plans/` - Feature planning documents
+- `assets/` - Plugin icon assets
+- `public/` - Static assets
 
 ## Docker Development Environment (Dual-Server)
 
-The dev environment runs two Mattermost servers with a shared NATS bus.
+The dev environment runs two Mattermost servers with a shared NATS bus and an Azurite (Azure Storage Emulator) instance for Azure Queue/Blob testing.
 
 ### Getting Started
 
 ```bash
 make hosts-setup    # Add low.test and high.test to /etc/hosts (one-time, requires sudo)
 make docker-setup   # Start containers, create users and teams
-make deploy         # Build and deploy plugin to both servers
+make deploy         # Build, deploy, and run quick NATS smoke test
 ```
 
 After setup:
@@ -117,6 +131,8 @@ After setup:
 - **Server B (High)**: http://high.test:8076 (admin/password, userb/password, Team: Test B)
 - **NATS**: nats://localhost:4222 (monitor: http://localhost:8222)
 - **NATS (from plugins)**: nats://nats:4222
+- **Azurite Queue**: http://localhost:10001
+- **Azurite Blob**: http://localhost:10000
 
 ### Common Commands
 
@@ -124,9 +140,10 @@ After setup:
 |---------|-------------|
 | `make hosts-setup` | Add low.test/high.test to /etc/hosts (requires sudo) |
 | `make docker-setup` | First-time setup: start containers, create users and teams |
-| `make deploy` | Build and deploy plugin to both Docker servers |
+| `make deploy` | Build, deploy plugin, and run quick NATS smoke test |
 | `make dist` | Build plugin bundle only |
 | `make test` | Run all tests |
+| `make coverage` | Run Go tests and print code coverage summary |
 | `make check-style` | Lint code |
 | `make nuke` | Remove everything: containers, data, build artifacts |
 
@@ -141,7 +158,9 @@ After setup:
 | `make docker-logs` | Follow Server A logs |
 | `make docker-logs-b` | Follow Server B logs |
 | `make docker-reset` | Disable and re-enable plugin on both servers |
-| `make docker-smoke-test` | Run end-to-end relay smoke test (init, post, verify) |
+| `make docker-smoke-test` | Quick NATS relay smoke test (single low-to-high message) |
+| `make docker-integration-test` | Full integration suite (loopback, files, XML, Azure) |
+| `make docker-azure-smoke-test` | Run Azure Queue/Blob relay smoke test via Azurite |
 | `make docker-disable` | Disable plugin on both servers |
 | `make docker-enable` | Enable plugin on both servers |
 | `make docker-plugin-list` | List installed plugins on both servers |
@@ -156,13 +175,17 @@ After setup:
 | `make sbom-audit` | Generate SBOMs and scan for vulnerabilities |
 | `make codeql-analyze` | Run CodeQL security analysis on all code |
 | `make security-gate` | Check scan results for critical/high issues |
+| `make virus-scan` | Run ClamAV virus scan on built artifacts |
+| `make generate-pdfs` | Generate PDF documentation |
 
 ## Technology Stack
 
 ### Backend
-- Go 1.24
+- Go 1.26.1
 - Mattermost Plugin API
 - Gorilla Mux (routing)
+- NATS (nats.go v1.49.0) for message relay
+- Azure SDK (azqueue v1.0.1, azblob v1.6.4) for Azure Queue/Blob provider
 
 ### Frontend
 - React 18.2
@@ -170,10 +193,11 @@ After setup:
 - Redux 5.0
 - Webpack 5.105
 - Mattermost Redux
+- Node.js 20.11
 
 ### Testing
 - Go: `stretchr/testify`
-- Frontend: Playwright
+- Frontend: Playwright 1.59.1 (E2E and component testing)
 
 ## Go Files
 

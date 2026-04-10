@@ -6,15 +6,12 @@ import (
 	"time"
 
 	mmModel "github.com/mattermost/mattermost/server/public/model"
-	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 )
 
 type inboundConn struct {
-	nc                  *nats.Conn
-	sub                 *nats.Subscription
+	provider            QueueProvider
 	name                string
 	fileTransferEnabled bool
 	fileFilterMode      string
@@ -23,7 +20,7 @@ type inboundConn struct {
 
 type pendingWatcher struct {
 	connName string
-	nc       *nats.Conn
+	provider QueueProvider
 }
 
 func (p *Plugin) connectInbound() {
@@ -40,34 +37,33 @@ func (p *Plugin) connectInbound() {
 	var pool []inboundConn
 	var watchers []pendingWatcher
 	for _, conn := range conns {
-		nc, err := connectNATSPersistent(conn, p, "Inbound")
+		provider, err := p.createProvider(conn, "Inbound")
 		if err != nil {
-			p.API.LogError("Failed to connect inbound NATS",
-				"name", conn.Name, "address", conn.Address, "error", err.Error())
+			p.API.LogError("Failed to connect inbound",
+				"name", conn.Name, "provider", conn.Provider, "error", err.Error())
 			continue
 		}
 
-		sub, err := nc.Subscribe(conn.Subject, p.handleInboundMessage(conn.Name))
-		if err != nil {
-			p.API.LogError("Failed to subscribe inbound NATS",
-				"name", conn.Name, "subject", conn.Subject, "error", err.Error())
-			nc.Close()
+		handler := p.handleInboundMessage(conn.Name)
+		if err := provider.Subscribe(ctx, handler); err != nil {
+			p.API.LogError("Failed to subscribe inbound",
+				"name", conn.Name, "error", err.Error())
+			_ = provider.Close()
 			continue
 		}
 
 		ic := inboundConn{
-			nc:                  nc,
-			sub:                 sub,
+			provider:            provider,
 			name:                conn.Name,
 			fileTransferEnabled: conn.FileTransferEnabled,
 			fileFilterMode:      conn.FileFilterMode,
 			fileFilterTypes:     conn.FileFilterTypes,
 		}
 		pool = append(pool, ic)
-		p.API.LogInfo("Inbound NATS subscription established", "name", conn.Name, "subject", conn.Subject)
+		p.API.LogInfo("Inbound subscription established", "name", conn.Name, "provider", conn.Provider)
 
 		if conn.FileTransferEnabled {
-			watchers = append(watchers, pendingWatcher{connName: conn.Name, nc: nc})
+			watchers = append(watchers, pendingWatcher{connName: conn.Name, provider: provider})
 		}
 	}
 
@@ -79,11 +75,11 @@ func (p *Plugin) connectInbound() {
 	for _, w := range watchers {
 		p.wg.Add(1)
 		p.fileWatcherWg.Add(1)
-		go func(ctx context.Context, connName string, nc *nats.Conn) {
+		go func(ctx context.Context, connName string, provider QueueProvider) {
 			defer p.wg.Done()
 			defer p.fileWatcherWg.Done()
-			p.watchObjectStore(ctx, connName, nc)
-		}(ctx, w.connName, w.nc)
+			p.watchFiles(ctx, connName, provider)
+		}(ctx, w.connName, w.provider)
 	}
 }
 
@@ -114,9 +110,7 @@ func (p *Plugin) closeInbound() {
 	p.inboundMu.Unlock()
 
 	for _, ic := range conns {
-		_ = ic.sub.Unsubscribe()
-		_ = ic.nc.Drain()
-		ic.nc.Close()
+		_ = ic.provider.Close()
 	}
 }
 
@@ -125,13 +119,13 @@ func (p *Plugin) reconnectInbound() {
 	p.connectInbound()
 }
 
-func (p *Plugin) handleInboundMessage(connName string) nats.MsgHandler {
-	return func(msg *nats.Msg) {
+func (p *Plugin) handleInboundMessage(connName string) func(data []byte) error {
+	return func(data []byte) error {
 		select {
 		case p.relaySem <- struct{}{}:
 		default:
 			p.API.LogWarn("Relay semaphore full, dropping inbound message", "conn", connName)
-			return
+			return nil
 		}
 
 		p.wg.Go(func() {
@@ -143,8 +137,8 @@ func (p *Plugin) handleInboundMessage(connName string) nats.MsgHandler {
 			default:
 			}
 
-			format := model.DetectFormat(msg.Data)
-			env, err := model.Unmarshal(msg.Data, format)
+			format := model.DetectFormat(data)
+			env, err := model.Unmarshal(data, format)
 			if err != nil {
 				p.API.LogError("Failed to unmarshal inbound message", "conn", connName, "error", err.Error())
 				return
@@ -191,6 +185,8 @@ func (p *Plugin) handleInboundMessage(connName string) nats.MsgHandler {
 				p.API.LogWarn("Unknown inbound message type", "conn", connName, "type", env.Type)
 			}
 		})
+
+		return nil
 	}
 }
 
@@ -269,6 +265,16 @@ func (p *Plugin) handleInboundPost(connName string, postMsg *model.PostMessage) 
 	if err != nil {
 		p.API.LogWarn("Inbound post: resolve failed", "conn", connName, "error", err.Error())
 		return
+	}
+
+	// Idempotency check for at-least-once delivery (Azure Queue).
+	existingLocalID, err := p.kvstore.GetPostMapping(connName, postMsg.PostID)
+	if err != nil {
+		p.API.LogWarn("Inbound post: idempotency lookup failed, processing anyway",
+			"conn", connName, "postID", postMsg.PostID, "error", err.Error())
+	}
+	if existingLocalID != "" {
+		return // already processed, skip
 	}
 
 	userID, err := p.resolveInboundUser(postMsg.Username, connName, team.Id, channel.Id)
@@ -399,40 +405,15 @@ func (p *Plugin) handleInboundReaction(connName string, reactionMsg *model.React
 	}
 }
 
-func (p *Plugin) watchObjectStore(ctx context.Context, connName string, nc *nats.Conn) {
-	objectStore, err := getOrCreateObjectStore(ctx, nc, objectStoreBucket)
+// watchFiles uses the provider's WatchFiles to monitor for new file uploads.
+func (p *Plugin) watchFiles(ctx context.Context, connName string, provider QueueProvider) {
+	p.API.LogInfo("File watcher started", "conn", connName)
+
+	err := provider.WatchFiles(ctx, func(key string, data []byte, headers map[string]string) error {
+		return p.handleInboundFile(ctx, connName, key, data, headers)
+	})
 	if err != nil {
-		p.API.LogError("Failed to open object store for file watcher",
-			"conn", connName, "error", err.Error())
-		return
-	}
-
-	watcher, err := objectStore.Watch(ctx, jetstream.UpdatesOnly())
-	if err != nil {
-		p.API.LogError("Failed to start object store watcher",
-			"conn", connName, "error", err.Error())
-		return
-	}
-	defer func() { _ = watcher.Stop() }()
-
-	p.API.LogInfo("Object store file watcher started", "conn", connName)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case info, ok := <-watcher.Updates():
-			if !ok {
-				return
-			}
-			if info == nil {
-				continue
-			}
-			if info.Deleted {
-				continue
-			}
-			p.handleInboundFile(ctx, connName, objectStore, info)
-		}
+		p.API.LogError("File watcher exited with error", "conn", connName, "error", err.Error())
 	}
 }
 
@@ -441,32 +422,32 @@ const (
 	postMappingRetryDelay = time.Second
 )
 
-func (p *Plugin) handleInboundFile(ctx context.Context, connName string, store jetstream.ObjectStore, info *jetstream.ObjectInfo) {
-	headerConn := info.Headers.Get(headerConnName)
-	remotePostID := info.Headers.Get(headerPostID)
-	filename := info.Headers.Get(headerFilename)
+func (p *Plugin) handleInboundFile(ctx context.Context, connName, key string, data []byte, headers map[string]string) error {
+	headerConn := headers[headerConnName]
+	remotePostID := headers[headerPostID]
+	filename := headers[headerFilename]
 
 	if headerConn == "" || remotePostID == "" || filename == "" {
 		p.API.LogWarn("Inbound file: missing required headers, skipping",
-			"key", info.Name, headerConnName, headerConn, headerPostID, remotePostID, headerFilename, filename)
-		return
+			"key", key, headerConnName, headerConn, headerPostID, remotePostID, headerFilename, filename)
+		return nil
 	}
 
 	if headerConn != connName {
-		return
+		return nil
 	}
 
 	ic := p.getInboundConn(connName)
 	if ic == nil {
 		p.API.LogWarn("Inbound file: connection no longer active, skipping",
 			"conn", connName, "filename", filename)
-		return
+		return nil
 	}
 
 	if !isFileAllowed(filename, ic.fileFilterMode, ic.fileFilterTypes) {
 		p.API.LogInfo("Inbound file filtered by policy",
 			"filename", filename, "conn", connName)
-		return
+		return nil
 	}
 
 	var localPostID string
@@ -479,7 +460,7 @@ func (p *Plugin) handleInboundFile(ctx context.Context, connName string, store j
 		if attempt < postMappingMaxRetries-1 {
 			select {
 			case <-ctx.Done():
-				return
+				return ctx.Err()
 			case <-time.After(time.Duration(attempt+1) * postMappingRetryDelay):
 			}
 		}
@@ -492,37 +473,29 @@ func (p *Plugin) handleInboundFile(ctx context.Context, connName string, store j
 			p.API.LogWarn("Inbound file: no post mapping found after retries",
 				"conn", connName, "remote_post_id", remotePostID)
 		}
-		return
+		return nil
 	}
 
 	// Block until a semaphore slot is available (or context is cancelled).
-	// The watcher loop is a dedicated goroutine, so blocking is safe here.
 	select {
 	case p.fileSem <- struct{}{}:
 		defer func() { <-p.fileSem }()
 	case <-ctx.Done():
-		return
-	}
-
-	data, err := store.GetBytes(ctx, info.Name)
-	if err != nil {
-		p.API.LogError("Failed to download file from object store",
-			"key", info.Name, "conn", connName, "error", err.Error())
-		return
+		return ctx.Err()
 	}
 
 	existing, appErr := p.API.GetPost(localPostID)
 	if appErr != nil {
 		p.API.LogError("Inbound file: failed to get local post",
 			"local_post_id", localPostID, "error", appErr.Error())
-		return
+		return nil
 	}
 
 	fileInfo, appErr := p.API.UploadFile(data, existing.ChannelId, filename)
 	if appErr != nil {
 		p.API.LogError("Failed to upload file to Mattermost",
 			"filename", filename, "error", appErr.Error())
-		return
+		return nil
 	}
 
 	existing.FileIds = append(existing.FileIds, fileInfo.Id)
@@ -530,4 +503,6 @@ func (p *Plugin) handleInboundFile(ctx context.Context, connName string, store j
 		p.API.LogError("Failed to attach file to post",
 			"local_post_id", localPostID, "file_id", fileInfo.Id, "error", appErr.Error())
 	}
+
+	return nil
 }

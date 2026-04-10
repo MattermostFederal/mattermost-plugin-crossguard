@@ -249,3 +249,63 @@ func TestEnsureSyncUser_RaceConditionRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "raced-user-id", userID)
 }
+
+func TestEnsureSyncUser_ConnectionNameTooLong(t *testing.T) {
+	api := &plugintest.API{}
+	defaultLogMocks(api)
+	p := &Plugin{}
+	p.SetAPI(api)
+
+	// Connection name is 64 chars, leaving maxUser < 1
+	longConn := "a234567890123456789012345678901234567890123456789012345678901234"
+	_, err := p.ensureSyncUser("alice", longConn, "team1", "chan1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "connection name too long")
+}
+
+func TestEnsureSyncUser_CreateUserNonAlreadyError(t *testing.T) {
+	api := &plugintest.API{}
+	defaultLogMocks(api)
+	p := &Plugin{}
+	p.SetAPI(api)
+
+	api.On("GetUserByUsername", "alice.high").Return(nil, &mmModel.AppError{Message: "not found"})
+	api.On("CreateUser", mock.Anything).Return(nil, &mmModel.AppError{Message: "internal error"})
+
+	_, err := p.ensureSyncUser("alice", "high", "team1", "chan1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create sync user")
+}
+
+func TestEnsureMembership_AlreadyMember(t *testing.T) {
+	api := &plugintest.API{}
+	defaultLogMocks(api)
+	p := &Plugin{}
+	p.SetAPI(api)
+
+	api.On("CreateTeamMember", "team1", "user1").
+		Return(nil, &mmModel.AppError{Message: "already a member"})
+	api.On("AddChannelMember", "chan1", "user1").
+		Return(nil, &mmModel.AppError{Message: "already a member"})
+
+	// Should not log warnings for "already" errors
+	p.ensureMembership("user1", "team1", "chan1")
+	api.AssertNotCalled(t, "LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestEnsureMembership_RealError(t *testing.T) {
+	api := &plugintest.API{}
+	defaultLogMocks(api)
+	p := &Plugin{}
+	p.SetAPI(api)
+
+	api.On("CreateTeamMember", "team1", "user1").
+		Return(nil, &mmModel.AppError{Message: "forbidden"})
+	api.On("AddChannelMember", "chan1", "user1").
+		Return(&mmModel.ChannelMember{}, nil)
+
+	p.ensureMembership("user1", "team1", "chan1")
+	// LogWarn should have been called for the team member error
+	api.AssertCalled(t, "LogWarn", "Failed to add sync user to team",
+		"user_id", "user1", "team_id", "team1", "error", "forbidden")
+}

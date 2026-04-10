@@ -1,29 +1,33 @@
 openapi: 3.1.0
 info:
-  title: Cross Guard NATS Message API
+  title: Cross Guard Message API
   description: >
-    Defines the message envelope and payload schemas used by the Cross Guard
-    plugin to relay events between Mattermost instances over a NATS bus.
-    Messages are serialized as JSON or XML depending on the outbound
-    connection's `message_format` setting. Inbound messages are auto-detected
-    by inspecting the first non-whitespace byte. All NATS subjects begin
-    with the `crossguard.` prefix. XML element names and namespace are
-    defined in `crossguard.xsd`.
-  version: 1.0.0
+    Defines the message envelope, payload schemas, and connection
+    configuration used by the Cross Guard plugin to relay events between
+    Mattermost instances. Messages are transported over NATS or Azure
+    Queue Storage depending on the connection's `provider` setting. The
+    wire format (JSON or XML) is controlled by the outbound connection's
+    `message_format` setting. Inbound messages are auto-detected by
+    inspecting the first non-whitespace byte. XML element names and
+    namespace are defined in `crossguard.xsd`.
+  version: 1.1.0
   contact:
     name: Mattermost Federal
 
-# NATS is not HTTP, so paths are modeled as logical channels (AsyncAPI-style)
-# using x-nats-subject to document the actual NATS subject convention.
+# These paths model logical message operations, not HTTP endpoints.
+# NATS connections use pub/sub directly; Azure connections use Queue
+# Storage with polling-based delivery.
 paths:
   /publish:
     post:
       operationId: publishMessage
-      summary: Publish a message to a NATS subject
+      summary: Publish a message to an outbound connection
       description: >
-        Represents the act of publishing a Cross Guard message envelope to a
-        configured outbound NATS subject (e.g. `crossguard.high`).
-        The subject is determined by the outbound connection configuration.
+        Represents the act of publishing a Cross Guard message envelope to
+        an outbound connection. For NATS, this publishes to the configured
+        subject (e.g. `crossguard.high`). For Azure Queue Storage, the
+        message is Base64-encoded and enqueued. The transport is determined
+        by the connection's `provider` setting.
       x-nats-subject: "crossguard.{domain}"
       requestBody:
         required: true
@@ -36,17 +40,18 @@ paths:
               $ref: "#/components/schemas/MessageEnvelope"
       responses:
         "200":
-          description: Message accepted by NATS broker.
+          description: Message accepted by the transport provider.
 
   /subscribe:
     post:
       operationId: subscribeMessage
-      summary: Receive a message from a NATS subject
+      summary: Receive a message from an inbound connection
       description: >
-        Represents the receipt of a Cross Guard message envelope on a
-        configured inbound NATS subject (e.g. `crossguard.low`).
-        The subject is determined by the inbound connection configuration.
-        The format (JSON or XML) is auto-detected on receipt.
+        Represents the receipt of a Cross Guard message envelope on an
+        inbound connection. For NATS, messages arrive via subscription
+        callback. For Azure Queue Storage, messages are dequeued via
+        polling (5-second interval). The format (JSON or XML) is
+        auto-detected on receipt regardless of provider.
       x-nats-subject: "crossguard.{domain}"
       requestBody:
         required: true
@@ -69,11 +74,12 @@ components:
     MessageEnvelope:
       type: object
       description: >
-        Standard envelope that wraps every message sent over NATS. Exactly
-        one payload field is present per message. The envelope is serialized
-        as JSON or XML depending on the outbound connection's message_format
-        setting. Inbound messages are auto-detected by first non-whitespace
-        byte (< for XML, otherwise JSON).
+        Standard envelope that wraps every relayed message. Exactly one
+        payload field is present per message. The envelope is serialized
+        as JSON or XML depending on the outbound connection's
+        message_format setting. Inbound messages are auto-detected by
+        first non-whitespace byte (< for XML, otherwise JSON). The
+        envelope format is identical regardless of transport provider.
       required:
         - type
         - timestamp
@@ -292,7 +298,7 @@ components:
 
     TestMessage:
       type: object
-      description: Payload for the `crossguard_test` message type, used to verify NATS connectivity.
+      description: Payload for the `crossguard_test` message type, used to verify transport connectivity.
       required:
         - id
       properties:
@@ -303,18 +309,18 @@ components:
             - "dj7f8k2m41ygsr9w6pxt3nqb4e"
 
     # ------------------------------------------------------------------
-    # Connection configuration (reference, not transmitted over NATS)
+    # Connection configuration (stored in plugin settings, not on the wire)
     # ------------------------------------------------------------------
-    NATSConnection:
+    ConnectionConfig:
       type: object
       description: >
-        Configuration for a single NATS connection (inbound or outbound).
-        This schema is stored in plugin settings, not transmitted over the wire.
-        Included here for completeness.
+        Configuration for a single connection (inbound or outbound).
+        Stored in plugin settings as a JSON array. The `provider` field
+        determines which nested configuration block is used. Exactly one
+        of `nats` or `azure` should be present, matching the provider.
       required:
         - name
-        - address
-        - subject
+        - provider
       properties:
         name:
           type: string
@@ -324,6 +330,78 @@ components:
           pattern: "^[a-z0-9-]+$"
           examples:
             - "high-side"
+        provider:
+          type: string
+          enum:
+            - nats
+            - azure
+          description: >
+            Transport provider for this connection. Determines which
+            nested configuration block is used and how messages are
+            delivered.
+          default: "nats"
+        file_transfer_enabled:
+          type: boolean
+          description: >
+            Whether file attachment relay is enabled for this connection.
+            For NATS, files are stored in a JetStream Object Store bucket.
+            For Azure, files are stored in an Azure Blob Storage container.
+          default: false
+        file_filter_mode:
+          type: string
+          enum:
+            - ""
+            - allow
+            - deny
+          description: >
+            File extension filter mode. Empty string means no filtering
+            (all files pass). `allow` means only listed extensions are
+            relayed. `deny` means listed extensions are blocked.
+          default: ""
+        file_filter_types:
+          type: string
+          description: >
+            Comma-separated list of file extensions to filter (e.g.
+            `.pdf,.docx,.png`). Extensions are case-insensitive and a
+            leading dot is optional. Only meaningful when
+            `file_filter_mode` is `allow` or `deny`.
+          default: ""
+          examples:
+            - ".pdf,.docx,.png"
+        message_format:
+          type: string
+          enum:
+            - json
+            - xml
+          description: >
+            Wire format for outbound messages. Use XML when sending
+            through a Cross Domain Solution (CDS). Inbound messages are
+            auto-detected regardless of this setting. Only applies to
+            outbound connections.
+          default: "json"
+        nats:
+          $ref: "#/components/schemas/NATSProviderConfig"
+          description: >
+            NATS provider configuration. Required when provider is `nats`.
+        azure:
+          $ref: "#/components/schemas/AzureProviderConfig"
+          description: >
+            Azure Queue Storage provider configuration. Required when
+            provider is `azure`.
+
+    # ------------------------------------------------------------------
+    # NATS provider configuration
+    # ------------------------------------------------------------------
+    NATSProviderConfig:
+      type: object
+      description: >
+        Configuration fields specific to the NATS transport provider.
+        NATS uses push-based pub/sub delivery with optional JetStream
+        for file transfer.
+      required:
+        - address
+        - subject
+      properties:
         address:
           type: string
           description: NATS server address.
@@ -366,58 +444,56 @@ components:
         ca_cert:
           type: string
           description: Filesystem path to the CA certificate for server verification.
-        file_transfer_enabled:
-          type: boolean
-          description: >
-            Whether file attachment relay is enabled for this connection. When
-            enabled, file attachments on outbound posts are uploaded to a
-            JetStream Object Store bucket, and inbound file objects are
-            downloaded and attached to local posts.
-          default: false
-        file_filter_mode:
-          type: string
-          enum:
-            - ""
-            - allow
-            - deny
-          description: >
-            File extension filter mode. Empty string means no filtering (all
-            files pass). `allow` means only extensions listed in
-            `file_filter_types` are relayed. `deny` means extensions listed
-            in `file_filter_types` are blocked.
-          default: ""
-        file_filter_types:
-          type: string
-          description: >
-            Comma-separated list of file extensions to filter (e.g.
-            `.pdf,.docx,.png`). Extensions are case-insensitive and a leading
-            dot is optional (both `pdf` and `.pdf` are accepted). Only
-            meaningful when `file_filter_mode` is `allow` or `deny`.
-          default: ""
-          examples:
-            - ".pdf,.docx,.png"
-        message_format:
-          type: string
-          enum:
-            - json
-            - xml
-          description: >
-            Wire format for outbound messages. Use XML when sending through
-            a Cross Domain Solution (CDS). Inbound messages are auto-detected
-            regardless of this setting. Only applies to outbound connections.
-          default: "json"
 
     # ------------------------------------------------------------------
-    # File transfer protocol (reference, not transmitted over NATS)
+    # Azure provider configuration
     # ------------------------------------------------------------------
-    FileTransferProtocol:
+    AzureProviderConfig:
+      type: object
+      description: >
+        Configuration fields specific to the Azure Queue Storage transport
+        provider. Azure uses polling-based delivery with a 5-second poll
+        interval for queue messages and 15-second poll interval for blob
+        files. Queues and blob containers are auto-created on startup if
+        they do not exist.
+      required:
+        - connection_string
+        - queue_name
+      properties:
+        connection_string:
+          type: string
+          description: >
+            Azure Storage account connection string. Contains the account
+            name, key, and endpoint information. Treat as a secret.
+          examples:
+            - "DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey=...;EndpointSuffix=core.windows.net"
+        queue_name:
+          type: string
+          description: >
+            Name of the Azure Queue. Auto-created on provider startup if
+            it does not exist. Must follow Azure Queue naming rules
+            (lowercase, 3-63 characters, letters/numbers/hyphens).
+          examples:
+            - "crossguard-relay"
+        blob_container_name:
+          type: string
+          description: >
+            Name of the Azure Blob container for file transfer. Required
+            when `file_transfer_enabled` is true. Auto-created on startup
+            if it does not exist.
+          examples:
+            - "crossguard-files"
+
+    # ------------------------------------------------------------------
+    # NATS file transfer protocol (reference)
+    # ------------------------------------------------------------------
+    NATSFileTransferProtocol:
       type: object
       description: >
         Documents the JetStream Object Store protocol used for file
-        attachment relay. This is a reference schema describing the
-        out-of-band binary transfer mechanism. File transfer operates
+        attachment relay on NATS connections. File transfer operates
         independently of the core NATS pub/sub text relay. Text messages
-        flow through standard NATS publish/subscribe; files flow through
+        flow through standard publish/subscribe; files flow through
         JetStream Object Store using the same NATS connection.
       properties:
         bucket:
@@ -481,3 +557,86 @@ components:
             Governed by the Mattermost server's FileSettings.MaxFileSize
             configuration. Default is 100 MB. Files exceeding this limit
             are skipped with a log warning.
+
+    # ------------------------------------------------------------------
+    # Azure file transfer protocol (reference)
+    # ------------------------------------------------------------------
+    AzureFileTransferProtocol:
+      type: object
+      description: >
+        Documents the Azure Blob Storage protocol used for file attachment
+        relay on Azure connections. Files are uploaded as blobs with
+        metadata headers, then discovered and downloaded by the receiving
+        instance via polling (15-second interval). Blobs are deleted after
+        successful processing. Unlike NATS Object Store, there is no
+        automatic TTL; blobs persist until explicitly deleted or managed
+        by Azure lifecycle policies.
+      properties:
+        container:
+          type: string
+          description: >
+            Azure Blob container name, configured via
+            `blob_container_name`. Auto-created on startup if it does
+            not exist.
+          examples:
+            - "crossguard-files"
+        blob_key_format:
+          type: string
+          description: >
+            Blob key format: `{postID}/{randomID}`, matching the NATS
+            Object Store key format for consistency.
+          examples:
+            - "8swgtrrdiff89yj1z33pofo15r/dj7f8k2m41ygsr9w6pxt3nqb4e"
+        metadata_key:
+          type: string
+          const: "crossguard_headers"
+          description: >
+            Blob metadata key that stores file routing headers. The value
+            is a Base64-encoded JSON object containing the same header
+            fields used by NATS (X-Post-Id, X-Conn-Name, X-Filename).
+        metadata_value_format:
+          type: object
+          description: >
+            JSON structure stored (Base64-encoded) in the
+            `crossguard_headers` blob metadata key.
+          properties:
+            headers:
+              type: object
+              description: Map of header name to value.
+              properties:
+                X-Post-Id:
+                  type: string
+                  description: Originating server's post ID.
+                X-Conn-Name:
+                  type: string
+                  description: Connection name that uploaded the file.
+                X-Filename:
+                  type: string
+                  description: Original filename of the attachment.
+        poll_interval:
+          type: string
+          const: "15s"
+          description: >
+            Interval between blob container list operations. The receiver
+            polls for new blobs every 15 seconds.
+        cleanup:
+          type: string
+          description: >
+            Blobs are deleted immediately after successful processing by
+            the receiver. Failed downloads or handler errors leave the
+            blob in place for retry on the next poll cycle. There is no
+            automatic TTL; consider Azure Storage lifecycle management
+            policies for production deployments.
+        max_file_size:
+          type: string
+          description: >
+            Same as NATS: governed by the Mattermost server's
+            FileSettings.MaxFileSize configuration. Default is 100 MB.
+        message_size_limit:
+          type: integer
+          const: 48000
+          description: >
+            Azure Queue Storage has a 64 KB message size limit. Messages
+            are Base64-encoded before enqueuing, so the effective payload
+            limit is 48,000 bytes. Messages exceeding this limit are
+            truncated (text is shortened to fit).

@@ -19,7 +19,7 @@
             <a href="commands.html">Slash Commands</a>
             <a href="admin.html" class="active">Admin Configuration</a>
             <a href="api.html">REST API</a>
-            <a href="nats-interface.html">NATS Interface</a>
+            <a href="transport-interface.html">Transport Interface</a>
             <a href="threatmodel.html">Threat Model</a>
             <a href="whitepaper.html">Whitepaper</a>
         </nav>
@@ -33,18 +33,18 @@
         </div>
 
         <h1>Admin Configuration Guide</h1>
-        <p class="tagline">NATS connections, relay settings, and deployment examples</p>
+        <p class="tagline">Transport connections, relay settings, and deployment examples</p>
 
         <!-- Accessing Settings -->
         <h2>Accessing Plugin Settings</h2>
         <p>
             Navigate to <strong>System Console &gt; Plugins &gt; Cross Guard</strong>. The plugin
             must be enabled before configuration is accessible. Settings are organized into two
-            sections: NATS Configuration and Relay Settings.
+            sections: Connection Configuration and Relay Settings.
         </p>
 
-        <!-- NATS Configuration -->
-        <h2>NATS Configuration</h2>
+        <!-- Connection Configuration -->
+        <h2>Connection Configuration</h2>
 
         <h3>Understanding Inbound vs Outbound</h3>
 
@@ -55,13 +55,13 @@
             <tbody>
                 <tr>
                     <td><strong>Outbound</strong></td>
-                    <td>Mattermost &rarr; NATS</td>
-                    <td>Your server is the <strong>sender</strong>. Publishes messages to NATS.</td>
+                    <td>Mattermost &rarr; Transport</td>
+                    <td>Your server is the <strong>sender</strong>. Publishes messages to the configured transport.</td>
                 </tr>
                 <tr>
                     <td><strong>Inbound</strong></td>
-                    <td>NATS &rarr; Mattermost</td>
-                    <td>Your server is the <strong>receiver</strong>. Subscribes and receives messages from NATS.</td>
+                    <td>Transport &rarr; Mattermost</td>
+                    <td>Your server is the <strong>receiver</strong>. Subscribes to or polls messages from the configured transport.</td>
                 </tr>
             </tbody>
         </table>
@@ -71,8 +71,34 @@
             relay. Multiple connections of the same direction are supported for multi-server topologies.
         </p>
 
+        <h3>Provider Selection</h3>
+        <p>
+            Each connection uses either <strong>NATS</strong> or <strong>Azure Queue Storage</strong> as its
+            transport provider. The provider is selected when creating a connection, and the admin console
+            shows only the fields relevant to the chosen provider.
+        </p>
+        <table>
+            <thead>
+                <tr><th>Provider</th><th>Transport</th><th>File Transfer</th><th>Delivery</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>NATS</strong></td>
+                    <td>Pub/sub messaging via NATS Core</td>
+                    <td>JetStream Object Store</td>
+                    <td>At-most-once</td>
+                </tr>
+                <tr>
+                    <td><strong>Azure Queue Storage</strong></td>
+                    <td>Polling-based queue (5s interval)</td>
+                    <td>Azure Blob Storage</td>
+                    <td>At-least-once</td>
+                </tr>
+            </tbody>
+        </table>
+
         <!-- Connection Fields -->
-        <h3>Connection Fields</h3>
+        <h3>Common Connection Fields</h3>
 
         <table>
             <thead>
@@ -86,6 +112,51 @@
                     <td>Lowercase letters, numbers, and hyphens only. Pattern: <code>^[a-z0-9]+(-[a-z0-9]+)*$</code>. Must be unique across ALL connections.</td>
                     <td>Human-readable identifier. Used in all commands and API calls. Examples: <code>relay-to-b</code>, <code>high-side</code>, <code>nats-prod</code></td>
                 </tr>
+                <tr>
+                    <td><strong>Provider</strong></td>
+                    <td><code>provider</code></td>
+                    <td>Yes</td>
+                    <td><code>"nats"</code> or <code>"azure"</code>. Empty treated as <code>"nats"</code>.</td>
+                    <td>Transport provider for this connection. Determines which provider-specific fields are required. Default: <code>"nats"</code>.</td>
+                </tr>
+                <tr>
+                    <td><strong>File Transfer Enabled</strong></td>
+                    <td><code>file_transfer_enabled</code></td>
+                    <td>No</td>
+                    <td>Boolean</td>
+                    <td>Enable file attachment relay for this connection. Default: <code>false</code>.</td>
+                </tr>
+                <tr>
+                    <td><strong>File Filter Mode</strong></td>
+                    <td><code>file_filter_mode</code></td>
+                    <td>No</td>
+                    <td><code>""</code>, <code>"allow"</code>, or <code>"deny"</code></td>
+                    <td>Controls whether file extensions are filtered. <code>allow</code> = only listed extensions are relayed. <code>deny</code> = listed extensions are blocked. Empty = all files pass (default).</td>
+                </tr>
+                <tr>
+                    <td><strong>File Filter Types</strong></td>
+                    <td><code>file_filter_types</code></td>
+                    <td>Conditional</td>
+                    <td>Comma-separated extensions. Case-insensitive, leading dot optional.</td>
+                    <td>List of file extensions used by the filter (e.g. <code>.pdf,.docx,.png</code>). Required when <code>file_filter_mode</code> is <code>allow</code> or <code>deny</code>.</td>
+                </tr>
+                <tr>
+                    <td><strong>Message Format</strong></td>
+                    <td><code>message_format</code></td>
+                    <td>No</td>
+                    <td><code>"json"</code> or <code>"xml"</code>. Empty treated as <code>"json"</code>.</td>
+                    <td>Wire format for outbound messages. Use <code>"xml"</code> when sending through a Cross Domain Solution (CDS) that requires XML. Inbound messages are auto-detected regardless of this setting. Only applies to outbound connections. Default: <code>"json"</code>.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h3>NATS Provider Fields</h3>
+        <p>These fields appear when the provider is set to <strong>NATS</strong>. In JSON, they are nested under the <code>"nats"</code> key (e.g., <code>"nats": {"address": "...", "subject": "..."}</code>).</p>
+        <table>
+            <thead>
+                <tr><th>Field</th><th>JSON Key</th><th>Required</th><th>Validation</th><th>Description</th></tr>
+            </thead>
+            <tbody>
                 <tr>
                     <td><strong>Address</strong></td>
                     <td><code>address</code></td>
@@ -156,33 +227,36 @@
                     <td>-</td>
                     <td>Path to CA certificate for verifying the NATS server's TLS certificate.</td>
                 </tr>
+            </tbody>
+        </table>
+
+        <h3>Azure Provider Fields</h3>
+        <p>These fields appear when the provider is set to <strong>Azure Queue Storage</strong>. In JSON, they are nested under the <code>"azure"</code> key (e.g., <code>"azure": {"connection_string": "...", "queue_name": "..."}</code>).</p>
+        <table>
+            <thead>
+                <tr><th>Field</th><th>JSON Key</th><th>Required</th><th>Validation</th><th>Description</th></tr>
+            </thead>
+            <tbody>
                 <tr>
-                    <td><strong>File Transfer Enabled</strong></td>
-                    <td><code>file_transfer_enabled</code></td>
-                    <td>No</td>
-                    <td>Boolean</td>
-                    <td>Enable file attachment relay for this connection. Files are transferred via JetStream Object Store. Default: <code>false</code>.</td>
+                    <td><strong>Connection String</strong></td>
+                    <td><code>connection_string</code></td>
+                    <td>Yes</td>
+                    <td>Non-empty string</td>
+                    <td>Azure Storage account connection string. Obtain from the Azure Portal under Storage Account > Access Keys.</td>
                 </tr>
                 <tr>
-                    <td><strong>File Filter Mode</strong></td>
-                    <td><code>file_filter_mode</code></td>
-                    <td>No</td>
-                    <td><code>""</code>, <code>"allow"</code>, or <code>"deny"</code></td>
-                    <td>Controls whether file extensions are filtered. <code>allow</code> = only listed extensions are relayed. <code>deny</code> = listed extensions are blocked. Empty = all files pass (default).</td>
+                    <td><strong>Queue Name</strong></td>
+                    <td><code>queue_name</code></td>
+                    <td>Yes</td>
+                    <td>Non-empty string</td>
+                    <td>Name of the Azure Queue. The plugin auto-creates the queue if it does not exist. Both sides must use the same queue name.</td>
                 </tr>
                 <tr>
-                    <td><strong>File Filter Types</strong></td>
-                    <td><code>file_filter_types</code></td>
-                    <td>No</td>
-                    <td>Comma-separated extensions. Case-insensitive, leading dot optional.</td>
-                    <td>List of file extensions used by the filter (e.g. <code>.pdf,.docx,.png</code>). Only meaningful when <code>file_filter_mode</code> is <code>allow</code> or <code>deny</code>.</td>
-                </tr>
-                <tr>
-                    <td><strong>Message Format</strong></td>
-                    <td><code>message_format</code></td>
-                    <td>No</td>
-                    <td><code>"json"</code> or <code>"xml"</code>. Empty treated as <code>"json"</code>.</td>
-                    <td>Wire format for outbound messages. Use <code>"xml"</code> when sending through a Cross Domain Solution (CDS) that requires XML. Inbound messages are auto-detected regardless of this setting. Only applies to outbound connections. Default: <code>"json"</code>.</td>
+                    <td><strong>Blob Container Name</strong></td>
+                    <td><code>blob_container_name</code></td>
+                    <td>Conditional</td>
+                    <td>Required when <code>file_transfer_enabled</code> is <code>true</code></td>
+                    <td>Name of the Azure Blob container for file transfer. Auto-created if it does not exist. Both sides must use the same container name.</td>
                 </tr>
             </tbody>
         </table>
@@ -195,7 +269,9 @@
             <li>Subject must always start with <code>crossguard.</code></li>
             <li>Both sides of a relay must use the same NATS subject</li>
             <li>Auth credentials must be complete (both username AND password for credentials auth)</li>
-            <li>TLS cert and key must be provided as a pair (enforced at connection time, not config save)</li>
+            <li>TLS cert and key must be provided as a pair (enforced at config save time)</li>
+            <li>Azure connections require <code>connection_string</code> and <code>queue_name</code></li>
+            <li>Azure connections require <code>blob_container_name</code> when file transfer is enabled</li>
         </ol>
 
         <!-- Relay Settings -->
@@ -254,15 +330,23 @@
         <!-- File Transfer Settings -->
         <h2>File Transfer Settings</h2>
         <p>
-            File transfer is configured per connection, not globally. Each NATS connection can
+            File transfer is configured per connection, not globally. Each connection can
             independently enable or disable file attachment relay and apply extension filters.
         </p>
 
         <h3>Requirements</h3>
+        <h4>NATS Provider</h4>
         <ul>
             <li><strong>JetStream-enabled NATS server:</strong> File transfer uses NATS JetStream Object Store. Core NATS alone is not sufficient. The NATS server must have JetStream enabled.</li>
             <li><strong>Object Store bucket:</strong> The plugin auto-creates a <code>crossguard-files</code> bucket with a 1-hour TTL on first use. No manual NATS configuration is needed.</li>
             <li><strong>Max file size:</strong> Governed by the Mattermost server's <code>FileSettings.MaxFileSize</code> configuration (default 100 MB). Files exceeding this limit are silently skipped with a log warning.</li>
+        </ul>
+        <h4>Azure Provider</h4>
+        <ul>
+            <li><strong>Blob container:</strong> File transfer uses Azure Blob Storage. The plugin auto-creates the container specified in <code>blob_container_name</code> if it does not exist.</li>
+            <li><strong>Blob metadata:</strong> Headers (post ID, connection name, filename) are stored as Base64-encoded JSON in the blob's <code>crossguard_headers</code> metadata key.</li>
+            <li><strong>Polling interval:</strong> The inbound blob watcher polls every 15 seconds. Files are deleted after successful processing.</li>
+            <li><strong>Max file size:</strong> Same as NATS: governed by the Mattermost server's <code>FileSettings.MaxFileSize</code> configuration.</li>
         </ul>
 
         <h3>Filter Examples</h3>
@@ -303,14 +387,14 @@
         <h2>Testing Connections</h2>
         <p>
             The admin console UI includes a "Test Connection" button for each configured connection.
-            Tests can be run for outbound (publishes a test message) or inbound (subscribes and
-            confirms).
         </p>
         <ul>
             <li><strong>API endpoint:</strong> <code>POST /plugins/crossguard/api/v1/test-connection</code> (System Admin only)</li>
-            <li><strong>Outbound test:</strong> Publishes a message with a unique ID and confirms flush</li>
-            <li><strong>Inbound test:</strong> Subscribes to the subject and confirms the subscription is active</li>
+            <li><strong>NATS outbound test:</strong> Publishes a message with a unique ID and confirms flush</li>
+            <li><strong>NATS inbound test:</strong> Subscribes to the subject and confirms the subscription is active</li>
+            <li><strong>Azure test:</strong> Validates the connection string by enqueuing and deleting a test message</li>
             <li>Tests use a temporary connection (does not affect the running plugin's connections)</li>
+            <li>The <code>direction</code> query parameter is NATS-specific; Azure tests validate connectivity regardless of direction</li>
         </ul>
 
         <!-- Example Configurations -->
@@ -322,10 +406,13 @@
 <pre><code>Outbound Connections:
 [{
   "name": "relay-to-b",
-  "address": "nats://nats.example.com:4222",
-  "subject": "crossguard.relay.messages",
-  "auth_type": "token",
-  "token": "shared-secret-token",
+  "provider": "nats",
+  "nats": {
+    "address": "nats://nats.example.com:4222",
+    "subject": "crossguard.relay.messages",
+    "auth_type": "token",
+    "token": "shared-secret-token"
+  },
   "file_transfer_enabled": true,
   "file_filter_mode": "allow",
   "file_filter_types": ".pdf,.docx,.png"
@@ -337,10 +424,13 @@ Inbound Connections: []</code></pre>
 <pre><code>Inbound Connections:
 [{
   "name": "relay-from-a",
-  "address": "nats://nats.example.com:4222",
-  "subject": "crossguard.relay.messages",
-  "auth_type": "token",
-  "token": "shared-secret-token",
+  "provider": "nats",
+  "nats": {
+    "address": "nats://nats.example.com:4222",
+    "subject": "crossguard.relay.messages",
+    "auth_type": "token",
+    "token": "shared-secret-token"
+  },
   "file_transfer_enabled": true
 }]
 
@@ -349,12 +439,12 @@ Outbound Connections: []</code></pre>
         <h3>Bidirectional Setup (Both servers send and receive)</h3>
 
         <h4>Server A</h4>
-<pre><code>Outbound: [{"name": "to-b", "address": "nats://nats:4222", "subject": "crossguard.a-to-b"}]
-Inbound:  [{"name": "from-b", "address": "nats://nats:4222", "subject": "crossguard.b-to-a"}]</code></pre>
+<pre><code>Outbound: [{"name": "to-b", "provider": "nats", "nats": {"address": "nats://nats:4222", "subject": "crossguard.a-to-b"}}]
+Inbound:  [{"name": "from-b", "provider": "nats", "nats": {"address": "nats://nats:4222", "subject": "crossguard.b-to-a"}}]</code></pre>
 
         <h4>Server B</h4>
-<pre><code>Outbound: [{"name": "to-a", "address": "nats://nats:4222", "subject": "crossguard.b-to-a"}]
-Inbound:  [{"name": "from-a", "address": "nats://nats:4222", "subject": "crossguard.a-to-b"}]</code></pre>
+<pre><code>Outbound: [{"name": "to-a", "provider": "nats", "nats": {"address": "nats://nats:4222", "subject": "crossguard.b-to-a"}}]
+Inbound:  [{"name": "from-a", "provider": "nats", "nats": {"address": "nats://nats:4222", "subject": "crossguard.a-to-b"}}]</code></pre>
 
         <div class="alert alert-info">
             <p class="alert-title">Note</p>
@@ -372,6 +462,43 @@ Inbound:  [{"name": "from-a", "address": "nats://nats:4222", "subject": "crossgu
             <li><strong>Setup:</strong> <code>make docker-setup</code>, <strong>Deploy:</strong> <code>make deploy</code></li>
         </ul>
 
+        <h3>Azure Queue Storage Setup</h3>
+
+        <h4>Server A (sender via Azure)</h4>
+<pre><code>Outbound Connections:
+[{
+  "name": "azure-to-b",
+  "provider": "azure",
+  "azure": {
+    "connection_string": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
+    "queue_name": "crossguard-relay",
+    "blob_container_name": "crossguard-files"
+  },
+  "file_transfer_enabled": true
+}]</code></pre>
+
+        <h4>Server B (receiver via Azure)</h4>
+<pre><code>Inbound Connections:
+[{
+  "name": "azure-from-a",
+  "provider": "azure",
+  "azure": {
+    "connection_string": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
+    "queue_name": "crossguard-relay",
+    "blob_container_name": "crossguard-files"
+  },
+  "file_transfer_enabled": true
+}]</code></pre>
+
+        <div class="alert alert-info">
+            <p class="alert-title">Note</p>
+            <p>
+                Both sides share the same Azure Storage account, queue name, and blob container.
+                The outbound side enqueues messages and uploads blobs; the inbound side polls and
+                processes them.
+            </p>
+        </div>
+
         <!-- Troubleshooting -->
         <h2>Troubleshooting</h2>
 
@@ -381,16 +508,16 @@ Inbound:  [{"name": "from-a", "address": "nats://nats:4222", "subject": "crossgu
             </thead>
             <tbody>
                 <tr>
-                    <td>"No NATS connections configured"</td>
+                    <td>"No connections configured"</td>
                     <td>Add connections in System Console > Plugins > Cross Guard first.</td>
                 </tr>
                 <tr>
-                    <td>Connection test fails</td>
+                    <td>NATS connection test fails</td>
                     <td>Verify NATS server is reachable, check address/port, verify auth credentials match.</td>
                 </tr>
                 <tr>
                     <td>Messages not relaying</td>
-                    <td>Run <code>/crossguard status</code>. Verify both team AND channel are initialized. Check NATS subject matches on both sides.</td>
+                    <td>Run <code>/crossguard status</code>. Verify both team AND channel are initialized. Check that transport identifiers match on both sides (NATS subject for NATS connections, queue name for Azure connections).</td>
                 </tr>
                 <tr>
                     <td>"Connection not found"</td>
@@ -410,11 +537,11 @@ Inbound:  [{"name": "from-a", "address": "nats://nats:4222", "subject": "crossgu
                 </tr>
                 <tr>
                     <td>Files not transferring</td>
-                    <td>Verify <code>file_transfer_enabled</code> is <code>true</code> on both outbound and inbound connections. Ensure the NATS server has JetStream enabled (not just core NATS).</td>
+                    <td>Verify <code>file_transfer_enabled</code> is <code>true</code> on both outbound and inbound connections. For NATS, ensure the server has JetStream enabled (not just core NATS). For Azure, verify <code>blob_container_name</code> is set on both outbound and inbound connections.</td>
                 </tr>
                 <tr>
                     <td>"File semaphore full" log warnings</td>
-                    <td>Too many concurrent file transfers. The limit is 32 simultaneous file operations. Large files or slow NATS connections can cause congestion. Consider reducing file sizes or upgrading NATS bandwidth.</td>
+                    <td>Too many concurrent file transfers. The limit is 32 simultaneous file operations. Large files or slow connections can cause congestion. Consider reducing file sizes or upgrading network bandwidth.</td>
                 </tr>
                 <tr>
                     <td>File blocked by filter</td>
@@ -422,11 +549,31 @@ Inbound:  [{"name": "from-a", "address": "nats://nats:4222", "subject": "crossgu
                 </tr>
                 <tr>
                     <td>File appears after text message</td>
-                    <td>Normal behavior. Files arrive via Object Store watcher asynchronously. The inbound watcher retries post mapping lookup up to 3 times with backoff to wait for the text message to be processed first.</td>
+                    <td>Normal behavior. Files arrive asynchronously via the file watcher (NATS Object Store watcher or Azure Blob poller). The inbound watcher retries post mapping lookup up to 3 times with backoff to wait for the text message to be processed first.</td>
                 </tr>
                 <tr>
                     <td>Large files silently dropped</td>
                     <td>Files larger than the server's <code>MaxFileSize</code> setting (default 100 MB) are skipped with a log warning. Check <code>FileSettings.MaxFileSize</code> in the Mattermost server configuration.</td>
+                </tr>
+                <tr>
+                    <td>Azure connection test fails</td>
+                    <td>Verify the connection string is correct. Check that the storage account is accessible from the server. Ensure the account key has not been rotated.</td>
+                </tr>
+                <tr>
+                    <td>Azure messages delayed</td>
+                    <td>Azure Queue Storage uses polling (5-second intervals for messages, 15-second intervals for files). This is normal. For lower latency, use the NATS provider.</td>
+                </tr>
+                <tr>
+                    <td>Azure message too large</td>
+                    <td>Azure Queue Storage has a 48,000-byte message size limit (before Base64 encoding to the 64 KB wire limit). Messages exceeding this limit have their text truncated to fit. Long posts may lose content.</td>
+                </tr>
+                <tr>
+                    <td>Duplicate messages with Azure</td>
+                    <td>Azure Queue provides at-least-once delivery. The plugin uses idempotency checks (post ID mapping) to prevent duplicates, but brief visibility timeout races can cause rare duplicates during error recovery.</td>
+                </tr>
+                <tr>
+                    <td>Azure blob files not appearing</td>
+                    <td>Verify <code>blob_container_name</code> is set on both sides. Check that <code>file_transfer_enabled</code> is <code>true</code> on both outbound and inbound connections. The blob watcher polls every 15 seconds.</td>
                 </tr>
             </tbody>
         </table>

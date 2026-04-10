@@ -4,9 +4,12 @@
 Cross Guard is a Mattermost Federal plugin that enables cross-domain message relay capabilities.
 
 ## Architecture
-- `server/` - Go backend (plugin API, slash commands, configuration)
+- `server/` - Go backend (plugin API, slash commands, configuration, message providers, store layer, model definitions)
 - `webapp/` - React/TypeScript frontend (admin console components)
-- `build/` - Build tooling (manifest generation, deployment tools)
+- `build/` - Build tooling (manifest generation, deployment scripts)
+- `docker/` - Docker compose config and plugin volumes
+- `schema/` - Data schemas (XSD for cross-domain solutions)
+- `implementation-plans/` - Feature planning documents
 - `plugin.json` - Plugin manifest
 
 ## Coding Conventions

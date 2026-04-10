@@ -48,7 +48,7 @@ async function main() {
     const singles = [
         { html: 'whitepaper.html', output: 'crossguard-whitepaper.pdf' },
         { html: 'threatmodel.html', output: 'crossguard-threatmodel.pdf' },
-        { html: 'nats-interface.html', output: 'crossguard-nats-interface.pdf' },
+        { html: 'transport-interface.html', output: 'crossguard-transport-interface.pdf' },
     ];
 
     for (const { html, output } of singles) {

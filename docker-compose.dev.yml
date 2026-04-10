@@ -43,6 +43,21 @@ services:
       timeout: 5s
       retries: 5
 
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:latest
+    restart: unless-stopped
+    ports:
+      - "${AZURITE_QUEUE_PORT:-10001}:10001"
+      - "${AZURITE_BLOB_PORT:-10000}:10000"
+    volumes:
+      - ./docker/azurite-data:/data
+    command: ["azurite", "--blobHost", "0.0.0.0", "--queueHost", "0.0.0.0", "--location", "/data", "--skipApiVersionCheck"]
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "10001"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   mattermost-a:
     depends_on:
       postgres-a:
@@ -53,22 +68,23 @@ services:
     restart: unless-stopped
     ports:
       - "${MM_PORT_A:-8075}:8065"
-    volumes:
-      - ./docker/mattermost-a/config:/mattermost/config:rw
-      - ./docker/mattermost-a/data:/mattermost/data:rw
-      - ./docker/mattermost-a/logs:/mattermost/logs:rw
-      - ./docker/mattermost-a/plugins:/mattermost/plugins:rw
-      - ./docker/mattermost-a/client-plugins:/mattermost/client/plugins:rw
+    tmpfs:
+      - /mattermost/config:uid=2000,gid=2000
+      - /mattermost/logs:uid=2000,gid=2000
+      - /mattermost/data:uid=2000,gid=2000
+      - /mattermost/plugins:uid=2000,gid=2000,exec
+      - /mattermost/client/plugins:uid=2000,gid=2000
     environment:
       TZ: UTC
+      MM_CONFIG: postgres://mmuser:mmuser_password@postgres-a:5432/mattermost?sslmode=disable&connect_timeout=10
       MM_SQLSETTINGS_DRIVERNAME: postgres
       MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_password@postgres-a:5432/mattermost?sslmode=disable&connect_timeout=10
       MM_SERVICESETTINGS_SITEURL: http://low.test:${MM_PORT_A:-8075}
       MM_SERVICESETTINGS_LISTENADDRESS: :8065
       MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
-      MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"
+      MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "false"
       MM_LOGSETTINGS_CONSOLELEVEL: DEBUG
-      MM_LOGSETTINGS_ENABLEFILE: "true"
+      MM_LOGSETTINGS_ENABLEFILE: "false"
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
       MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS: "false"
@@ -84,22 +100,23 @@ services:
     restart: unless-stopped
     ports:
       - "${MM_PORT_B:-8076}:8065"
-    volumes:
-      - ./docker/mattermost-b/config:/mattermost/config:rw
-      - ./docker/mattermost-b/data:/mattermost/data:rw
-      - ./docker/mattermost-b/logs:/mattermost/logs:rw
-      - ./docker/mattermost-b/plugins:/mattermost/plugins:rw
-      - ./docker/mattermost-b/client-plugins:/mattermost/client/plugins:rw
+    tmpfs:
+      - /mattermost/config:uid=2000,gid=2000
+      - /mattermost/logs:uid=2000,gid=2000
+      - /mattermost/data:uid=2000,gid=2000
+      - /mattermost/plugins:uid=2000,gid=2000,exec
+      - /mattermost/client/plugins:uid=2000,gid=2000
     environment:
       TZ: UTC
+      MM_CONFIG: postgres://mmuser:mmuser_password@postgres-b:5432/mattermost?sslmode=disable&connect_timeout=10
       MM_SQLSETTINGS_DRIVERNAME: postgres
       MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_password@postgres-b:5432/mattermost?sslmode=disable&connect_timeout=10
       MM_SERVICESETTINGS_SITEURL: http://high.test:${MM_PORT_B:-8076}
       MM_SERVICESETTINGS_LISTENADDRESS: :8065
       MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
-      MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"
+      MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "false"
       MM_LOGSETTINGS_CONSOLELEVEL: DEBUG
-      MM_LOGSETTINGS_ENABLEFILE: "true"
+      MM_LOGSETTINGS_ENABLEFILE: "false"
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
       MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS: "false"

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NATS Interface - Cross Guard</title>
+    <title>Transport Interface - Cross Guard</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -19,7 +19,7 @@
             <a href="commands.html">Slash Commands</a>
             <a href="admin.html">Admin Configuration</a>
             <a href="api.html">REST API</a>
-            <a href="nats-interface.html" class="active">NATS Interface</a>
+            <a href="transport-interface.html" class="active">Transport Interface</a>
             <a href="threatmodel.html">Threat Model</a>
             <a href="whitepaper.html">Whitepaper</a>
         </nav>
@@ -29,23 +29,42 @@
         <div class="breadcrumb">
             <a href="help.html">Docs</a>
             <span class="separator">/</span>
-            NATS Interface
+            Transport Interface
         </div>
 
-        <h1>NATS Interface Reference</h1>
-        <p class="tagline">Wire protocol and message schemas for the Cross Guard NATS bus</p>
+        <h1>Transport Interface Reference</h1>
+        <p class="tagline">Wire protocol and message schemas for Cross Guard message transports</p>
 
         <!-- Overview -->
         <h2>Overview</h2>
         <p>
-            Cross Guard relays messages between Mattermost instances using
-            <a href="https://nats.io">NATS</a> as the transport layer. Text events (posts, edits,
-            deletes, reactions) are wrapped in a message envelope (serialized as JSON or XML,
-            per connection configuration) and published via core NATS publish/subscribe. File attachments use a separate subsystem: NATS JetStream Object
-            Store, which provides reliable binary object transfer with automatic TTL-based cleanup.
-            Both subsystems share the same NATS connection but operate independently.
+            Cross Guard supports two transport providers for relaying messages between Mattermost
+            instances: <a href="https://nats.io">NATS</a> and Azure Queue Storage. Each provider
+            has different delivery guarantees, latency characteristics, and infrastructure
+            requirements. Text events (posts, edits, deletes, reactions) are wrapped in a message
+            envelope (serialized as JSON or XML, per connection configuration) and delivered via
+            the configured transport. File attachments use a provider-specific subsystem: NATS
+            JetStream Object Store or Azure Blob Storage, depending on the transport.
         </p>
 
+        <h3>Transport Providers</h3>
+        <table>
+            <thead>
+                <tr><th>Aspect</th><th>NATS</th><th>Azure Queue Storage</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Delivery Model</td><td>Pub/sub (push)</td><td>Queue polling (pull, 5s interval)</td></tr>
+                <tr><td>Delivery Guarantee</td><td>At-most-once</td><td>At-least-once</td></tr>
+                <tr><td>Message Size Limit</td><td>1 MB (NATS server default, not plugin-enforced; no automatic truncation)</td><td>48,000 bytes (plugin-enforced truncation; before Base64 to 64 KB wire limit)</td></tr>
+                <tr><td>File Transfer</td><td>JetStream Object Store</td><td>Azure Blob Storage (15s poll interval)</td></tr>
+                <tr><td>Encryption</td><td>TLS (optional)</td><td>TLS always (Azure endpoint)</td></tr>
+                <tr><td>Authentication</td><td>Token, credentials, or mTLS</td><td>Connection string (shared key)</td></tr>
+                <tr><td>Message Encoding</td><td>Raw bytes</td><td>Base64 over wire</td></tr>
+                <tr><td>Auto-Provisioning</td><td>No (server must exist)</td><td>Yes (queue and container auto-created)</td></tr>
+            </tbody>
+        </table>
+
+        <h3>NATS Transport Summary</h3>
         <table class="field-table">
             <tbody>
                 <tr><td>Text Transport</td><td>NATS core publish/subscribe</td></tr>
@@ -59,8 +78,8 @@
             </tbody>
         </table>
 
-        <!-- Data Flow -->
-        <h2>Data Flow</h2>
+        <!-- Data Flow (NATS) -->
+        <h2>Data Flow (NATS)</h2>
 
         <h3>Outbound (Local to Remote)</h3>
         <div class="diagram-box">
@@ -90,6 +109,9 @@ Flush to confirm delivery</pre>
 <pre>NATS message arrives on subscribed subject
     |
     v
+Acquire relay semaphore (max 256, non-blocking; dropped if full)
+    |
+    v
 Auto-detect format (JSON or XML) and deserialize Envelope
     |
     v
@@ -117,7 +139,7 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
         <!-- Message Envelope -->
         <h2>Message Envelope</h2>
         <p>
-            Every message published to NATS uses this standard envelope. The <code>type</code>
+            Every message sent via the transport layer uses this standard envelope. The <code>type</code>
             field identifies the message kind. Exactly one payload field is present per
             message. The envelope can be serialized as JSON or XML depending on the
             outbound connection's <code>message_format</code> setting. Inbound messages
@@ -496,7 +518,7 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
         <!-- TestMessage -->
         <h2 id="testmessage">TestMessage</h2>
         <p>
-            A lightweight message used to verify NATS connectivity. Sent via the
+            A lightweight message used to verify transport connectivity. Sent via the
             <code>POST /api/v1/test-connection</code> REST endpoint when testing an
             outbound connection. The receiving instance logs receipt and confirms
             the connection is functional.
@@ -533,7 +555,7 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
         <!-- Complete Wire Examples -->
         <h2>Complete Wire Format Examples</h2>
         <p>
-            Each example below shows the full JSON envelope as it appears on the NATS wire.
+            Each example below shows the full JSON envelope as it appears on the wire.
             For XML equivalents, see the <a href="#xml-format">XML Format</a> section and
             the <code>schema/crossguard.xsd</code> schema definition.
         </p>
@@ -626,12 +648,15 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
   }
 }</code></pre>
 
-        <!-- Connection Configuration -->
-        <h2>Connection Configuration</h2>
+        <!-- Connection Configuration (NATS) -->
+        <h2>Connection Configuration (NATS)</h2>
         <p>
             Each NATS connection (inbound or outbound) is configured in the System Console.
             This schema is stored in plugin settings and is not transmitted over the wire.
-            It is included here for reference when setting up integrations.
+            It is included here for reference when setting up NATS integrations. The
+            <code>provider</code> field selects the transport backend. NATS-specific fields
+            (<code>address</code>, <code>subject</code>, <code>tls_enabled</code>, etc.) are
+            nested under the <code>"nats"</code> key in JSON.
         </p>
 
         <div class="endpoint-card">
@@ -646,12 +671,44 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
                         <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
                     </thead>
                     <tbody>
+                        <tr><td colspan="4"><strong>Connection Fields</strong> (top-level in JSON)</td></tr>
                         <tr>
                             <td><code>name</code></td>
                             <td>string</td>
                             <td>Yes</td>
                             <td>Connection identifier. Must start and end with a lowercase letter or number. Hyphens allowed between segments, no consecutive hyphens (pattern: <code>^[a-z0-9]+(-[a-z0-9]+)*$</code>).</td>
                         </tr>
+                        <tr>
+                            <td><code>provider</code></td>
+                            <td>string</td>
+                            <td>No</td>
+                            <td>Transport provider: <code>"nats"</code> or <code>"azure"</code>. Default: <code>"nats"</code>.</td>
+                        </tr>
+                        <tr>
+                            <td><code>file_transfer_enabled</code></td>
+                            <td>boolean</td>
+                            <td>No</td>
+                            <td>Enable file attachment relay via JetStream Object Store. Default: <code>false</code>.</td>
+                        </tr>
+                        <tr>
+                            <td><code>file_filter_mode</code></td>
+                            <td>string</td>
+                            <td>No</td>
+                            <td>File extension filter: <code>""</code> (no filter), <code>"allow"</code> (whitelist), or <code>"deny"</code> (blacklist). Default: <code>""</code>.</td>
+                        </tr>
+                        <tr>
+                            <td><code>file_filter_types</code></td>
+                            <td>string</td>
+                            <td>Conditional</td>
+                            <td>Comma-separated extensions (e.g. <code>.pdf,.docx,.png</code>). Case-insensitive. Required when <code>file_filter_mode</code> is <code>"allow"</code> or <code>"deny"</code>.</td>
+                        </tr>
+                        <tr>
+                            <td><code>message_format</code></td>
+                            <td>string</td>
+                            <td>No</td>
+                            <td>Wire format for outbound messages: <code>"json"</code> (default) or <code>"xml"</code>. Use XML when sending through a Cross Domain Solution (CDS). Inbound messages are auto-detected regardless of this setting.</td>
+                        </tr>
+                        <tr><td colspan="4"><strong>NATS Provider Fields</strong> (nested under <code>"nats"</code> key in JSON)</td></tr>
                         <tr>
                             <td><code>address</code></td>
                             <td>string</td>
@@ -712,84 +769,72 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
                             <td>No</td>
                             <td>Filesystem path to the CA certificate for server verification.</td>
                         </tr>
-                        <tr>
-                            <td><code>file_transfer_enabled</code></td>
-                            <td>boolean</td>
-                            <td>No</td>
-                            <td>Enable file attachment relay via JetStream Object Store. Default: <code>false</code>.</td>
-                        </tr>
-                        <tr>
-                            <td><code>file_filter_mode</code></td>
-                            <td>string</td>
-                            <td>No</td>
-                            <td>File extension filter: <code>""</code> (no filter), <code>"allow"</code> (whitelist), or <code>"deny"</code> (blacklist). Default: <code>""</code>.</td>
-                        </tr>
-                        <tr>
-                            <td><code>file_filter_types</code></td>
-                            <td>string</td>
-                            <td>Conditional</td>
-                            <td>Comma-separated extensions (e.g. <code>.pdf,.docx,.png</code>). Case-insensitive. Required when <code>file_filter_mode</code> is <code>"allow"</code> or <code>"deny"</code>.</td>
-                        </tr>
-                        <tr>
-                            <td><code>message_format</code></td>
-                            <td>string</td>
-                            <td>No</td>
-                            <td>Wire format for outbound messages: <code>"json"</code> (default) or <code>"xml"</code>. Use XML when sending through a Cross Domain Solution (CDS). Inbound messages are auto-detected regardless of this setting.</td>
-                        </tr>
                     </tbody>
                 </table>
 
                 <h4>Example: Token Authentication</h4>
 <pre><code>{
   "name": "high-side",
-  "address": "nats://nats:4222",
-  "subject": "crossguard.high",
-  "tls_enabled": false,
-  "auth_type": "token",
-  "token": "my-secret-token"
+  "provider": "nats",
+  "nats": {
+    "address": "nats://nats:4222",
+    "subject": "crossguard.high",
+    "tls_enabled": false,
+    "auth_type": "token",
+    "token": "my-secret-token"
+  }
 }</code></pre>
 
                 <h4>Example: TLS with Credentials</h4>
 <pre><code>{
   "name": "secure-relay",
-  "address": "nats://nats.example.com:4222",
-  "subject": "crossguard.relay",
-  "tls_enabled": true,
-  "auth_type": "credentials",
-  "username": "crossguard-svc",
-  "password": "s3cret",
-  "client_cert": "/etc/crossguard/client.crt",
-  "client_key": "/etc/crossguard/client.key",
-  "ca_cert": "/etc/crossguard/ca.crt"
+  "provider": "nats",
+  "nats": {
+    "address": "nats://nats.example.com:4222",
+    "subject": "crossguard.relay",
+    "tls_enabled": true,
+    "auth_type": "credentials",
+    "username": "crossguard-svc",
+    "password": "s3cret",
+    "client_cert": "/etc/crossguard/client.crt",
+    "client_key": "/etc/crossguard/client.key",
+    "ca_cert": "/etc/crossguard/ca.crt"
+  }
 }</code></pre>
 
                 <h4>Example: File Transfer with Allow Filter</h4>
 <pre><code>{
   "name": "high-side",
-  "address": "nats://nats:4222",
-  "subject": "crossguard.high",
-  "auth_type": "token",
-  "token": "my-secret-token",
+  "provider": "nats",
   "file_transfer_enabled": true,
   "file_filter_mode": "allow",
-  "file_filter_types": ".pdf,.docx,.png,.jpg"
+  "file_filter_types": ".pdf,.docx,.png,.jpg",
+  "nats": {
+    "address": "nats://nats:4222",
+    "subject": "crossguard.high",
+    "auth_type": "token",
+    "token": "my-secret-token"
+  }
 }</code></pre>
 
                 <h4>Example: XML Format for CDS</h4>
 <pre><code>{
   "name": "cds-relay",
-  "address": "nats://nats:4222",
-  "subject": "crossguard.cds",
-  "tls_enabled": true,
-  "auth_type": "token",
-  "token": "my-secret-token",
-  "message_format": "xml"
+  "provider": "nats",
+  "message_format": "xml",
+  "nats": {
+    "address": "nats://nats:4222",
+    "subject": "crossguard.cds",
+    "tls_enabled": true,
+    "auth_type": "token",
+    "token": "my-secret-token"
+  }
 }</code></pre>
             </div>
         </div>
 
-        <!-- Connection Behavior -->
-        <h2>Connection Behavior</h2>
+        <!-- Connection Behavior (NATS) -->
+        <h2>Connection Behavior (NATS)</h2>
 
         <table>
             <thead>
@@ -854,8 +899,8 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
             </tbody>
         </table>
 
-        <!-- File Transfer Protocol -->
-        <h2 id="file-transfer">File Transfer Protocol</h2>
+        <!-- File Transfer Protocol (NATS JetStream) -->
+        <h2 id="file-transfer">File Transfer Protocol (NATS JetStream)</h2>
         <p>
             File attachment relay uses NATS JetStream Object Store as an out-of-band binary
             transfer mechanism. Text and file relay are completely independent systems that share
@@ -938,7 +983,7 @@ Plugin hook fires (MessageHasBeenPosted)
          Download file bytes from Mattermost (once, shared across connections)
              |
              v
-         Acquire file semaphore (max 32)
+         Acquire file semaphore (max 32, non-blocking; skipped if full)
              |
              v
          Get or create Object Store bucket ("crossguard-files")
@@ -967,9 +1012,9 @@ Check: file passes inbound filter policy?
     |
     v
 Look up local post ID via KV mapping: pm-{connName}-{remotePostID}
-    |  (retries up to 3 times with linear backoff: 1s, 2s, 3s)
+    |  (retries up to 3 times with linear backoff: 1s, 2s)
     v
-Acquire file semaphore (max 32)
+Acquire file semaphore (max 32, blocks until slot available)
     |
     v
 Download file bytes from Object Store
@@ -1086,6 +1131,125 @@ Release semaphore</pre>
                 automatically before format detection. BOM-prefixed XML is handled correctly.
             </p>
         </div>
+
+        <!-- Azure Queue Storage Transport -->
+        <h2>Azure Queue Storage Transport</h2>
+
+        <h3>Overview</h3>
+        <p>
+            The Azure provider uses Azure Queue Storage for message delivery and Azure Blob Storage
+            for file transfer. Unlike NATS pub/sub, Azure uses a polling model where the inbound side
+            periodically checks the queue for new messages.
+        </p>
+
+        <h3>Message Flow</h3>
+        <div class="diagram-box">
+<pre>Outbound Server                Azure Storage              Inbound Server
++------------------+    +-------------------------+    +------------------+
+|                  |    |                         |    |                  |
+| Serialize msg    |    |  Queue: crossguard-     |    | Poll queue       |
+| Base64 encode    |--->|  relay                  |--->| (every 5s)       |
+| Enqueue          |    |                         |    | Base64 decode    |
+|                  |    |  Blob Container:        |    | Deliver to       |
+| Upload file?     |--->|  crossguard-files       |--->| handler          |
+| Set metadata     |    |  (headers in metadata)  |    | (every 15s poll) |
++------------------+    +-------------------------+    +------------------+</pre>
+        </div>
+
+        <h3>Queue Polling</h3>
+        <table>
+            <thead>
+                <tr><th>Parameter</th><th>Value</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Poll Interval</td><td>5 seconds</td><td>How often the inbound side checks for new queue messages</td></tr>
+                <tr><td>Visibility Timeout</td><td>5 minutes</td><td>How long a dequeued message is hidden from other consumers</td></tr>
+                <tr><td>Batch Size</td><td>32 messages</td><td>Maximum messages dequeued per poll cycle</td></tr>
+                <tr><td>Message Encoding</td><td>Base64</td><td>All messages are Base64-encoded before enqueuing</td></tr>
+                <tr><td>Max Message Size</td><td>48,000 bytes</td><td>Safe limit before Base64 encoding to the 64 KB Azure wire limit</td></tr>
+            </tbody>
+        </table>
+
+        <h3>Message Lifecycle</h3>
+        <ol>
+            <li>Outbound serializes the message envelope (JSON or XML)</li>
+            <li>Payload is Base64-encoded and enqueued to Azure Queue Storage</li>
+            <li>Inbound polls the queue every 5 seconds</li>
+            <li>Messages are dequeued with a 5-minute visibility timeout</li>
+            <li>On successful processing, the message is deleted from the queue</li>
+            <li>On handler error, the message becomes visible again after the timeout for retry</li>
+            <li>Malformed messages (invalid Base64) are deleted immediately to prevent reprocessing loops</li>
+        </ol>
+
+        <h3>Azure File Transfer (Blob Storage)</h3>
+        <p>
+            When <code>file_transfer_enabled</code> is <code>true</code> and a <code>blob_container_name</code>
+            is configured, file attachments are transferred via Azure Blob Storage.
+        </p>
+
+        <h4>Upload (Outbound)</h4>
+        <ol>
+            <li>File data is uploaded as a block blob to the configured container</li>
+            <li>The blob key follows the format: <code>{post_id}/{unique_id}</code></li>
+            <li>Headers (post ID, connection name, filename) are stored as blob metadata under the <code>crossguard_headers</code> key</li>
+            <li>Metadata is a Base64-encoded JSON object: <code>{"headers": {"X-Post-Id": "...", "X-Conn-Name": "...", "X-Filename": "..."}}</code></li>
+        </ol>
+
+        <h4>Download (Inbound)</h4>
+        <ol>
+            <li>The blob watcher polls the container every 15 seconds using a list operation</li>
+            <li>New blobs (after the last processed marker) are downloaded</li>
+            <li>Headers are extracted from the <code>crossguard_headers</code> metadata</li>
+            <li>After successful processing, the blob is deleted</li>
+            <li>The marker only advances after a successful delete, ensuring blobs are re-listed on failure</li>
+        </ol>
+
+        <h3>Azure Connection Configuration</h3>
+        <table>
+            <thead>
+                <tr><th>Field</th><th>JSON Key</th><th>Required</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Connection String</td>
+                    <td><code>connection_string</code></td>
+                    <td>Yes</td>
+                    <td>Azure Storage account connection string</td>
+                </tr>
+                <tr>
+                    <td>Queue Name</td>
+                    <td><code>queue_name</code></td>
+                    <td>Yes</td>
+                    <td>Azure Queue name (auto-created if missing)</td>
+                </tr>
+                <tr>
+                    <td>Blob Container Name</td>
+                    <td><code>blob_container_name</code></td>
+                    <td>When file transfer enabled</td>
+                    <td>Azure Blob container (auto-created if missing)</td>
+                </tr>
+            </tbody>
+        </table>
+
+                <h4>Example: Azure Connection</h4>
+<pre><code>{
+  "name": "azure-relay",
+  "provider": "azure",
+  "file_transfer_enabled": true,
+  "azure": {
+    "connection_string": "DefaultEndpointsProtocol=https;AccountName=mystorageaccount;AccountKey=...;EndpointSuffix=core.windows.net",
+    "queue_name": "crossguard-relay",
+    "blob_container_name": "crossguard-files"
+  }
+}</code></pre>
+
+        <h3>Auto-Provisioning</h3>
+        <p>
+            Unlike NATS, the Azure provider automatically creates both the queue and the blob container
+            on startup if they do not already exist. The "already exists" response (HTTP 409) is
+            treated as success. No manual Azure infrastructure setup is required beyond creating the
+            storage account and providing the connection string.
+        </p>
 
         <!-- Loop Prevention -->
         <h2>Loop Prevention</h2>

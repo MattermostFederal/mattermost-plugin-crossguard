@@ -1,0 +1,1917 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	nats "github.com/nats-io/nats.go"
+
+	mmModel "github.com/mattermost/mattermost/server/public/model"
+	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
+)
+
+// mockLog registers permissive log expectations on the plugintest API.
+func mockLog(api *plugintest.API) {
+	// Log methods accept variadic args. Register multiple arities to avoid panics.
+	for _, method := range []string{"LogInfo", "LogWarn", "LogError", "LogDebug"} {
+		api.On(method, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On(method, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On(method, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On(method, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On(method, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On(method, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		api.On(method, mock.Anything).Maybe()
+	}
+}
+
+// --------------------------------------------------------------------------
+// Authentication tests
+// --------------------------------------------------------------------------
+
+func TestGetAuthenticatedUser_MissingHeader(t *testing.T) {
+	api := &plugintest.API{}
+	mockLog(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	r := makeAuthRequest(t, http.MethodGet, "/api/v1/status", nil, "")
+	w := httptest.NewRecorder()
+
+	p.ServeHTTP(nil, w, r)
+
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	body := decodeJSONResponse(t, w)
+	assert.Equal(t, "not authenticated", body["error"])
+}
+
+func TestGetAuthenticatedUser_GetUserFails(t *testing.T) {
+	api := &plugintest.API{}
+	mockLog(api)
+	api.On("GetUser", "bad-id").Return(nil, &mmModel.AppError{Message: "db error"})
+	p, _ := setupTestPluginWithRouter(api)
+
+	r := makeAuthRequest(t, http.MethodGet, "/api/v1/status", nil, "bad-id")
+	w := httptest.NewRecorder()
+
+	p.ServeHTTP(nil, w, r)
+
+	require.Equal(t, http.StatusInternalServerError, w.Code)
+	body := decodeJSONResponse(t, w)
+	assert.Equal(t, "failed to get user", body["error"])
+}
+
+// --------------------------------------------------------------------------
+// handleTestConnection tests
+// --------------------------------------------------------------------------
+
+func TestHandleTestConnection(t *testing.T) {
+	adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+
+	t.Run("non-admin returns 403", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		regularUser := &mmModel.User{Id: "user-id", Roles: ""}
+		api.On("GetUser", "user-id").Return(regularUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", map[string]any{}, "user-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("invalid request body returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := httptest.NewRequest(http.MethodPost, "/api/v1/test-connection", strings.NewReader("not json"))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Mattermost-User-Id", "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("unknown provider returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{"provider": "kafka"}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "nats")
+	})
+
+	t.Run("NATS missing nats block returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{"provider": "nats"}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "nats config block")
+	})
+
+	t.Run("NATS missing address returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{
+			"provider": "nats",
+			"nats":     map[string]any{"subject": "crossguard.test"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "address is required")
+	})
+
+	t.Run("NATS missing subject returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{
+			"provider": "nats",
+			"nats":     map[string]any{"address": "nats://localhost:4222"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "subject is required")
+	})
+
+	t.Run("NATS wrong subject prefix returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{
+			"provider": "nats",
+			"nats":     map[string]any{"address": "nats://localhost:4222", "subject": "wrong.prefix"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "subject must start with")
+	})
+
+	t.Run("NATS invalid auth_type returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{
+			"provider": "nats",
+			"nats":     map[string]any{"address": "nats://localhost:4222", "subject": "crossguard.test", "auth_type": "kerberos"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "auth_type")
+	})
+
+	t.Run("NATS token auth without token returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{
+			"provider": "nats",
+			"nats":     map[string]any{"address": "nats://localhost:4222", "subject": "crossguard.test", "auth_type": "token"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "token is required")
+	})
+
+	t.Run("NATS credentials without username returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{
+			"provider": "nats",
+			"nats":     map[string]any{"address": "nats://localhost:4222", "subject": "crossguard.test", "auth_type": "credentials"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "username and password")
+	})
+
+	t.Run("Azure missing azure block returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{"provider": "azure"}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "azure config block")
+	})
+
+	t.Run("Azure missing connection_string returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{
+			"provider": "azure",
+			"azure":    map[string]any{"queue_name": "myqueue"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "connection_string is required")
+	})
+
+	t.Run("Azure missing queue_name returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{
+			"provider": "azure",
+			"azure":    map[string]any{"connection_string": "DefaultEndpointsProtocol=https;AccountName=x"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "queue_name is required")
+	})
+
+	t.Run("invalid message_format returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{
+			"provider":       "nats",
+			"message_format": "yaml",
+			"nats":           map[string]any{"address": "nats://localhost:4222", "subject": "crossguard.test"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "message_format")
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleInitTeam tests
+// --------------------------------------------------------------------------
+
+func TestHandleInitTeam(t *testing.T) {
+	t.Run("unauthenticated returns 401", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+mmModel.NewId()+"/init", nil, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+
+	t.Run("invalid team_id returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/bad/init", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "invalid team_id", resp["error"])
+	})
+
+	t.Run("non-admin returns 403", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		regularUser := &mmModel.User{Id: "user-id", Roles: ""}
+		api.On("GetUser", "user-id").Return(regularUser, nil)
+		api.On("GetTeamMember", teamID, "user-id").Return(&mmModel.TeamMember{SchemeAdmin: false}, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/init", nil, "user-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("happy path returns 200", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		team := &mmModel.Team{Id: teamID, Name: "test-team"}
+		api.On("GetTeam", teamID).Return(team, nil)
+
+		channel := &mmModel.Channel{Id: "ts-id"}
+		api.On("GetChannelByName", teamID, "town-square", false).Return(channel, nil)
+		api.On("CreatePost", mock.Anything).Return(&mmModel.Post{}, nil)
+
+		p, _ := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/init", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "ok", resp["status"])
+		assert.Equal(t, teamID, resp["team_id"])
+	})
+
+	t.Run("already linked returns 200", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		team := &mmModel.Team{Id: teamID, Name: "test-team"}
+		api.On("GetTeam", teamID).Return(team, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+		}
+		// Override GetTeamConnections to return the connection already linked
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+			}, nil
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/init", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "ok", resp["status"])
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleTeardownTeam tests
+// --------------------------------------------------------------------------
+
+func TestHandleTeardownTeam(t *testing.T) {
+	t.Run("non-admin returns 403", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		regularUser := &mmModel.User{Id: "user-id", Roles: ""}
+		api.On("GetUser", "user-id").Return(regularUser, nil)
+		api.On("GetTeamMember", teamID, "user-id").Return(&mmModel.TeamMember{SchemeAdmin: false}, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/teardown", nil, "user-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("happy path returns 200", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		team := &mmModel.Team{Id: teamID, Name: "test-team"}
+		api.On("GetTeam", teamID).Return(team, nil)
+		channel := &mmModel.Channel{Id: "ts-id"}
+		api.On("GetChannelByName", teamID, "town-square", false).Return(channel, nil)
+		api.On("CreatePost", mock.Anything).Return(&mmModel.Post{}, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+		}
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+			}, nil
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/teardown", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "ok", resp["status"])
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleInitChannel tests
+// --------------------------------------------------------------------------
+
+func TestHandleInitChannel(t *testing.T) {
+	t.Run("unauthenticated returns 401", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/"+mmModel.NewId()+"/init", nil, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+
+	t.Run("invalid channel_id returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/bad/init", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "invalid channel_id", resp["error"])
+	})
+
+	t.Run("channel not found returns 404", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		chanID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannel", chanID).Return(nil, &mmModel.AppError{Message: "not found"})
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/"+chanID+"/init", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("non-admin returns 403", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		chanID := mmModel.NewId()
+		teamID := mmModel.NewId()
+		regularUser := &mmModel.User{Id: "user-id", Roles: ""}
+		api.On("GetUser", "user-id").Return(regularUser, nil)
+		api.On("GetChannel", chanID).Return(&mmModel.Channel{Id: chanID, TeamId: teamID}, nil)
+		api.On("GetChannelMember", chanID, "user-id").Return(&mmModel.ChannelMember{SchemeAdmin: false}, nil)
+		api.On("GetTeamMember", teamID, "user-id").Return(&mmModel.TeamMember{SchemeAdmin: false}, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/"+chanID+"/init", nil, "user-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("happy path returns 200", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		chanID := mmModel.NewId()
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannel", chanID).Return(&mmModel.Channel{Id: chanID, Name: "test-channel", TeamId: teamID}, nil)
+		api.On("GetChannelMember", chanID, "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+		api.On("GetTeam", teamID).Return(&mmModel.Team{Id: teamID, Name: "test-team"}, nil)
+		api.On("GetChannelByName", teamID, "town-square", false).Return(&mmModel.Channel{Id: "ts-id"}, nil)
+		api.On("CreatePost", mock.Anything).Return(&mmModel.Post{}, nil)
+		api.On("UpdateChannel", mock.Anything).Return(&mmModel.Channel{Id: chanID}, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+		}
+		// Team already has connections linked
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+			}, nil
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/"+chanID+"/init", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "ok", resp["status"])
+		assert.Equal(t, chanID, resp["channel_id"])
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleTeardownChannel tests
+// --------------------------------------------------------------------------
+
+func TestHandleTeardownChannel(t *testing.T) {
+	t.Run("non-admin returns 403", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		chanID := mmModel.NewId()
+		teamID := mmModel.NewId()
+		regularUser := &mmModel.User{Id: "user-id", Roles: ""}
+		api.On("GetUser", "user-id").Return(regularUser, nil)
+		api.On("GetChannel", chanID).Return(&mmModel.Channel{Id: chanID, TeamId: teamID}, nil)
+		api.On("GetChannelMember", chanID, "user-id").Return(&mmModel.ChannelMember{SchemeAdmin: false}, nil)
+		api.On("GetTeamMember", teamID, "user-id").Return(&mmModel.TeamMember{SchemeAdmin: false}, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/"+chanID+"/teardown", nil, "user-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("happy path returns 200", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		chanID := mmModel.NewId()
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannel", chanID).Return(&mmModel.Channel{Id: chanID, Name: "test-channel", TeamId: teamID}, nil)
+		api.On("GetChannelMember", chanID, "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+		api.On("CreatePost", mock.Anything).Return(&mmModel.Post{}, nil)
+		api.On("UpdateChannel", mock.Anything).Return(&mmModel.Channel{Id: chanID}, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+		}
+		kvs.getChannelConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+			}, nil
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/"+chanID+"/teardown", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "ok", resp["status"])
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleGlobalStatus tests
+// --------------------------------------------------------------------------
+
+func TestHandleGlobalStatus(t *testing.T) {
+	t.Run("non-admin returns 403", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		regularUser := &mmModel.User{Id: "user-id", Roles: ""}
+		api.On("GetUser", "user-id").Return(regularUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodGet, "/api/v1/status", nil, "user-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("happy path returns 200", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+			InboundConnections:  `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+		}
+
+		r := makeAuthRequest(t, http.MethodGet, "/api/v1/status", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.NotNil(t, resp["teams"])
+		assert.NotNil(t, resp["connections"])
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleTeamStatus tests
+// --------------------------------------------------------------------------
+
+func TestHandleTeamStatus(t *testing.T) {
+	t.Run("invalid team_id returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodGet, "/api/v1/teams/bad/status", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("non-member returns 403", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetTeamMember", teamID, "admin-id").Return(nil, &mmModel.AppError{Message: "not found"})
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodGet, "/api/v1/teams/"+teamID+"/status", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("happy path returns 200", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetTeamMember", teamID, "admin-id").Return(&mmModel.TeamMember{}, nil)
+		api.On("GetTeam", teamID).Return(&mmModel.Team{Id: teamID, Name: "test-team", DisplayName: "Test Team"}, nil)
+
+		p, _ := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+		}
+
+		r := makeAuthRequest(t, http.MethodGet, "/api/v1/teams/"+teamID+"/status", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, teamID, resp["team_id"])
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleChannelStatus tests
+// --------------------------------------------------------------------------
+
+func TestHandleChannelStatus(t *testing.T) {
+	t.Run("invalid channel_id returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodGet, "/api/v1/channels/bad/status", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("non-member returns 403", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		chanID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannelMember", chanID, "admin-id").Return(nil, &mmModel.AppError{Message: "not found"})
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodGet, "/api/v1/channels/"+chanID+"/status", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("happy path returns 200", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		chanID := mmModel.NewId()
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannelMember", chanID, "admin-id").Return(&mmModel.ChannelMember{}, nil)
+		api.On("GetChannel", chanID).Return(&mmModel.Channel{Id: chanID, Name: "test-channel", DisplayName: "Test Channel", TeamId: teamID, Type: mmModel.ChannelTypeOpen}, nil)
+		api.On("GetTeam", teamID).Return(&mmModel.Team{Id: teamID, Name: "test-team", DisplayName: "Test Team"}, nil)
+
+		p, _ := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+		}
+
+		r := makeAuthRequest(t, http.MethodGet, "/api/v1/channels/"+chanID+"/status", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, chanID, resp["channel_id"])
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleBulkChannelConnections tests
+// --------------------------------------------------------------------------
+
+func TestHandleBulkChannelConnections(t *testing.T) {
+	t.Run("missing ids returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodGet, "/api/v1/channels/connections", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "ids query parameter")
+	})
+
+	t.Run("too many ids returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		// Build a string with more than maxBulkChannelIDs entries
+		ids := make([]string, maxBulkChannelIDs+1)
+		for i := range ids {
+			ids[i] = mmModel.NewId()
+		}
+		path := "/api/v1/channels/connections?ids=" + strings.Join(ids, ",")
+		r := makeAuthRequest(t, http.MethodGet, path, nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "too many")
+	})
+
+	t.Run("happy path returns connections map", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		chanID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannelMember", chanID, "admin-id").Return(&mmModel.ChannelMember{}, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getChannelConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			if id == chanID {
+				return []store.TeamConnection{
+					{Direction: "outbound", Connection: "high"},
+				}, nil
+			}
+			return nil, nil
+		}
+
+		path := "/api/v1/channels/connections?ids=" + chanID
+		r := makeAuthRequest(t, http.MethodGet, path, nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "outbound:high", resp[chanID])
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleSetTeamRewrite tests
+// --------------------------------------------------------------------------
+
+func TestHandleSetTeamRewrite(t *testing.T) {
+	t.Run("non-admin returns 403", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		regularUser := &mmModel.User{Id: "user-id", Roles: ""}
+		api.On("GetUser", "user-id").Return(regularUser, nil)
+		api.On("GetTeamMember", teamID, "user-id").Return(&mmModel.TeamMember{SchemeAdmin: false}, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/rewrite", map[string]any{
+			"connection":       "high",
+			"remote_team_name": "remote",
+		}, "user-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("missing fields returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/rewrite", map[string]any{}, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "connection and remote_team_name are required")
+	})
+
+	t.Run("connection not found returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+			}, nil
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/rewrite", map[string]any{
+			"connection":       "missing",
+			"remote_team_name": "remote",
+		}, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "inbound connection not found")
+	})
+
+	t.Run("happy path returns 200", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId, Username: "admin"}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "inbound", Connection: "high"},
+			}, nil
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/rewrite", map[string]any{
+			"connection":       "high",
+			"remote_team_name": "remote-team",
+		}, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "ok", resp["status"])
+		assert.Equal(t, "remote-team", resp["remote_team_name"])
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleDeleteTeamRewrite tests
+// --------------------------------------------------------------------------
+
+func TestHandleDeleteTeamRewrite(t *testing.T) {
+	t.Run("non-admin returns 403", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		regularUser := &mmModel.User{Id: "user-id", Roles: ""}
+		api.On("GetUser", "user-id").Return(regularUser, nil)
+		api.On("GetTeamMember", teamID, "user-id").Return(&mmModel.TeamMember{SchemeAdmin: false}, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodDelete, "/api/v1/teams/"+teamID+"/rewrite?connection=high", nil, "user-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("missing connection param returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodDelete, "/api/v1/teams/"+teamID+"/rewrite", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "connection query parameter")
+	})
+
+	t.Run("happy path returns 200", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId, Username: "admin"}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "inbound", Connection: "high", RemoteTeamName: "old-remote"},
+			}, nil
+		}
+
+		r := makeAuthRequest(t, http.MethodDelete, "/api/v1/teams/"+teamID+"/rewrite?connection=high", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "ok", resp["status"])
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleDialogSelectConnection tests
+// --------------------------------------------------------------------------
+
+func TestHandleDialogSelectConnection(t *testing.T) {
+	t.Run("cancelled dialog returns 200", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := mmModel.SubmitDialogRequest{Cancelled: true}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("missing user returns 401", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := mmModel.SubmitDialogRequest{
+			UserId:     "",
+			Submission: map[string]any{"connection_name": "outbound:high"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+
+	t.Run("empty connection_name returns error", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := mmModel.SubmitDialogRequest{
+			UserId:     "admin-id",
+			Submission: map[string]any{"connection_name": ""},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp mmModel.SubmitDialogResponse
+		err := json.Unmarshal(w.Body.Bytes(), &resp)
+		require.NoError(t, err)
+		assert.NotEmpty(t, resp.Errors["connection_name"])
+	})
+
+	t.Run("invalid state returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := mmModel.SubmitDialogRequest{
+			UserId:     "admin-id",
+			State:      "nocolon",
+			Submission: map[string]any{"connection_name": "outbound:high"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("unknown action returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		targetID := mmModel.NewId()
+		body := mmModel.SubmitDialogRequest{
+			UserId:     "admin-id",
+			State:      "unknown-action:" + targetID,
+			Submission: map[string]any{"connection_name": "outbound:high"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("init-team happy path", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId, Username: "admin"}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetTeam", teamID).Return(&mmModel.Team{Id: teamID, Name: "test-team"}, nil)
+		api.On("GetChannelByName", teamID, "town-square", false).Return(&mmModel.Channel{Id: "ts-id"}, nil)
+		api.On("CreatePost", mock.Anything).Return(&mmModel.Post{}, nil)
+		api.On("SendEphemeralPost", mock.Anything, mock.Anything).Return(&mmModel.Post{})
+
+		p, _ := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+		}
+
+		body := mmModel.SubmitDialogRequest{
+			UserId:     "admin-id",
+			ChannelId:  "ts-id",
+			State:      actionInitTeam + ":" + teamID,
+			Submission: map[string]any{"connection_name": "outbound:high"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+	})
+}
+
+// --------------------------------------------------------------------------
+// parseConnKey tests
+// --------------------------------------------------------------------------
+
+func TestParseConnKey(t *testing.T) {
+	t.Run("outbound:high parses correctly", func(t *testing.T) {
+		tc := parseConnKey("outbound:high")
+		assert.Equal(t, "outbound", tc.Direction)
+		assert.Equal(t, "high", tc.Connection)
+	})
+
+	t.Run("missing colon defaults to connection only", func(t *testing.T) {
+		tc := parseConnKey("justname")
+		assert.Equal(t, "", tc.Direction)
+		assert.Equal(t, "justname", tc.Connection)
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleTestNATSOutbound / handleTestNATSInbound tests
+// --------------------------------------------------------------------------
+
+func TestHandleTestNATSOutbound(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		addr := startEmbeddedNATS(t)
+		nc, err := nats.Connect(addr)
+		require.NoError(t, err)
+		defer nc.Close()
+
+		conn := ConnectionConfig{
+			NATS:          &NATSProviderConfig{Subject: "crossguard.test", Address: addr},
+			MessageFormat: "json",
+		}
+
+		w := httptest.NewRecorder()
+		p.handleTestNATSOutbound(w, nc, conn)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "ok", resp["status"])
+		assert.NotEmpty(t, resp["id"])
+	})
+
+	t.Run("default format", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		addr := startEmbeddedNATS(t)
+		nc, err := nats.Connect(addr)
+		require.NoError(t, err)
+		defer nc.Close()
+
+		conn := ConnectionConfig{
+			NATS: &NATSProviderConfig{Subject: "crossguard.test", Address: addr},
+		}
+
+		w := httptest.NewRecorder()
+		p.handleTestNATSOutbound(w, nc, conn)
+
+		require.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("publish to closed connection fails", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		addr := startEmbeddedNATS(t)
+		nc, err := nats.Connect(addr)
+		require.NoError(t, err)
+		nc.Close() // close immediately
+
+		conn := ConnectionConfig{
+			NATS: &NATSProviderConfig{Subject: "crossguard.test", Address: addr},
+		}
+
+		w := httptest.NewRecorder()
+		p.handleTestNATSOutbound(w, nc, conn)
+
+		require.Equal(t, http.StatusBadGateway, w.Code)
+	})
+}
+
+func TestHandleTestNATSInbound(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		addr := startEmbeddedNATS(t)
+		nc, err := nats.Connect(addr)
+		require.NoError(t, err)
+		defer nc.Close()
+
+		conn := ConnectionConfig{
+			NATS: &NATSProviderConfig{Subject: "crossguard.test", Address: addr},
+		}
+
+		w := httptest.NewRecorder()
+		p.handleTestNATSInbound(w, nc, conn)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "ok", resp["status"])
+	})
+
+	t.Run("subscribe to closed connection fails", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		addr := startEmbeddedNATS(t)
+		nc, err := nats.Connect(addr)
+		require.NoError(t, err)
+		nc.Close() // close immediately
+
+		conn := ConnectionConfig{
+			NATS: &NATSProviderConfig{Subject: "crossguard.test", Address: addr},
+		}
+
+		w := httptest.NewRecorder()
+		p.handleTestNATSInbound(w, nc, conn)
+
+		require.Equal(t, http.StatusBadGateway, w.Code)
+	})
+}
+
+// --------------------------------------------------------------------------
+// Additional teardown channel tests
+// --------------------------------------------------------------------------
+
+func TestHandleTeardownChannel_Additional(t *testing.T) {
+	t.Run("unauthenticated returns 401", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/"+mmModel.NewId()+"/teardown", nil, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+
+	t.Run("invalid channel_id returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/bad/teardown", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("channel not found returns 404", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		chanID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannel", chanID).Return(nil, &mmModel.AppError{Message: "not found"})
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/"+chanID+"/teardown", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusNotFound, w.Code)
+	})
+
+	t.Run("get channel connections error returns 500", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		chanID := mmModel.NewId()
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannel", chanID).Return(&mmModel.Channel{Id: chanID, TeamId: teamID}, nil)
+		api.On("GetChannelMember", chanID, "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getChannelConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return nil, errors.New("store error")
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/"+chanID+"/teardown", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusInternalServerError, w.Code)
+	})
+
+	t.Run("multiple connections returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		chanID := mmModel.NewId()
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannel", chanID).Return(&mmModel.Channel{Id: chanID, TeamId: teamID}, nil)
+		api.On("GetChannelMember", chanID, "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getChannelConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+				{Direction: "inbound", Connection: "high"},
+			}, nil
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/"+chanID+"/teardown", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+}
+
+// --------------------------------------------------------------------------
+// Additional set team rewrite tests
+// --------------------------------------------------------------------------
+
+func TestHandleSetTeamRewrite_Additional(t *testing.T) {
+	t.Run("invalid team_id returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/bad/rewrite", map[string]any{
+			"connection": "high", "remote_team_name": "remote",
+		}, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("get team connections error returns 500", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return nil, errors.New("store error")
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/rewrite", map[string]any{
+			"connection": "high", "remote_team_name": "remote",
+		}, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusInternalServerError, w.Code)
+	})
+
+	t.Run("set rewrite index conflict returns 409", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "inbound", Connection: "high"},
+			}, nil
+		}
+		kvs.setTeamRewriteIndexFn = func(conn, remote, local string) error {
+			return errors.New("already mapped")
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/rewrite", map[string]any{
+			"connection": "high", "remote_team_name": "remote",
+		}, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusConflict, w.Code)
+	})
+
+	t.Run("set team connections error returns 500", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "inbound", Connection: "high"},
+			}, nil
+		}
+		kvs.setTeamRewriteIndexFn = func(conn, remote, local string) error {
+			return nil
+		}
+		kvs.setTeamConnectionsFn = func(id string, conns []store.TeamConnection) error {
+			return errors.New("write failed")
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/rewrite", map[string]any{
+			"connection": "high", "remote_team_name": "remote",
+		}, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusInternalServerError, w.Code)
+	})
+}
+
+// --------------------------------------------------------------------------
+// Additional delete team rewrite tests
+// --------------------------------------------------------------------------
+
+func TestHandleDeleteTeamRewrite_Additional(t *testing.T) {
+	t.Run("invalid team_id returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		r := makeAuthRequest(t, http.MethodDelete, "/api/v1/teams/bad/rewrite?connection=high", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("get team connections error returns 500", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return nil, errors.New("store error")
+		}
+
+		r := makeAuthRequest(t, http.MethodDelete, "/api/v1/teams/"+teamID+"/rewrite?connection=high", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusInternalServerError, w.Code)
+	})
+
+	t.Run("connection not found returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+			}, nil
+		}
+
+		r := makeAuthRequest(t, http.MethodDelete, "/api/v1/teams/"+teamID+"/rewrite?connection=missing", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("set team connections error returns 500", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "inbound", Connection: "high", RemoteTeamName: "old-remote"},
+			}, nil
+		}
+		kvs.setTeamConnectionsFn = func(id string, conns []store.TeamConnection) error {
+			return errors.New("write failed")
+		}
+
+		r := makeAuthRequest(t, http.MethodDelete, "/api/v1/teams/"+teamID+"/rewrite?connection=high", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusInternalServerError, w.Code)
+	})
+}
+
+// --------------------------------------------------------------------------
+// Additional dialog select connection tests
+// --------------------------------------------------------------------------
+
+func TestHandleDialogSelectConnection_Additional(t *testing.T) {
+	t.Run("get user failure returns 500", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "bad-id").Return(nil, &mmModel.AppError{Message: "not found"})
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := mmModel.SubmitDialogRequest{
+			UserId:     "bad-id",
+			Submission: map[string]any{"connection_name": "outbound:high"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusInternalServerError, w.Code)
+	})
+
+	t.Run("invalid target ID returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := mmModel.SubmitDialogRequest{
+			UserId:     "admin-id",
+			State:      "init-team:invalid-id",
+			Submission: map[string]any{"connection_name": "outbound:high"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+
+	t.Run("teardown-team happy path", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId, Username: "admin"}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetTeam", teamID).Return(&mmModel.Team{Id: teamID, Name: "test-team"}, nil)
+		api.On("GetChannelByName", teamID, "town-square", false).Return(&mmModel.Channel{Id: "ts-id"}, nil)
+		api.On("CreatePost", mock.Anything).Return(&mmModel.Post{}, nil)
+		api.On("SendEphemeralPost", mock.Anything, mock.Anything).Return(&mmModel.Post{})
+
+		p, kvs := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+		}
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+			}, nil
+		}
+
+		body := mmModel.SubmitDialogRequest{
+			UserId:     "admin-id",
+			ChannelId:  "ts-id",
+			State:      actionTeardownTeam + ":" + teamID,
+			Submission: map[string]any{"connection_name": "outbound:high"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("init-channel happy path", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		chanID := mmModel.NewId()
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId, Username: "admin"}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannel", chanID).Return(&mmModel.Channel{Id: chanID, Name: "test-channel", TeamId: teamID}, nil)
+		api.On("GetChannelMember", chanID, "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+		api.On("GetTeam", teamID).Return(&mmModel.Team{Id: teamID, Name: "test-team"}, nil)
+		api.On("GetChannelByName", teamID, "town-square", false).Return(&mmModel.Channel{Id: "ts-id"}, nil)
+		api.On("CreatePost", mock.Anything).Return(&mmModel.Post{}, nil)
+		api.On("UpdateChannel", mock.Anything).Return(&mmModel.Channel{Id: chanID}, nil)
+		api.On("SendEphemeralPost", mock.Anything, mock.Anything).Return(&mmModel.Post{})
+
+		p, kvs := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+		}
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+			}, nil
+		}
+
+		body := mmModel.SubmitDialogRequest{
+			UserId:     "admin-id",
+			ChannelId:  "ts-id",
+			State:      actionInitChannel + ":" + chanID,
+			Submission: map[string]any{"connection_name": "outbound:high"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("teardown-channel happy path", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("PublishWebSocketEvent", mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+		chanID := mmModel.NewId()
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId, Username: "admin"}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannel", chanID).Return(&mmModel.Channel{Id: chanID, Name: "test-channel", TeamId: teamID}, nil)
+		api.On("GetChannelMember", chanID, "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+		api.On("CreatePost", mock.Anything).Return(&mmModel.Post{}, nil)
+		api.On("UpdateChannel", mock.Anything).Return(&mmModel.Channel{Id: chanID}, nil)
+		api.On("SendEphemeralPost", mock.Anything, mock.Anything).Return(&mmModel.Post{})
+
+		p, kvs := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			OutboundConnections: `[{"name":"high","nats":{"address":"nats://localhost:4222","subject":"crossguard.high"}}]`,
+		}
+		kvs.getChannelConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+			}, nil
+		}
+
+		body := mmModel.SubmitDialogRequest{
+			UserId:     "admin-id",
+			ChannelId:  chanID,
+			State:      actionTeardownChannel + ":" + chanID,
+			Submission: map[string]any{"connection_name": "outbound:high"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("init-team non-admin returns 403", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+
+		teamID := mmModel.NewId()
+		regularUser := &mmModel.User{Id: "user-id", Roles: ""}
+		api.On("GetUser", "user-id").Return(regularUser, nil)
+		api.On("GetTeamMember", teamID, "user-id").Return(&mmModel.TeamMember{SchemeAdmin: false}, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := mmModel.SubmitDialogRequest{
+			UserId:     "user-id",
+			State:      actionInitTeam + ":" + teamID,
+			Submission: map[string]any{"connection_name": "outbound:high"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusForbidden, w.Code)
+	})
+
+	t.Run("channel not found returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+
+		chanID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannel", chanID).Return(nil, &mmModel.AppError{Message: "not found"})
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := mmModel.SubmitDialogRequest{
+			UserId:     "admin-id",
+			State:      actionInitChannel + ":" + chanID,
+			Submission: map[string]any{"connection_name": "outbound:high"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+}
+
+// --------------------------------------------------------------------------
+// Additional init channel tests
+// --------------------------------------------------------------------------
+
+func TestHandleInitChannel_Additional(t *testing.T) {
+	t.Run("get team connections error returns 500", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		chanID := mmModel.NewId()
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannel", chanID).Return(&mmModel.Channel{Id: chanID, TeamId: teamID}, nil)
+		api.On("GetChannelMember", chanID, "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return nil, errors.New("store error")
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/"+chanID+"/init", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusInternalServerError, w.Code)
+	})
+
+	t.Run("multiple connections returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		chanID := mmModel.NewId()
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		api.On("GetChannel", chanID).Return(&mmModel.Channel{Id: chanID, TeamId: teamID}, nil)
+		api.On("GetChannelMember", chanID, "admin-id").Return(&mmModel.ChannelMember{SchemeAdmin: true}, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+				{Direction: "inbound", Connection: "high"},
+			}, nil
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/channels/"+chanID+"/init", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+	})
+}
+
+// --------------------------------------------------------------------------
+// handleTeardownTeam additional branch tests
+// --------------------------------------------------------------------------
+
+func TestHandleTeardownTeam_Additional(t *testing.T) {
+	t.Run("GetTeamConnections store error returns 500", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return nil, errors.New("store unavailable")
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/teardown", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusInternalServerError, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "failed to check team connections", resp["error"])
+	})
+
+	t.Run("resolveConnectionName fails returns 400 with connections", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+				{Direction: "inbound", Connection: "high"},
+			}, nil
+		}
+
+		// No connection_name query param with multiple connections triggers resolve failure
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/teardown", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "multiple connections")
+		assert.NotNil(t, resp["connections"])
+	})
+
+	t.Run("teardownTeamForCrossGuard service error", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		teamID := mmModel.NewId()
+		adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+
+		// teardownTeamForCrossGuard calls GetTeam; make it fail
+		api.On("GetTeam", teamID).Return(nil, &mmModel.AppError{Message: "team not found"})
+
+		p, kvs := setupTestPluginWithRouter(api)
+		kvs.getTeamConnectionsFn = func(id string) ([]store.TeamConnection, error) {
+			return []store.TeamConnection{
+				{Direction: "outbound", Connection: "high"},
+			}, nil
+		}
+
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/teams/"+teamID+"/teardown", nil, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusNotFound, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Equal(t, "team not found", resp["error"])
+	})
+}

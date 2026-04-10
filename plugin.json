@@ -20,18 +20,18 @@
         "settings": [],
         "sections": [
 {
-                "key": "NATSConfiguration",
-                "title": "NATS Configuration",
+                "key": "ConnectionConfiguration",
+                "title": "Connection Configuration",
                 "settings": [
                     {
                         "key": "InboundConnections",
-                        "display_name": "Inbound Connections (NATS -> Mattermost)",
+                        "display_name": "Inbound Connections (External -> Mattermost)",
                         "type": "custom",
                         "default": "[]"
                     },
                     {
                         "key": "OutboundConnections",
-                        "display_name": "Outbound Connections (Mattermost -> NATS)",
+                        "display_name": "Outbound Connections (Mattermost -> External)",
                         "type": "custom",
                         "default": "[]"
                     }

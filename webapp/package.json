@@ -12,6 +12,8 @@
     "test-ci": "playwright test --config=playwright.config.ts",
     "test:pw": "playwright test --config=playwright.config.ts",
     "test:pw-ct": "playwright test --config=playwright-ct.config.ts",
+    "test:coverage": "c8 --reporter=text --reporter=html --reports-dir=coverage playwright test --config=playwright.config.ts",
+    "test:pw-ct-coverage": "c8 --reporter=text --reporter=html --reports-dir=coverage-ct playwright test --config=playwright-ct.config.ts",
     "check-types": "tsc"
   },
   "devDependencies": {
@@ -39,6 +41,7 @@
     "babel-loader": "9.2.1",
     "babel-plugin-formatjs": "10.5.41",
     "babel-plugin-typescript-to-proptypes": "2.1.0",
+    "c8": "11.0.0",
     "css-loader": "7.1.4",
     "eslint": "9.39.4",
     "eslint-plugin-import": "2.32.0",

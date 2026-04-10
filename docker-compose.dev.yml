@@ -68,14 +68,16 @@ services:
     restart: unless-stopped
     ports:
       - "${MM_PORT_A:-8075}:8065"
+    tmpfs:
+      - /mattermost/config:uid=2000,gid=2000
+      - /mattermost/logs:uid=2000,gid=2000
+      - /mattermost/data:uid=2000,gid=2000
     volumes:
-      - ./docker/mattermost-a/config:/mattermost/config:rw
-      - ./docker/mattermost-a/data:/mattermost/data:rw
-      - ./docker/mattermost-a/logs:/mattermost/logs:rw
       - ./docker/mattermost-a/plugins:/mattermost/plugins:rw
       - ./docker/mattermost-a/client-plugins:/mattermost/client/plugins:rw
     environment:
       TZ: UTC
+      MM_CONFIG: postgres://mmuser:mmuser_password@postgres-a:5432/mattermost?sslmode=disable&connect_timeout=10
       MM_SQLSETTINGS_DRIVERNAME: postgres
       MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_password@postgres-a:5432/mattermost?sslmode=disable&connect_timeout=10
       MM_SERVICESETTINGS_SITEURL: http://low.test:${MM_PORT_A:-8075}
@@ -83,7 +85,7 @@ services:
       MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
       MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"
       MM_LOGSETTINGS_CONSOLELEVEL: DEBUG
-      MM_LOGSETTINGS_ENABLEFILE: "true"
+      MM_LOGSETTINGS_ENABLEFILE: "false"
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
       MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS: "false"
@@ -99,14 +101,16 @@ services:
     restart: unless-stopped
     ports:
       - "${MM_PORT_B:-8076}:8065"
+    tmpfs:
+      - /mattermost/config:uid=2000,gid=2000
+      - /mattermost/logs:uid=2000,gid=2000
+      - /mattermost/data:uid=2000,gid=2000
     volumes:
-      - ./docker/mattermost-b/config:/mattermost/config:rw
-      - ./docker/mattermost-b/data:/mattermost/data:rw
-      - ./docker/mattermost-b/logs:/mattermost/logs:rw
       - ./docker/mattermost-b/plugins:/mattermost/plugins:rw
       - ./docker/mattermost-b/client-plugins:/mattermost/client/plugins:rw
     environment:
       TZ: UTC
+      MM_CONFIG: postgres://mmuser:mmuser_password@postgres-b:5432/mattermost?sslmode=disable&connect_timeout=10
       MM_SQLSETTINGS_DRIVERNAME: postgres
       MM_SQLSETTINGS_DATASOURCE: postgres://mmuser:mmuser_password@postgres-b:5432/mattermost?sslmode=disable&connect_timeout=10
       MM_SERVICESETTINGS_SITEURL: http://high.test:${MM_PORT_B:-8076}
@@ -114,7 +118,7 @@ services:
       MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
       MM_PLUGINSETTINGS_AUTOMATICPREPACKAGEDPLUGINS: "true"
       MM_LOGSETTINGS_CONSOLELEVEL: DEBUG
-      MM_LOGSETTINGS_ENABLEFILE: "true"
+      MM_LOGSETTINGS_ENABLEFILE: "false"
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: "false"
       MM_EMAILSETTINGS_SENDEMAILNOTIFICATIONS: "false"

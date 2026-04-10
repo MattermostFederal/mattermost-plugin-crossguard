@@ -1649,9 +1649,9 @@ func TestHandleDialogSelectConnection_Additional(t *testing.T) {
 		}
 
 		body := mmModel.SubmitDialogRequest{
-			UserId:    "admin-id",
-			ChannelId: "ts-id",
-			State:     actionTeardownTeam + ":" + teamID,
+			UserId:     "admin-id",
+			ChannelId:  "ts-id",
+			State:      actionTeardownTeam + ":" + teamID,
 			Submission: map[string]any{"connection_name": "outbound:high"},
 		}
 		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
@@ -1689,9 +1689,9 @@ func TestHandleDialogSelectConnection_Additional(t *testing.T) {
 		}
 
 		body := mmModel.SubmitDialogRequest{
-			UserId:    "admin-id",
-			ChannelId: "ts-id",
-			State:     actionInitChannel + ":" + chanID,
+			UserId:     "admin-id",
+			ChannelId:  "ts-id",
+			State:      actionInitChannel + ":" + chanID,
 			Submission: map[string]any{"connection_name": "outbound:high"},
 		}
 		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
@@ -1727,9 +1727,9 @@ func TestHandleDialogSelectConnection_Additional(t *testing.T) {
 		}
 
 		body := mmModel.SubmitDialogRequest{
-			UserId:    "admin-id",
-			ChannelId: chanID,
-			State:     actionTeardownChannel + ":" + chanID,
+			UserId:     "admin-id",
+			ChannelId:  chanID,
+			State:      actionTeardownChannel + ":" + chanID,
 			Submission: map[string]any{"connection_name": "outbound:high"},
 		}
 		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
@@ -1750,8 +1750,8 @@ func TestHandleDialogSelectConnection_Additional(t *testing.T) {
 		p, _ := setupTestPluginWithRouter(api)
 
 		body := mmModel.SubmitDialogRequest{
-			UserId: "user-id",
-			State:  actionInitTeam + ":" + teamID,
+			UserId:     "user-id",
+			State:      actionInitTeam + ":" + teamID,
 			Submission: map[string]any{"connection_name": "outbound:high"},
 		}
 		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")
@@ -1772,8 +1772,8 @@ func TestHandleDialogSelectConnection_Additional(t *testing.T) {
 		p, _ := setupTestPluginWithRouter(api)
 
 		body := mmModel.SubmitDialogRequest{
-			UserId: "admin-id",
-			State:  actionInitChannel + ":" + chanID,
+			UserId:     "admin-id",
+			State:      actionInitChannel + ":" + chanID,
 			Submission: map[string]any{"connection_name": "outbound:high"},
 		}
 		r := makeAuthRequest(t, http.MethodPost, "/api/v1/dialog/select-connection", body, "")

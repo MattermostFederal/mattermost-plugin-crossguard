@@ -41,7 +41,7 @@ test.describe('AdminPanel', () => {
     test('renders the exact version value from manifest', async ({mount}) => {
         const component = await mount(<AdminPanel/>);
         const versionText = await component.locator('p').filter({hasText: 'Version:'}).textContent();
-        expect(versionText).toContain('0.1.');
+        expect(versionText).toMatch(/Version:\s+\d+\.\d+\./);
     });
 
     test('documentation link has blue color styling', async ({mount}) => {

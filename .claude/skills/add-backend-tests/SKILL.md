@@ -27,7 +27,9 @@ Run `make coverage-backend` and capture the output. This runs `go test -coverpro
 make coverage-backend 2>&1
 ```
 
-Parse the output to build a prioritized list:
+**If overall coverage is 90% or above, stop here.** Report the coverage number, congratulate the user, and exit plan mode. No additional tests are needed. The codebase is well-tested.
+
+If coverage is below 90%, parse the output to build a prioritized list:
 - **Tier 1**: Functions at 0% coverage (completely untested)
 - **Tier 2**: Functions below 60% coverage (significant gaps)
 - **Tier 3**: Functions below 80% coverage (moderate gaps)

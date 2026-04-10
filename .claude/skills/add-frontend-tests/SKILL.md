@@ -31,7 +31,9 @@ This executes two commands:
 - `npm run test:coverage` - unit tests (`.spec.ts`) with C8, reports to `webapp/coverage/`
 - `npm run test:pw-ct-coverage` - component tests (`.pw.tsx`) with C8, reports to `webapp/coverage-ct/`
 
-Parse the C8 text output to build a prioritized list:
+**If overall coverage is 90% or above, stop here.** Report the coverage number, congratulate the user, and exit plan mode. No additional tests are needed. The codebase is well-tested.
+
+If coverage is below 90%, parse the C8 text output to build a prioritized list:
 - **Tier 1**: Files/functions at 0% coverage (completely untested)
 - **Tier 2**: Files/functions below 60% coverage (significant gaps)
 - **Tier 3**: Files/functions below 80% coverage (moderate gaps)

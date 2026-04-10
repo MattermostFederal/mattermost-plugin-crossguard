@@ -327,6 +327,7 @@ docker-start:
 	@mkdir -p docker/mattermost-a/{config,data,logs,plugins,client-plugins}
 	@mkdir -p docker/mattermost-b/{config,data,logs,plugins,client-plugins}
 	@mkdir -p docker/postgres-a-data docker/postgres-b-data docker/azurite-data
+	@chmod -R 777 docker/mattermost-a docker/mattermost-b
 	@$(DOCKER_COMPOSE) up -d
 
 ## Stop containers (preserves data)

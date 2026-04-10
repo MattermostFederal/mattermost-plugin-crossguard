@@ -85,6 +85,15 @@ jobs:
         run: make docker-deploy
         timeout-minutes: 3
 
+      - name: Dump plugin logs
+        if: always()
+        run: |
+          echo "=== Server A plugin logs ==="
+          docker compose -f docker-compose.dev.yml logs mattermost-a 2>&1 | grep -i "crossguard\|plugin\|error\|panic" | tail -60 || true
+          echo ""
+          echo "=== Server B plugin logs ==="
+          docker compose -f docker-compose.dev.yml logs mattermost-b 2>&1 | grep -i "crossguard\|plugin\|error\|panic" | tail -60 || true
+
       - name: Run smoke test
         run: make docker-smoke-test
         timeout-minutes: 3

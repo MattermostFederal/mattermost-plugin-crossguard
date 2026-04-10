@@ -584,11 +584,13 @@ docker-smoke-test: docker-check
 		-d '{"user_id":"'"$$USERB_ID"'"}' >/dev/null 2>&1 || true && \
 	echo "  Server B: userb added to low-to-high, bi-directional" && \
 	echo "Initializing teams..." && \
-	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
+	echo "  Waiting 5s for plugin connections to initialize..." && \
+	sleep 5 && \
+	INIT_RESP=$$(curl -s -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \
-		-d '{"channel_id":"'"$$LTH_A"'","command":"/crossguard init-team outbound:low-to-high"}' >/dev/null && \
-	echo "  Server A: init-team outbound:low-to-high" && \
+		-d '{"channel_id":"'"$$LTH_A"'","command":"/crossguard init-team outbound:low-to-high"}') && \
+	echo "  Server A: init-team outbound:low-to-high (response: $$INIT_RESP)" && \
 	curl -sf -X POST http://localhost:$(MM_PORT_A)/api/v4/commands/execute \
 		-H "Authorization: Bearer $$TOKEN_A" \
 		-H "Content-Type: application/json" \

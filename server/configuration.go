@@ -85,11 +85,12 @@ type AzureQueueProviderConfig struct {
 
 // AzureBlobProviderConfig holds Azure Blob Storage provider settings for batch message relay.
 type AzureBlobProviderConfig struct {
-	ServiceURL           string `json:"service_url"`
-	AccountName          string `json:"account_name"`
-	AccountKey           string `json:"account_key"`
-	BlobContainerName    string `json:"blob_container_name"`
-	FlushIntervalSeconds int    `json:"flush_interval_seconds,omitempty"` // default 60
+	ServiceURL            string `json:"service_url"`
+	AccountName           string `json:"account_name"`
+	AccountKey            string `json:"account_key"`
+	BlobContainerName     string `json:"blob_container_name"`
+	FlushIntervalSeconds  int    `json:"flush_interval_seconds,omitempty"`    // default 60
+	BlobLockMaxAgeSeconds int    `json:"blob_lock_max_age_seconds,omitempty"` // default 300 (5 min)
 }
 
 func isFileAllowed(filename, filterMode, filterTypes string) bool {
@@ -378,6 +379,10 @@ func validateAzureBlobConnection(conn ConnectionConfig, prefix string) []string 
 
 	if ab.FlushIntervalSeconds != 0 && ab.FlushIntervalSeconds < 5 {
 		errs = append(errs, fmt.Sprintf("%s: flush_interval_seconds must be at least 5", prefix))
+	}
+
+	if ab.BlobLockMaxAgeSeconds != 0 && ab.BlobLockMaxAgeSeconds < 30 {
+		errs = append(errs, fmt.Sprintf("%s: blob_lock_max_age_seconds must be at least 30", prefix))
 	}
 
 	return errs

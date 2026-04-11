@@ -52,6 +52,11 @@ func (p *Plugin) retryInboundMessage(entry *retryEntry, lastAttempt bool) bool {
 	format := model.DetectFormat(entry.rawData)
 	env, err := model.Unmarshal(entry.rawData, format)
 	if err != nil {
+		// The entry was already parseable at ingest time, so an unmarshal
+		// failure here signals corruption or a real bug. Route through
+		// handleRetryDropped so operators see it in diagnostics instead of
+		// dropping the message silently.
+		p.handleRetryDropped(entry, retryDropReasonUnmarshalFailed)
 		p.API.LogError("Retry: failed to unmarshal", "conn", entry.connName, "error", err.Error())
 		return true // drop malformed
 	}
@@ -99,14 +104,24 @@ func (p *Plugin) retryInboundMessage(entry *retryEntry, lastAttempt bool) bool {
 	return false
 }
 
+// Retry drop reasons emitted by handleRetryDropped.
+const (
+	retryDropReasonMaxAge          = "max_age"
+	retryDropReasonMaxRetries      = "max_retries"
+	retryDropReasonUnmarshalFailed = "unmarshal_failed"
+)
+
 // handleRetryDropped is called when the retry queue drops an entry due to max
-// age or max retries.
+// age, max retries, or a malformed payload detected on retry.
 func (p *Plugin) handleRetryDropped(entry *retryEntry, reason string) {
 	switch reason {
-	case "max_age":
+	case retryDropReasonMaxAge:
 		p.API.LogError("Missing message: dropped, exceeded max age",
 			"conn", entry.connName, "type", entry.msgType, "remote_post_id", entry.remoteID,
 			"age", time.Since(entry.enqueuedAt).String())
+	case retryDropReasonUnmarshalFailed:
+		p.API.LogError("Missing message: dropped, payload unmarshal failed on retry",
+			"conn", entry.connName, "type", entry.msgType, "remote_post_id", entry.remoteID)
 	default:
 		p.API.LogError("Missing message: dropped after max retries",
 			"conn", entry.connName, "type", entry.msgType, "remote_post_id", entry.remoteID,

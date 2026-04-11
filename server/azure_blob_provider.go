@@ -13,9 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/bloberror"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/mattermost/mattermost/server/public/plugin"
@@ -44,8 +44,15 @@ const (
 	// blobLockKeyPrefix is the KV store prefix for per-blob locks.
 	blobLockKeyPrefix = "blob-lock-"
 
-	// blobLockMaxAge is the maximum lock age before it is considered stale.
+	// blobLockMaxAge is the default maximum lock age before it is considered
+	// stale. May be overridden per-provider via
+	// AzureBlobProviderConfig.BlobLockMaxAgeSeconds.
 	blobLockMaxAge = 5 * time.Minute
+
+	// blobMaxDownloadSize caps the number of bytes read from a single blob.
+	// Guards against OOM from a malformed or malicious batch. 100 MiB is well
+	// above any realistic message batch size.
+	blobMaxDownloadSize = 100 * 1024 * 1024
 )
 
 // kvClient is the minimal KV interface needed by the azure-blob provider for
@@ -101,7 +108,17 @@ func (c *containerClientAdapter) DownloadBlob(ctx context.Context, name string) 
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	return io.ReadAll(resp.Body)
+	// Cap reads so a malformed or malicious blob cannot OOM the plugin. Read
+	// one extra byte to detect oversize and reject explicitly.
+	limited := io.LimitReader(resp.Body, blobMaxDownloadSize+1)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > blobMaxDownloadSize {
+		return nil, fmt.Errorf("blob %q exceeds max download size %d bytes", name, blobMaxDownloadSize)
+	}
+	return data, nil
 }
 
 func (c *containerClientAdapter) DeleteBlob(ctx context.Context, name string) error {
@@ -170,11 +187,11 @@ type azureBlobProvider struct {
 	outCtx    context.Context
 	outCancel context.CancelFunc
 
-	// WAL (outbound only)
+	// WAL (outbound only). walSeq is only touched under walMu so no atomic needed.
 	walMu   sync.Mutex
 	walFile *os.File
 	walPath string
-	walSeq  atomic.Int64
+	walSeq  int64
 	walDir  string
 
 	// Pending file refs (outbound only)
@@ -186,10 +203,21 @@ type azureBlobProvider struct {
 	flushStop   chan struct{}
 	flushDone   chan struct{}
 
-	// Inbound polling
-	cancel   context.CancelFunc
-	pollDone chan struct{}
-	handler  func(data []byte) error
+	// Async WAL recovery (outbound only). recoveryDone is closed when the
+	// startup recovery goroutine exits.
+	recoveryDone chan struct{}
+
+	// subMu guards Subscribe/WatchFiles lifecycle fields (cancel, pollDone,
+	// handler, watchCancel, watchDone, subscribed, watching) against races
+	// with Close.
+	subMu       sync.Mutex
+	subscribed  bool
+	cancel      context.CancelFunc
+	pollDone    chan struct{}
+	handler     func(data []byte) error
+	watching    bool
+	watchCancel context.CancelFunc
+	watchDone   chan struct{}
 
 	// closeOnce guards Close from concurrent invocation.
 	closeOnce sync.Once
@@ -215,7 +243,7 @@ func newAzureBlobProvider(ctx context.Context, cfg AzureBlobProviderConfig, api 
 	createCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if createErr := ops.CreateContainer(createCtx); createErr != nil {
-		if !strings.Contains(createErr.Error(), azureErrContainerAlreadyExists) {
+		if !isContainerAlreadyExists(createErr) {
 			return nil, fmt.Errorf("failed to create/access Azure Blob container %q: %w", cfg.BlobContainerName, createErr)
 		}
 	}
@@ -257,7 +285,11 @@ func newAzureBlobProviderFromOps(ctx context.Context, cfg AzureBlobProviderConfi
 
 	if isOutbound {
 		a.outCtx, a.outCancel = context.WithCancel(ctx)
-		a.recoverWALOnStartup(a.outCtx)
+		a.recoveryDone = make(chan struct{})
+		go func() {
+			defer close(a.recoveryDone)
+			a.recoverWALOnStartup(a.outCtx)
+		}()
 		a.startFlushLoop(a.outCtx)
 	}
 
@@ -293,7 +325,8 @@ func (a *azureBlobProvider) Publish(_ context.Context, data []byte) error {
 
 // openWALFileLocked opens a new WAL file. Must be called with walMu held.
 func (a *azureBlobProvider) openWALFileLocked() error {
-	seq := a.walSeq.Add(1)
+	a.walSeq++
+	seq := a.walSeq
 	name := fmt.Sprintf("%s-%d-%d%s", a.nodeID, time.Now().UnixMilli(), seq, walFileExt)
 	path := filepath.Join(a.walDir, name)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // path built from walDir + nodeID/seq/timestamp
@@ -375,6 +408,14 @@ func (a *azureBlobProvider) startFlushLoop(ctx context.Context) {
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				a.flush(shutdownCtx)
 				cancel()
+				// Persist any refs that bounced back into pendingFiles so
+				// they are not silently lost. Also surface any WAL residue
+				// for operator visibility.
+				a.persistShutdownResidue()
+				if n := a.countWALFiles(); n > 0 {
+					a.api.LogWarn("Azure Blob: shutdown left WAL files for recovery",
+						"count", n, "wal_dir", a.walDir)
+				}
 				return
 			case <-ctx.Done():
 				return
@@ -400,6 +441,13 @@ func (a *azureBlobProvider) flush(ctx context.Context) {
 
 	var oldWALPath string
 	if a.walFile != nil {
+		// fsync before close so recent appends survive a host/kernel crash.
+		// A failed Sync is logged but not fatal: the close + recovery path
+		// still picks up the file on next startup.
+		if err := a.walFile.Sync(); err != nil {
+			a.api.LogWarn("Azure Blob: WAL fsync failed during rotation",
+				"path", a.walPath, "error", err.Error())
+		}
 		if err := a.walFile.Close(); err != nil {
 			a.api.LogError("Azure Blob: WAL close failed during rotation, skipping upload",
 				"path", a.walPath, "error", err.Error())
@@ -468,10 +516,17 @@ func (a *azureBlobProvider) uploadWALFile(ctx context.Context, path string) erro
 }
 
 // flushPendingFilesList uploads each pending file ref. Failures are re-enqueued
-// so they are retried on the next flush cycle.
-func (a *azureBlobProvider) flushPendingFilesList(ctx context.Context, refs []pendingFileRef) {
+// so they are retried on the next flush cycle. Returns the refs that failed
+// so callers (e.g. recovery) can persist them rather than rely on the in-memory
+// re-enqueue.
+func (a *azureBlobProvider) flushPendingFilesList(ctx context.Context, refs []pendingFileRef) []pendingFileRef {
 	var failed []pendingFileRef
-	for _, ref := range refs {
+	for i, ref := range refs {
+		// Respect shutdown: re-enqueue the rest rather than keep uploading.
+		if ctx.Err() != nil {
+			failed = append(failed, refs[i:]...)
+			break
+		}
 		data, err := a.getFile(ref.FileID)
 		if err != nil {
 			a.api.LogError("Azure Blob: deferred file fetch failed",
@@ -495,19 +550,59 @@ func (a *azureBlobProvider) flushPendingFilesList(ctx context.Context, refs []pe
 		a.pendingFiles = append(failed, a.pendingFiles...)
 		a.pendingFilesMu.Unlock()
 	}
+	return failed
+}
+
+// persistShutdownResidue writes any in-memory pendingFiles to a dedicated
+// companion file inside walDir so they are recoverable on next startup. Must
+// be called after the final flush, before returning from the flush loop.
+func (a *azureBlobProvider) persistShutdownResidue() {
+	a.pendingFilesMu.Lock()
+	refs := a.pendingFiles
+	a.pendingFiles = nil
+	a.pendingFilesMu.Unlock()
+
+	if len(refs) == 0 {
+		return
+	}
+
+	name := fmt.Sprintf("%s-shutdown-%d%s", a.nodeID, time.Now().UnixMilli(), walFilesExt)
+	path := filepath.Join(a.walDir, name)
+	data, err := json.Marshal(refs)
+	if err != nil {
+		a.api.LogError("Azure Blob: shutdown: failed to marshal residual pending files",
+			"count", len(refs), "error", err.Error())
+		return
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		a.api.LogError("Azure Blob: shutdown: failed to persist residual pending files",
+			"count", len(refs), "path", path, "error", err.Error())
+		return
+	}
+	a.api.LogWarn("Azure Blob: shutdown persisted residual pending files for recovery",
+		"count", len(refs), "path", path)
 }
 
 // Subscribe starts the inbound poll loop. The outbound flush loop is started
 // separately by the constructor when isOutbound is true, so inbound-only
-// providers do not run an idle flush loop.
+// providers do not run an idle flush loop. Subscribe is idempotent against
+// concurrent Close and errors on double-Subscribe.
 func (a *azureBlobProvider) Subscribe(ctx context.Context, handler func(data []byte) error) error {
+	a.subMu.Lock()
+	if a.subscribed {
+		a.subMu.Unlock()
+		return fmt.Errorf("azure-blob: Subscribe called twice")
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	a.cancel = cancel
 	a.handler = handler
 	a.pollDone = make(chan struct{})
+	a.subscribed = true
+	pollDone := a.pollDone
+	a.subMu.Unlock()
 
 	go func() {
-		defer close(a.pollDone)
+		defer close(pollDone)
 		a.pollBlobs(ctx)
 	}()
 
@@ -604,12 +699,16 @@ func (a *azureBlobProvider) tryAcquireBlobLock(blobName string) bool {
 	var current blobLock
 	if err := json.Unmarshal(raw, &current); err != nil {
 		// Corrupt lock value; try to reclaim.
-		ok, _ := a.kv.Set(key, newLock, pluginapi.SetAtomic(raw))
+		ok, setErr := a.kv.Set(key, newLock, pluginapi.SetAtomic(raw))
+		if setErr != nil {
+			a.api.LogWarn("Azure Blob: corrupt lock reclaim failed", "blob", blobName, "error", setErr.Error())
+			return false
+		}
 		return ok
 	}
 
 	age := time.Since(time.UnixMilli(current.Acquired))
-	if age < blobLockMaxAge {
+	if age < a.blobLockMaxAge() {
 		return false
 	}
 
@@ -619,6 +718,14 @@ func (a *azureBlobProvider) tryAcquireBlobLock(blobName string) bool {
 		return false
 	}
 	return ok
+}
+
+// blobLockMaxAge returns the configured stale-lock TTL or the default.
+func (a *azureBlobProvider) blobLockMaxAge() time.Duration {
+	if a.cfg.BlobLockMaxAgeSeconds > 0 {
+		return time.Duration(a.cfg.BlobLockMaxAgeSeconds) * time.Second
+	}
+	return blobLockMaxAge
 }
 
 // releaseBlobLock deletes the KV lock for a blob name.
@@ -710,7 +817,10 @@ func (a *azureBlobProvider) recoverDirectory(ctx context.Context, dir string, is
 	}
 }
 
-// recoverCompanionFiles reads a companion .files.json and uploads the listed files.
+// recoverCompanionFiles reads a companion .files.json and uploads the listed
+// files. Refs that fail to upload are persisted back to the same companion
+// file so they are retried on the next startup; the file is only removed when
+// all refs succeed (or when the file is malformed / empty).
 func (a *azureBlobProvider) recoverCompanionFiles(ctx context.Context, path string) {
 	raw, err := os.ReadFile(path) //nolint:gosec // path from walDir scan
 	if err != nil {
@@ -719,9 +829,9 @@ func (a *azureBlobProvider) recoverCompanionFiles(ctx context.Context, path stri
 		return
 	}
 	var refs []pendingFileRef
-	if err := json.Unmarshal(raw, &refs); err != nil {
+	if unmarshalErr := json.Unmarshal(raw, &refs); unmarshalErr != nil {
 		a.api.LogWarn("Azure Blob: WAL recovery: malformed companion file",
-			"path", path, "error", err.Error())
+			"path", path, "error", unmarshalErr.Error())
 		_ = os.Remove(path)
 		return
 	}
@@ -729,8 +839,24 @@ func (a *azureBlobProvider) recoverCompanionFiles(ctx context.Context, path stri
 		_ = os.Remove(path)
 		return
 	}
-	a.flushPendingFilesList(ctx, refs)
-	_ = os.Remove(path)
+	failed := a.flushPendingFilesList(ctx, refs)
+	if len(failed) == 0 {
+		_ = os.Remove(path)
+		return
+	}
+	// Rewrite the companion with only the failed refs so the next startup
+	// retries them. On write failure, keep the original file untouched so the
+	// data is not lost.
+	data, err := json.Marshal(failed)
+	if err != nil {
+		a.api.LogWarn("Azure Blob: WAL recovery: failed to marshal remaining refs",
+			"path", path, "count", len(failed), "error", err.Error())
+		return
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		a.api.LogWarn("Azure Blob: WAL recovery: failed to rewrite companion file",
+			"path", path, "count", len(failed), "error", err.Error())
+	}
 }
 
 // UploadFile uploads a file blob with metadata headers.
@@ -738,7 +864,8 @@ func (a *azureBlobProvider) UploadFile(ctx context.Context, key string, data []b
 	blobName := blobFilesPrefix + key
 
 	meta := azureBlobMetadata{Headers: headers}
-	metaJSON, _ := json.Marshal(meta)
+	// Marshal cannot fail for a struct with only a map[string]string field.
+	metaJSON, _ := json.Marshal(meta) //nolint:errcheck // string-only map cannot fail to marshal
 	encoded := base64.StdEncoding.EncodeToString(metaJSON)
 	blobMeta := map[string]*string{
 		blobMetadataHeadersKey: &encoded,
@@ -750,8 +877,24 @@ func (a *azureBlobProvider) UploadFile(ctx context.Context, key string, data []b
 	return nil
 }
 
-// WatchFiles watches the files/ prefix for new file blobs.
+// WatchFiles watches the files/ prefix for new file blobs. It tracks its own
+// cancel and done channel so Close can tear it down deterministically.
 func (a *azureBlobProvider) WatchFiles(ctx context.Context, handler func(key string, data []byte, headers map[string]string) error) error {
+	a.subMu.Lock()
+	if a.watching {
+		a.subMu.Unlock()
+		return fmt.Errorf("azure-blob: WatchFiles called twice")
+	}
+	watchCtx, cancel := context.WithCancel(ctx)
+	a.watchCancel = cancel
+	a.watchDone = make(chan struct{})
+	a.watching = true
+	watchDone := a.watchDone
+	a.subMu.Unlock()
+
+	defer close(watchDone)
+	ctx = watchCtx
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -824,20 +967,54 @@ func (a *azureBlobProvider) Close() error {
 		}
 
 		// Cancel the outbound lifetime context so anything derived from it
-		// (e.g. in-flight Azure SDK calls) unwinds.
+		// (e.g. in-flight Azure SDK calls, the startup recovery goroutine)
+		// unwinds.
 		if a.outCancel != nil {
 			a.outCancel()
 		}
-
-		// Stop the inbound poll loop.
-		if a.cancel != nil {
-			a.cancel()
+		if a.recoveryDone != nil {
+			<-a.recoveryDone
 		}
-		if a.pollDone != nil {
-			<-a.pollDone
+
+		// Snapshot the Subscribe/Watch lifecycle fields under the mutex so
+		// concurrent late-arriving Subscribe/WatchFiles calls cannot race
+		// against Close. After this Close returns, any late Subscribe will
+		// still observe subscribed==true (or be cancelled by the closed
+		// context) and exit quickly.
+		a.subMu.Lock()
+		cancel := a.cancel
+		pollDone := a.pollDone
+		watchCancel := a.watchCancel
+		watchDone := a.watchDone
+		a.subMu.Unlock()
+
+		if cancel != nil {
+			cancel()
+		}
+		if pollDone != nil {
+			<-pollDone
+		}
+		if watchCancel != nil {
+			watchCancel()
+		}
+		if watchDone != nil {
+			<-watchDone
 		}
 	})
 	return nil
+}
+
+// isContainerAlreadyExists returns true if err represents the Azure "container
+// already exists" condition. Uses the typed bloberror code when available and
+// falls back to a string match so tests that wrap a plain error still work.
+func isContainerAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	if bloberror.HasCode(err, bloberror.ContainerAlreadyExists) {
+		return true
+	}
+	return strings.Contains(err.Error(), azureErrContainerAlreadyExists)
 }
 
 // testAzureBlobConnection probes an azure-blob connection by creating a test

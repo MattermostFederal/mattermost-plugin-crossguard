@@ -82,6 +82,13 @@ func (q *retryQueue) SetMaxAge(maxAge time.Duration) {
 // Drain returns entries that are ready for retry (past the retry delay) and
 // removes expired/exhausted entries. Entries returned for retry remain in the
 // queue; the caller must call Remove after successful processing.
+//
+// IMPORTANT: Drain returns live *retryEntry pointers, not copies. This is
+// safe only because Start runs a single background goroutine that is the
+// sole reader of entry fields outside the queue mutex (retries, lastRetry,
+// enqueuedAt are read by the retry function after Drain returns, then written
+// by MarkRetried under the mutex). Do NOT call Drain from multiple goroutines
+// concurrently, and do NOT mutate returned entries except via MarkRetried.
 func (q *retryQueue) Drain(now time.Time) (ready []*retryEntry, dropped []*retryEntry) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -149,9 +156,9 @@ func (q *retryQueue) Start(ctx context.Context, retryFn func(e *retryEntry, last
 			case now := <-ticker.C:
 				ready, dropped := q.Drain(now)
 				for _, e := range dropped {
-					reason := "max_retries"
+					reason := retryDropReasonMaxRetries
 					if now.Sub(e.enqueuedAt) >= q.maxAge {
-						reason = "max_age"
+						reason = retryDropReasonMaxAge
 					}
 					if droppedFn != nil {
 						droppedFn(e, reason)

@@ -157,8 +157,15 @@ Because this is 215 mechanical edits, the executing agent should process **one f
 
 1. **Unit**: `cd server && go test ./errcode/...` — uniqueness and completeness tests pass.
 2. **Build**: `make check-style && make test` — whole project still green.
-3. **Grep audit**: `grep -rn "p.API.Log" server/ --include="*.go" | grep -v _test.go | grep -v error_code | wc -l` should return **0**. This proves every non-test Log call has an `error_code` field.
-4. **Count audit**: `len(errcode.AllCodes)` equals **215** (matching the pre-change `p.API.Log*` count).
+3. **Grep audit**: Log calls use either `p.API.Log*` or `a.api.Log*` (receiver-held API). Audit both with a single multiline check:
+   ```bash
+   grep -rn -A1 -E "\.Log(Debug|Info|Warn|Error)\(" server/ --include="*.go" \
+     | grep -v _test.go | grep -B1 "error_code" | grep -c "\.Log"
+   ```
+   The match count must equal the total `.Log*` call count from
+   `grep -rnE "\.Log(Debug|Info|Warn|Error)\(" server/ --include="*.go" | grep -v _test.go | wc -l`.
+   Both should currently be **216**.
+4. **Count audit**: `len(errcode.AllCodes)` equals **216** (one per non-test Log call site, including the `store/caching.go` invalidation path added alongside this change).
 5. **Runtime smoke**: `make deploy && make docker-smoke-test`, then `make docker-logs` — confirm an emitted line includes `error_code=<int>`.
 
 ## Post-Approval Save

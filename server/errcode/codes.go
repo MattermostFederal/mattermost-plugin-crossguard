@@ -206,7 +206,7 @@ const (
 	AzureBlobLockReleaseGetFailed          = 18031
 	AzureBlobLockReleaseCorrupt            = 18032
 	AzureBlobLockReleaseReclaimedByOther   = 18033
-	AzureBlobLockReleaseFailed2            = 18034
+	AzureBlobLockReleaseConditionalFailed  = 18034
 	AzureBlobWALRecoveryScanRootFailed     = 18035
 	AzureBlobWALRecoveryScanDirFailed      = 18036
 	AzureBlobWALRecoverySkipUnrecognized   = 18037
@@ -456,7 +456,7 @@ var AllCodes = []int{
 	AzureBlobLockReleaseGetFailed,
 	AzureBlobLockReleaseCorrupt,
 	AzureBlobLockReleaseReclaimedByOther,
-	AzureBlobLockReleaseFailed2,
+	AzureBlobLockReleaseConditionalFailed,
 	AzureBlobWALRecoveryScanRootFailed,
 	AzureBlobWALRecoveryScanDirFailed,
 	AzureBlobWALRecoverySkipUnrecognized,

@@ -351,6 +351,29 @@ func validateAzureQueueConnection(conn ConnectionConfig, prefix string) []string
 		errs = append(errs, fmt.Sprintf("%s: blob_container_name is required when file_transfer_enabled is true", prefix))
 	}
 
+	errs = append(errs, validatePollInterval(az.PollIntervalSeconds, prefix, "poll_interval_seconds")...)
+	errs = append(errs, validatePollInterval(az.BlobPollIntervalSeconds, prefix, "blob_poll_interval_seconds")...)
+
+	return errs
+}
+
+// pollIntervalMaxSeconds is the upper bound for configurable poll intervals.
+// Operators who want a longer interval should rethink their architecture;
+// this bound is defense against config typos that would silently stall a
+// connection.
+const pollIntervalMaxSeconds = 3600
+
+func validatePollInterval(value int, prefix, field string) []string {
+	if value == 0 {
+		return nil
+	}
+	var errs []string
+	if value < 1 {
+		errs = append(errs, fmt.Sprintf("%s: %s must be at least 1", prefix, field))
+	}
+	if value > pollIntervalMaxSeconds {
+		errs = append(errs, fmt.Sprintf("%s: %s must be at most %d", prefix, field, pollIntervalMaxSeconds))
+	}
 	return errs
 }
 
@@ -395,6 +418,8 @@ func validateAzureBlobConnection(conn ConnectionConfig, prefix string) []string 
 				prefix, int(blobLockMaxAgeCap/time.Second)))
 		}
 	}
+
+	errs = append(errs, validatePollInterval(ab.BatchPollIntervalSeconds, prefix, "batch_poll_interval_seconds")...)
 
 	return errs
 }

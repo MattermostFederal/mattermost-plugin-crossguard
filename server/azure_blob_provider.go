@@ -1108,8 +1108,8 @@ func (a *azureBlobProvider) releaseBlobLock(blobName string) {
 		return
 	}
 	if err := a.kv.Delete(key); err != nil {
-		a.api.LogWarn("Azure Blob: lock release failed",
-			"error_code", errcode.AzureBlobLockReleaseFailed2,
+		a.api.LogWarn("Azure Blob: conditional lock release failed",
+			"error_code", errcode.AzureBlobLockReleaseConditionalFailed,
 			"blob", blobName, "error", err.Error())
 	}
 }

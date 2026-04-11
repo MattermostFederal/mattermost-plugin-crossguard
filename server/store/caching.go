@@ -6,6 +6,8 @@ import (
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
+
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 )
 
 const (
@@ -280,6 +282,7 @@ func (c *CachingKVStore) invalidate(eventID, key string) {
 		SendType: model.PluginClusterEventSendTypeBestEffort,
 	}); err != nil {
 		c.api.LogWarn("Failed to publish cache invalidation event",
+			"error_code", errcode.StoreCachePublishInvalidationFailed,
 			"event", eventID, "key", key, "error", err.Error())
 	}
 }

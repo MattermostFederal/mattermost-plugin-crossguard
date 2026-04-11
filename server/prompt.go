@@ -7,6 +7,7 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
@@ -15,7 +16,9 @@ import (
 func (p *Plugin) handleUnlinkedInbound(team *model.Team, connName string) {
 	prompt, err := p.kvstore.GetConnectionPrompt(team.Id, connName)
 	if err != nil {
-		p.API.LogError("Failed to get connection prompt", "team_id", team.Id, "conn", connName, "error", err.Error())
+		p.API.LogError("Failed to get connection prompt",
+			"error_code", errcode.PromptGetConnPromptFailed,
+			"team_id", team.Id, "conn", connName, "error", err.Error())
 		return
 	}
 	if prompt != nil {
@@ -24,7 +27,9 @@ func (p *Plugin) handleUnlinkedInbound(team *model.Team, connName string) {
 
 	channel, appErr := p.API.GetChannelByName(team.Id, model.DefaultChannelName, false)
 	if appErr != nil {
-		p.API.LogError("Failed to get town-square for prompt", "team_id", team.Id, "error", appErr.Error())
+		p.API.LogError("Failed to get town-square for prompt",
+			"error_code", errcode.PromptGetTownSquareFailed,
+			"team_id", team.Id, "error", appErr.Error())
 		return
 	}
 
@@ -73,7 +78,9 @@ func (p *Plugin) handleUnlinkedInbound(team *model.Team, connName string) {
 
 	created, appErr := p.API.CreatePost(post)
 	if appErr != nil {
-		p.API.LogError("Failed to create connection prompt post", "team_id", team.Id, "conn", connName, "error", appErr.Error())
+		p.API.LogError("Failed to create connection prompt post",
+			"error_code", errcode.PromptCreatePostFailed,
+			"team_id", team.Id, "conn", connName, "error", appErr.Error())
 		return
 	}
 
@@ -82,7 +89,9 @@ func (p *Plugin) handleUnlinkedInbound(team *model.Team, connName string) {
 		PostID: created.Id,
 	})
 	if err != nil {
-		p.API.LogError("Failed to save connection prompt", "team_id", team.Id, "conn", connName, "error", err.Error())
+		p.API.LogError("Failed to save connection prompt",
+			"error_code", errcode.PromptSavePromptFailed,
+			"team_id", team.Id, "conn", connName, "error", err.Error())
 		_ = p.API.DeletePost(created.Id)
 		return
 	}
@@ -112,7 +121,9 @@ func (p *Plugin) handlePromptAccept(w http.ResponseWriter, r *http.Request) {
 
 	prompt, err := p.kvstore.GetConnectionPrompt(teamID, connName)
 	if err != nil {
-		p.API.LogError("Failed to get connection prompt", "team_id", teamID, "conn", connName, "error", err.Error())
+		p.API.LogError("Failed to get connection prompt",
+			"error_code", errcode.PromptAcceptGetPromptFailed,
+			"team_id", teamID, "conn", connName, "error", err.Error())
 		writePostActionResponse(w, "Failed to check prompt status.")
 		return
 	}
@@ -134,7 +145,9 @@ func (p *Plugin) handlePromptAccept(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := p.kvstore.DeleteConnectionPrompt(teamID, connName); err != nil {
-		p.API.LogError("Failed to delete connection prompt", "team_id", teamID, "conn", connName, "error", err.Error())
+		p.API.LogError("Failed to delete connection prompt",
+			"error_code", errcode.PromptDeletePromptFailed,
+			"team_id", teamID, "conn", connName, "error", err.Error())
 	}
 
 	newMessage := fmt.Sprintf(
@@ -167,7 +180,9 @@ func (p *Plugin) handlePromptBlock(w http.ResponseWriter, r *http.Request) {
 
 	prompt, err := p.kvstore.GetConnectionPrompt(teamID, connName)
 	if err != nil {
-		p.API.LogError("Failed to get connection prompt", "team_id", teamID, "conn", connName, "error", err.Error())
+		p.API.LogError("Failed to get connection prompt",
+			"error_code", errcode.PromptBlockGetPromptFailed,
+			"team_id", teamID, "conn", connName, "error", err.Error())
 		writePostActionResponse(w, "Failed to check prompt status.")
 		return
 	}
@@ -186,7 +201,9 @@ func (p *Plugin) handlePromptBlock(w http.ResponseWriter, r *http.Request) {
 		State:  store.PromptStateBlocked,
 		PostID: prompt.PostID,
 	}); err != nil {
-		p.API.LogError("Failed to update connection prompt to blocked", "team_id", teamID, "conn", connName, "error", err.Error())
+		p.API.LogError("Failed to update connection prompt to blocked",
+			"error_code", errcode.PromptSetBlockedFailed,
+			"team_id", teamID, "conn", connName, "error", err.Error())
 		writePostActionResponse(w, "Failed to block connection.")
 		return
 	}
@@ -206,7 +223,9 @@ func (p *Plugin) handlePromptBlock(w http.ResponseWriter, r *http.Request) {
 func (p *Plugin) handleUnlinkedInboundChannel(team *model.Team, channel *model.Channel, connName string) {
 	prompt, err := p.kvstore.GetChannelConnectionPrompt(channel.Id, connName)
 	if err != nil {
-		p.API.LogError("Failed to get channel connection prompt", "channel_id", channel.Id, "conn", connName, "error", err.Error())
+		p.API.LogError("Failed to get channel connection prompt",
+			"error_code", errcode.PromptGetChanPromptFailed,
+			"channel_id", channel.Id, "conn", connName, "error", err.Error())
 		return
 	}
 	if prompt != nil {
@@ -258,7 +277,9 @@ func (p *Plugin) handleUnlinkedInboundChannel(team *model.Team, channel *model.C
 
 	created, appErr := p.API.CreatePost(post)
 	if appErr != nil {
-		p.API.LogError("Failed to create channel connection prompt post", "channel_id", channel.Id, "conn", connName, "error", appErr.Error())
+		p.API.LogError("Failed to create channel connection prompt post",
+			"error_code", errcode.PromptCreateChanPostFailed,
+			"channel_id", channel.Id, "conn", connName, "error", appErr.Error())
 		return
 	}
 
@@ -267,7 +288,9 @@ func (p *Plugin) handleUnlinkedInboundChannel(team *model.Team, channel *model.C
 		PostID: created.Id,
 	})
 	if err != nil {
-		p.API.LogError("Failed to save channel connection prompt", "channel_id", channel.Id, "conn", connName, "error", err.Error())
+		p.API.LogError("Failed to save channel connection prompt",
+			"error_code", errcode.PromptSaveChanPromptFailed,
+			"channel_id", channel.Id, "conn", connName, "error", err.Error())
 		_ = p.API.DeletePost(created.Id)
 		return
 	}
@@ -303,7 +326,9 @@ func (p *Plugin) handleChannelPromptAccept(w http.ResponseWriter, r *http.Reques
 
 	prompt, err := p.kvstore.GetChannelConnectionPrompt(channelID, connName)
 	if err != nil {
-		p.API.LogError("Failed to get channel connection prompt", "channel_id", channelID, "conn", connName, "error", err.Error())
+		p.API.LogError("Failed to get channel connection prompt",
+			"error_code", errcode.PromptChanAcceptGetFailed,
+			"channel_id", channelID, "conn", connName, "error", err.Error())
 		writePostActionResponse(w, "Failed to check prompt status.")
 		return
 	}
@@ -325,7 +350,9 @@ func (p *Plugin) handleChannelPromptAccept(w http.ResponseWriter, r *http.Reques
 	}
 
 	if err := p.kvstore.DeleteChannelConnectionPrompt(channelID, connName); err != nil {
-		p.API.LogError("Failed to delete channel connection prompt", "channel_id", channelID, "conn", connName, "error", err.Error())
+		p.API.LogError("Failed to delete channel connection prompt",
+			"error_code", errcode.PromptDeleteChanPromptFailed,
+			"channel_id", channelID, "conn", connName, "error", err.Error())
 	}
 
 	newMessage := fmt.Sprintf(
@@ -364,7 +391,9 @@ func (p *Plugin) handleChannelPromptBlock(w http.ResponseWriter, r *http.Request
 
 	prompt, err := p.kvstore.GetChannelConnectionPrompt(channelID, connName)
 	if err != nil {
-		p.API.LogError("Failed to get channel connection prompt", "channel_id", channelID, "conn", connName, "error", err.Error())
+		p.API.LogError("Failed to get channel connection prompt",
+			"error_code", errcode.PromptChanBlockGetFailed,
+			"channel_id", channelID, "conn", connName, "error", err.Error())
 		writePostActionResponse(w, "Failed to check prompt status.")
 		return
 	}
@@ -383,7 +412,9 @@ func (p *Plugin) handleChannelPromptBlock(w http.ResponseWriter, r *http.Request
 		State:  store.PromptStateBlocked,
 		PostID: prompt.PostID,
 	}); err != nil {
-		p.API.LogError("Failed to update channel connection prompt to blocked", "channel_id", channelID, "conn", connName, "error", err.Error())
+		p.API.LogError("Failed to update channel connection prompt to blocked",
+			"error_code", errcode.PromptSetChanBlockedFailed,
+			"channel_id", channelID, "conn", connName, "error", err.Error())
 		writePostActionResponse(w, "Failed to block connection.")
 		return
 	}
@@ -400,7 +431,9 @@ func (p *Plugin) handleChannelPromptBlock(w http.ResponseWriter, r *http.Request
 func updatePromptPost(p *Plugin, postID, newMessage string) {
 	post, appErr := p.API.GetPost(postID)
 	if appErr != nil {
-		p.API.LogError("Failed to get prompt post for update", "post_id", postID, "error", appErr.Error())
+		p.API.LogError("Failed to get prompt post for update",
+			"error_code", errcode.PromptGetPostForUpdateFailed,
+			"post_id", postID, "error", appErr.Error())
 		return
 	}
 
@@ -408,7 +441,9 @@ func updatePromptPost(p *Plugin, postID, newMessage string) {
 	post.AddProp("attachments", nil)
 
 	if _, appErr := p.API.UpdatePost(post); appErr != nil {
-		p.API.LogError("Failed to update prompt post", "post_id", postID, "error", appErr.Error())
+		p.API.LogError("Failed to update prompt post",
+			"error_code", errcode.PromptUpdatePostFailed,
+			"post_id", postID, "error", appErr.Error())
 	}
 }
 

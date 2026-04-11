@@ -157,10 +157,7 @@ func TestIsChannelAdminOrHigher(t *testing.T) {
 // addCmdLogMocks registers permissive log mocks on the given API so that
 // LogInfo, LogWarn, LogError, and LogDebug calls never panic.
 func addCmdLogMocks(api *plugintest.API) {
-	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogInfo", "LogWarn", "LogError", "LogDebug")
 }
 
 // singleOutboundConfig returns a configuration with one outbound connection named "high".

@@ -13,6 +13,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azqueue"
 	"github.com/mattermost/mattermost/server/public/plugin"
+
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 )
 
 const (
@@ -83,7 +85,9 @@ func newAzureProvider(cfg AzureQueueProviderConfig, api plugin.API) (QueueProvid
 	if _, createErr := queueClient.Create(ctx, nil); createErr != nil {
 		// Ignore "already exists" (409 Conflict); warn on other errors.
 		if !strings.Contains(createErr.Error(), azureErrQueueAlreadyExists) {
-			api.LogWarn("Azure Queue: could not create queue (may already exist)", "queue", cfg.QueueName, "error", createErr.Error())
+			api.LogWarn("Azure Queue: could not create queue (may already exist)",
+				"error_code", errcode.AzureQueueCreateQueueFailed,
+				"queue", cfg.QueueName, "error", createErr.Error())
 		}
 	}
 
@@ -104,7 +108,9 @@ func newAzureProvider(cfg AzureQueueProviderConfig, api plugin.API) (QueueProvid
 		defer blobCancel()
 		if createErr := blobOps.CreateContainer(blobCtx); createErr != nil {
 			if !strings.Contains(createErr.Error(), azureErrContainerAlreadyExists) {
-				api.LogWarn("Azure Blob: could not create container (may already exist)", "container", cfg.BlobContainerName, "error", createErr.Error())
+				api.LogWarn("Azure Blob: could not create container (may already exist)",
+					"error_code", errcode.AzureQueueCreateContainerFail,
+					"container", cfg.BlobContainerName, "error", createErr.Error())
 			}
 		}
 	}
@@ -168,7 +174,9 @@ func (a *azureProvider) pollQueue(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			a.api.LogError("Azure Queue dequeue failed", "queue", a.cfg.QueueName, "error", err.Error())
+			a.api.LogError("Azure Queue dequeue failed",
+				"error_code", errcode.AzureQueueDequeueFailed,
+				"queue", a.cfg.QueueName, "error", err.Error())
 			select {
 			case <-ctx.Done():
 				return
@@ -194,6 +202,7 @@ func (a *azureProvider) pollQueue(ctx context.Context) {
 			data, err := base64.StdEncoding.DecodeString(*msg.MessageText)
 			if err != nil {
 				a.api.LogError("Azure Queue: failed to decode message",
+					"error_code", errcode.AzureQueueDecodeFailed,
 					"queue", a.cfg.QueueName, "error", err.Error())
 				// Delete malformed message to avoid reprocessing.
 				_, _ = a.queueClient.DeleteMessage(ctx, *msg.MessageID, *msg.PopReceipt, nil)
@@ -202,6 +211,7 @@ func (a *azureProvider) pollQueue(ctx context.Context) {
 
 			if err := a.handler(data); err != nil {
 				a.api.LogWarn("Azure Queue: handler returned error, message will retry",
+					"error_code", errcode.AzureQueueHandlerRetry,
 					"queue", a.cfg.QueueName, "error", err.Error())
 				continue
 			}
@@ -209,6 +219,7 @@ func (a *azureProvider) pollQueue(ctx context.Context) {
 			// Handler succeeded, delete the message.
 			if _, err := a.queueClient.DeleteMessage(ctx, *msg.MessageID, *msg.PopReceipt, nil); err != nil {
 				a.api.LogWarn("Azure Queue: failed to delete processed message",
+					"error_code", errcode.AzureQueueDeleteProcessedFail,
 					"queue", a.cfg.QueueName, "error", err.Error())
 			}
 		}
@@ -256,7 +267,9 @@ func (a *azureProvider) WatchFiles(ctx context.Context, handler func(key string,
 			if ctx.Err() != nil {
 				return nil
 			}
-			a.api.LogError("Azure Blob list failed", "container", a.cfg.BlobContainerName, "error", err.Error())
+			a.api.LogError("Azure Blob list failed",
+				"error_code", errcode.AzureQueueBlobListFailed,
+				"container", a.cfg.BlobContainerName, "error", err.Error())
 			continue
 		}
 
@@ -266,18 +279,21 @@ func (a *azureProvider) WatchFiles(ctx context.Context, handler func(key string,
 			data, err := a.containerClient.DownloadBlob(ctx, blob.Name)
 			if err != nil {
 				a.api.LogWarn("Azure Blob: failed to download",
+					"error_code", errcode.AzureQueueBlobDownloadFailed,
 					"blob", blob.Name, "error", err.Error())
 				continue
 			}
 
 			if err := handler(blob.Name, data, headers); err != nil {
 				a.api.LogWarn("Azure Blob: handler returned error",
+					"error_code", errcode.AzureQueueBlobHandlerError,
 					"blob", blob.Name, "error", err.Error())
 				continue
 			}
 
 			if err := a.containerClient.DeleteBlob(ctx, blob.Name); err != nil {
 				a.api.LogWarn("Azure Blob: failed to delete after processing",
+					"error_code", errcode.AzureQueueBlobDeleteFailed,
 					"blob", blob.Name, "error", err.Error())
 				continue
 			}

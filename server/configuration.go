@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 )
 
@@ -429,7 +430,8 @@ func (p *Plugin) setConfiguration(configuration *configuration) {
 
 	if configuration != nil && p.configuration == configuration {
 		if p.API != nil {
-			p.API.LogWarn("setConfiguration called with the existing configuration")
+			p.API.LogWarn("setConfiguration called with the existing configuration",
+				"error_code", errcode.ConfigSameConfigPassed)
 		}
 		return
 	}
@@ -445,7 +447,9 @@ func (p *Plugin) OnConfigurationChange() error {
 	}
 
 	if err := cfg.validate(); err != nil {
-		p.API.LogWarn("Plugin configuration has validation warnings", "error", err.Error())
+		p.API.LogWarn("Plugin configuration has validation warnings",
+			"error_code", errcode.ConfigValidationWarn,
+			"error", err.Error())
 	}
 
 	p.setConfiguration(cfg)

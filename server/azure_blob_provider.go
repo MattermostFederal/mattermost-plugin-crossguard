@@ -24,6 +24,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
+
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 )
 
 const (
@@ -341,6 +343,7 @@ func ensureContainerWithRetry(ctx context.Context, ops azureBlobOps, api plugin.
 		}
 		delay := containerCreateRetryBase << attempt
 		api.LogWarn("Azure Blob: transient container create error, retrying",
+			"error_code", errcode.AzureBlobContainerCreateRetry,
 			"container", containerName, "attempt", attempt+1, "delay", delay.String(), "error", err.Error())
 		select {
 		case <-time.After(delay):
@@ -396,6 +399,7 @@ func newAzureBlobProviderFromOps(ctx context.Context, cfg AzureBlobProviderConfi
 	}
 
 	api.LogWarn("Azure Blob provider: WAL directory is in temp storage and may not survive container restarts",
+		"error_code", errcode.AzureBlobWALInTempStorage,
 		"wal_dir", walDir)
 
 	a := &azureBlobProvider{
@@ -475,6 +479,7 @@ func (a *azureBlobProvider) openWALFileLocked() error {
 	if dir, derr := os.Open(a.walDir); derr == nil {
 		if syncErr := dir.Sync(); syncErr != nil {
 			a.api.LogWarn("Azure Blob: WAL dir fsync failed",
+				"error_code", errcode.AzureBlobWALDirFsyncFailed,
 				"dir", a.walDir, "error", syncErr.Error())
 		}
 		_ = dir.Close()
@@ -525,13 +530,16 @@ func (a *azureBlobProvider) QueueFileRef(postID, fileID, filename string) {
 	companion := walPath[:len(walPath)-len(walFileExt)] + walFilesExt
 	data, err := json.Marshal(snapshot)
 	if err != nil {
-		a.api.LogWarn("Azure Blob: failed to marshal pending files", "error", err.Error())
+		a.api.LogWarn("Azure Blob: failed to marshal pending files",
+			"error_code", errcode.AzureBlobMarshalPendingFailed,
+			"error", err.Error())
 		return
 	}
 	a.companionMu.Lock()
 	defer a.companionMu.Unlock()
 	if err := os.WriteFile(companion, data, 0o600); err != nil {
 		a.api.LogError("Azure Blob: failed to write companion files.json",
+			"error_code", errcode.AzureBlobWriteCompanionFailed,
 			"path", companion, "error", err.Error())
 	}
 }
@@ -560,6 +568,7 @@ func (a *azureBlobProvider) startFlushLoop(ctx context.Context) {
 				a.persistShutdownResidue()
 				if n := a.countWALFiles(); n > 0 {
 					a.api.LogWarn("Azure Blob: shutdown left WAL files for recovery",
+						"error_code", errcode.AzureBlobShutdownLeftWALFiles,
 						"count", n, "wal_dir", a.walDir)
 				}
 				return
@@ -606,10 +615,12 @@ func (a *azureBlobProvider) flush(ctx context.Context) {
 	if oldFile != nil {
 		if err := oldFile.Sync(); err != nil {
 			a.api.LogWarn("Azure Blob: WAL fsync failed during rotation",
+				"error_code", errcode.AzureBlobWALFsyncRotationFailed,
 				"path", oldWALPath, "error", err.Error())
 		}
 		if err := oldFile.Close(); err != nil {
 			a.api.LogError("Azure Blob: WAL close failed during rotation, skipping upload",
+				"error_code", errcode.AzureBlobWALCloseRotationFailed,
 				"path", oldWALPath, "error", err.Error())
 			oldWALPath = ""
 		}
@@ -619,11 +630,13 @@ func (a *azureBlobProvider) flush(ctx context.Context) {
 	if oldWALPath != "" {
 		if err := a.uploadWALFile(ctx, oldWALPath); err != nil {
 			a.api.LogError("Azure Blob: WAL upload failed, leaving for recovery",
+				"error_code", errcode.AzureBlobWALUploadFailed,
 				"path", oldWALPath, "error", err.Error())
 			return
 		}
 		if err := os.Remove(oldWALPath); err != nil && !os.IsNotExist(err) {
 			a.api.LogWarn("Azure Blob: failed to delete WAL after upload",
+				"error_code", errcode.AzureBlobDeleteWALFailed,
 				"path", oldWALPath, "error", err.Error())
 		}
 	}
@@ -647,14 +660,17 @@ func (a *azureBlobProvider) flush(ctx context.Context) {
 			data, mErr := json.Marshal(failed)
 			if mErr != nil {
 				a.api.LogError("Azure Blob: failed to marshal failed refs for companion rewrite",
+					"error_code", errcode.AzureBlobMarshalFailedRefsFailed,
 					"path", companion, "count", len(failed), "error", mErr.Error())
 			} else if wErr := os.WriteFile(companion, data, 0o600); wErr != nil {
 				a.api.LogError("Azure Blob: failed to rewrite companion files.json with failed refs",
+					"error_code", errcode.AzureBlobRewriteCompanionFailed,
 					"path", companion, "count", len(failed), "error", wErr.Error())
 			}
 		} else {
 			if err := os.Remove(companion); err != nil && !os.IsNotExist(err) {
 				a.api.LogWarn("Azure Blob: failed to delete companion files.json",
+					"error_code", errcode.AzureBlobDeleteCompanionFailed,
 					"path", companion, "error", err.Error())
 			}
 		}
@@ -696,6 +712,7 @@ func (a *azureBlobProvider) flushPendingFilesList(ctx context.Context, refs []pe
 		data, err := a.getFile(ref.FileID)
 		if err != nil {
 			a.api.LogError("Azure Blob: deferred file fetch failed",
+				"error_code", errcode.AzureBlobDeferredFileFetchFailed,
 				"file_id", ref.FileID, "post_id", ref.PostID, "error", err.Error())
 			continue
 		}
@@ -707,6 +724,7 @@ func (a *azureBlobProvider) flushPendingFilesList(ctx context.Context, refs []pe
 		}
 		if err := a.UploadFile(ctx, key, data, headers); err != nil {
 			a.api.LogError("Azure Blob: deferred file upload failed",
+				"error_code", errcode.AzureBlobDeferredFileUploadFailed,
 				"file_id", ref.FileID, "post_id", ref.PostID, "error", err.Error())
 			failed = append(failed, ref)
 		}
@@ -737,15 +755,18 @@ func (a *azureBlobProvider) persistShutdownResidue() {
 	data, err := json.Marshal(refs)
 	if err != nil {
 		a.api.LogError("Azure Blob: shutdown: failed to marshal residual pending files",
+			"error_code", errcode.AzureBlobShutdownMarshalResidualFailed,
 			"count", len(refs), "error", err.Error())
 		return
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		a.api.LogError("Azure Blob: shutdown: failed to persist residual pending files",
+			"error_code", errcode.AzureBlobShutdownPersistResidualFailed,
 			"count", len(refs), "path", path, "error", err.Error())
 		return
 	}
 	a.api.LogWarn("Azure Blob: shutdown persisted residual pending files for recovery",
+		"error_code", errcode.AzureBlobShutdownPersistedResidual,
 		"count", len(refs), "path", path)
 }
 
@@ -797,7 +818,9 @@ func (a *azureBlobProvider) pollBlobs(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			a.api.LogError("Azure Blob: list failed", "container", a.cfg.BlobContainerName, "error", err.Error())
+			a.api.LogError("Azure Blob: list failed",
+				"error_code", errcode.AzureBlobListFailed,
+				"container", a.cfg.BlobContainerName, "error", err.Error())
 			backoff = nextListBackoff(backoff, a.batchPoll)
 			continue
 		}
@@ -844,6 +867,7 @@ func (a *azureBlobProvider) processBlob(ctx context.Context, blobName string) {
 	if a.isBlobProcessed(blobName) {
 		if err := a.containerClient.DeleteBlob(ctx, blobName); err != nil {
 			a.api.LogWarn("Azure Blob: delete retry failed (marker present)",
+				"error_code", errcode.AzureBlobDeleteRetryFailed,
 				"blob", blobName, "error", err.Error())
 			return
 		}
@@ -855,7 +879,9 @@ func (a *azureBlobProvider) processBlob(ctx context.Context, blobName string) {
 
 	data, err := a.containerClient.DownloadBlob(ctx, blobName)
 	if err != nil {
-		a.api.LogWarn("Azure Blob: download failed", "blob", blobName, "error", err.Error())
+		a.api.LogWarn("Azure Blob: download failed",
+			"error_code", errcode.AzureBlobDownloadFailed,
+			"blob", blobName, "error", err.Error())
 		return
 	}
 
@@ -865,6 +891,7 @@ func (a *azureBlobProvider) processBlob(ctx context.Context, blobName string) {
 		}
 		if err := a.handler(line); err != nil {
 			a.api.LogWarn("Azure Blob: handler error, will retry blob",
+				"error_code", errcode.AzureBlobHandlerError,
 				"blob", blobName, "error", err.Error())
 			return
 		}
@@ -875,7 +902,9 @@ func (a *azureBlobProvider) processBlob(ctx context.Context, blobName string) {
 	a.markBlobProcessed(blobName)
 
 	if err := a.containerClient.DeleteBlob(ctx, blobName); err != nil {
-		a.api.LogWarn("Azure Blob: delete failed", "blob", blobName, "error", err.Error())
+		a.api.LogWarn("Azure Blob: delete failed",
+			"error_code", errcode.AzureBlobDeleteFailed,
+			"blob", blobName, "error", err.Error())
 		return
 	}
 
@@ -894,6 +923,7 @@ func (a *azureBlobProvider) markBlobProcessed(blobName string) {
 	key := blobProcessedKey(blobName)
 	if _, err := a.kv.Set(key, []byte{1}, pluginapi.SetExpiry(time.Duration(blobProcessedMarkerTTLSeconds)*time.Second)); err != nil {
 		a.api.LogWarn("Azure Blob: failed to write processed marker",
+			"error_code", errcode.AzureBlobWriteProcessedMarkerFailed,
 			"blob", blobName, "error", err.Error())
 	}
 }
@@ -909,6 +939,7 @@ func (a *azureBlobProvider) isBlobProcessed(blobName string) bool {
 func (a *azureBlobProvider) clearBlobProcessed(blobName string) {
 	if err := a.kv.Delete(blobProcessedKey(blobName)); err != nil {
 		a.api.LogWarn("Azure Blob: failed to clear processed marker",
+			"error_code", errcode.AzureBlobClearProcessedMarkerFailed,
 			"blob", blobName, "error", err.Error())
 	}
 }
@@ -922,13 +953,17 @@ func (a *azureBlobProvider) tryAcquireBlobLock(blobName string) bool {
 
 	var raw []byte
 	if err := a.kv.Get(key, &raw); err != nil {
-		a.api.LogWarn("Azure Blob: lock get failed", "blob", blobName, "error", err.Error())
+		a.api.LogWarn("Azure Blob: lock get failed",
+			"error_code", errcode.AzureBlobLockGetFailed,
+			"blob", blobName, "error", err.Error())
 		return false
 	}
 
 	token, err := newLockToken()
 	if err != nil {
-		a.api.LogWarn("Azure Blob: lock token generation failed", "blob", blobName, "error", err.Error())
+		a.api.LogWarn("Azure Blob: lock token generation failed",
+			"error_code", errcode.AzureBlobLockTokenGenFailed,
+			"blob", blobName, "error", err.Error())
 		return false
 	}
 	newLock := blobLock{Node: a.nodeID, Acquired: time.Now().UnixMilli(), Token: token}
@@ -936,7 +971,9 @@ func (a *azureBlobProvider) tryAcquireBlobLock(blobName string) bool {
 	if len(raw) == 0 {
 		ok, setErr := a.kv.Set(key, newLock, pluginapi.SetAtomic(nil))
 		if setErr != nil {
-			a.api.LogWarn("Azure Blob: lock set failed", "blob", blobName, "error", setErr.Error())
+			a.api.LogWarn("Azure Blob: lock set failed",
+				"error_code", errcode.AzureBlobLockSetFailed,
+				"blob", blobName, "error", setErr.Error())
 			return false
 		}
 		if ok {
@@ -950,7 +987,9 @@ func (a *azureBlobProvider) tryAcquireBlobLock(blobName string) bool {
 		// Corrupt lock value; try to reclaim.
 		ok, setErr := a.kv.Set(key, newLock, pluginapi.SetAtomic(raw))
 		if setErr != nil {
-			a.api.LogWarn("Azure Blob: corrupt lock reclaim failed", "blob", blobName, "error", setErr.Error())
+			a.api.LogWarn("Azure Blob: corrupt lock reclaim failed",
+				"error_code", errcode.AzureBlobCorruptLockReclaimFailed,
+				"blob", blobName, "error", setErr.Error())
 			return false
 		}
 		if ok {
@@ -966,7 +1005,9 @@ func (a *azureBlobProvider) tryAcquireBlobLock(blobName string) bool {
 
 	ok, err := a.kv.Set(key, newLock, pluginapi.SetAtomic(raw))
 	if err != nil {
-		a.api.LogWarn("Azure Blob: stale lock reclaim failed", "blob", blobName, "error", err.Error())
+		a.api.LogWarn("Azure Blob: stale lock reclaim failed",
+			"error_code", errcode.AzureBlobStaleLockReclaimFailed,
+			"blob", blobName, "error", err.Error())
 		return false
 	}
 	if ok {
@@ -1034,14 +1075,18 @@ func (a *azureBlobProvider) releaseBlobLock(blobName string) {
 		// No cached token (tests, corrupt state). Fall back to an unconditional
 		// delete so legacy callers still work.
 		if err := a.kv.Delete(key); err != nil {
-			a.api.LogWarn("Azure Blob: lock release failed", "blob", blobName, "error", err.Error())
+			a.api.LogWarn("Azure Blob: lock release failed",
+				"error_code", errcode.AzureBlobLockReleaseFailed,
+				"blob", blobName, "error", err.Error())
 		}
 		return
 	}
 
 	var raw []byte
 	if err := a.kv.Get(key, &raw); err != nil {
-		a.api.LogWarn("Azure Blob: lock release get failed", "blob", blobName, "error", err.Error())
+		a.api.LogWarn("Azure Blob: lock release get failed",
+			"error_code", errcode.AzureBlobLockReleaseGetFailed,
+			"blob", blobName, "error", err.Error())
 		return
 	}
 	if len(raw) == 0 {
@@ -1052,16 +1097,20 @@ func (a *azureBlobProvider) releaseBlobLock(blobName string) {
 	if err := json.Unmarshal(raw, &current); err != nil {
 		// Corrupt lock value: safer to leave it for the stale-reclaim path.
 		a.api.LogWarn("Azure Blob: lock release saw corrupt value, leaving",
+			"error_code", errcode.AzureBlobLockReleaseCorrupt,
 			"blob", blobName, "error", err.Error())
 		return
 	}
 	if current.Token != ourToken {
 		a.api.LogWarn("Azure Blob: skipping release, lock reclaimed by another node",
+			"error_code", errcode.AzureBlobLockReleaseReclaimedByOther,
 			"blob", blobName, "current_node", current.Node)
 		return
 	}
 	if err := a.kv.Delete(key); err != nil {
-		a.api.LogWarn("Azure Blob: lock release failed", "blob", blobName, "error", err.Error())
+		a.api.LogWarn("Azure Blob: lock release failed",
+			"error_code", errcode.AzureBlobLockReleaseFailed2,
+			"blob", blobName, "error", err.Error())
 	}
 }
 
@@ -1083,6 +1132,7 @@ func (a *azureBlobProvider) recoverWALOnStartup(ctx context.Context) {
 	if err != nil {
 		if !os.IsNotExist(err) {
 			a.api.LogWarn("Azure Blob: WAL recovery: failed to scan root",
+				"error_code", errcode.AzureBlobWALRecoveryScanRootFailed,
 				"root", root, "error", err.Error())
 		}
 		return
@@ -1119,6 +1169,7 @@ func (a *azureBlobProvider) recoverDirectory(ctx context.Context, dir string, is
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		a.api.LogWarn("Azure Blob: WAL recovery: failed to scan directory",
+			"error_code", errcode.AzureBlobWALRecoveryScanDirFailed,
 			"dir", dir, "error", err.Error())
 		return
 	}
@@ -1137,6 +1188,7 @@ func (a *azureBlobProvider) recoverDirectory(ctx context.Context, dir string, is
 		case strings.HasSuffix(name, walFileExt):
 			if !walFileNameRe.MatchString(name) {
 				a.api.LogWarn("Azure Blob: WAL recovery: skipping unrecognized file",
+					"error_code", errcode.AzureBlobWALRecoverySkipUnrecognized,
 					"path", path)
 				continue
 			}
@@ -1147,11 +1199,13 @@ func (a *azureBlobProvider) recoverDirectory(ctx context.Context, dir string, is
 			}
 			if err := a.uploadWALFile(ctx, path); err != nil {
 				a.api.LogError("Azure Blob: WAL recovery upload failed",
+					"error_code", errcode.AzureBlobWALRecoveryUploadFailed,
 					"path", path, "error", err.Error())
 				continue
 			}
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				a.api.LogWarn("Azure Blob: WAL recovery delete failed",
+					"error_code", errcode.AzureBlobWALRecoveryDeleteFailed,
 					"path", path, "error", err.Error())
 			}
 		case strings.HasSuffix(name, walFilesExt):
@@ -1173,12 +1227,14 @@ func (a *azureBlobProvider) recoverCompanionFiles(ctx context.Context, path stri
 	raw, err := os.ReadFile(path) //nolint:gosec // path from walDir scan
 	if err != nil {
 		a.api.LogWarn("Azure Blob: WAL recovery: failed to read companion file",
+			"error_code", errcode.AzureBlobWALRecoveryReadCompanionFail,
 			"path", path, "error", err.Error())
 		return
 	}
 	var refs []pendingFileRef
 	if unmarshalErr := json.Unmarshal(raw, &refs); unmarshalErr != nil {
 		a.api.LogWarn("Azure Blob: WAL recovery: malformed companion file",
+			"error_code", errcode.AzureBlobWALRecoveryMalformedCompanion,
 			"path", path, "error", unmarshalErr.Error())
 		_ = os.Remove(path)
 		return
@@ -1198,11 +1254,13 @@ func (a *azureBlobProvider) recoverCompanionFiles(ctx context.Context, path stri
 	data, err := json.Marshal(failed)
 	if err != nil {
 		a.api.LogWarn("Azure Blob: WAL recovery: failed to marshal remaining refs",
+			"error_code", errcode.AzureBlobWALRecoveryMarshalRemaining,
 			"path", path, "count", len(failed), "error", err.Error())
 		return
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		a.api.LogWarn("Azure Blob: WAL recovery: failed to rewrite companion file",
+			"error_code", errcode.AzureBlobWALRecoveryRewriteCompanion,
 			"path", path, "count", len(failed), "error", err.Error())
 	}
 }
@@ -1260,7 +1318,9 @@ func (a *azureBlobProvider) WatchFiles(ctx context.Context, handler func(key str
 			if ctx.Err() != nil {
 				return nil
 			}
-			a.api.LogError("Azure Blob: file list failed", "container", a.cfg.BlobContainerName, "error", err.Error())
+			a.api.LogError("Azure Blob: file list failed",
+				"error_code", errcode.AzureBlobFileListFailed,
+				"container", a.cfg.BlobContainerName, "error", err.Error())
 			backoff = nextListBackoff(backoff, a.batchPoll)
 			continue
 		}
@@ -1288,6 +1348,7 @@ func (a *azureBlobProvider) WatchFiles(ctx context.Context, handler func(key str
 				if a.isBlobProcessed(blob.Name) {
 					if err := a.containerClient.DeleteBlob(ctx, blob.Name); err != nil {
 						a.api.LogWarn("Azure Blob: file delete retry failed (marker present)",
+							"error_code", errcode.AzureBlobFileDeleteRetryFailed,
 							"blob", blob.Name, "error", err.Error())
 						return
 					}
@@ -1300,18 +1361,24 @@ func (a *azureBlobProvider) WatchFiles(ctx context.Context, handler func(key str
 				headers := extractBlobHeaders(blob.Metadata)
 				data, err := a.containerClient.DownloadBlob(ctx, blob.Name)
 				if err != nil {
-					a.api.LogWarn("Azure Blob: file download failed", "blob", blob.Name, "error", err.Error())
+					a.api.LogWarn("Azure Blob: file download failed",
+						"error_code", errcode.AzureBlobFileDownloadFailed,
+						"blob", blob.Name, "error", err.Error())
 					return
 				}
 				// Strip the files/ prefix when passing key to handler to match azureProvider behaviour.
 				key := strings.TrimPrefix(blob.Name, blobFilesPrefix)
 				if err := handler(key, data, headers); err != nil {
-					a.api.LogWarn("Azure Blob: file handler error", "blob", blob.Name, "error", err.Error())
+					a.api.LogWarn("Azure Blob: file handler error",
+						"error_code", errcode.AzureBlobFileHandlerError,
+						"blob", blob.Name, "error", err.Error())
 					return
 				}
 				a.markBlobProcessed(blob.Name)
 				if err := a.containerClient.DeleteBlob(ctx, blob.Name); err != nil {
-					a.api.LogWarn("Azure Blob: file delete failed", "blob", blob.Name, "error", err.Error())
+					a.api.LogWarn("Azure Blob: file delete failed",
+						"error_code", errcode.AzureBlobFileDeleteFailed,
+						"blob", blob.Name, "error", err.Error())
 					return
 				}
 				a.clearBlobProcessed(blob.Name)

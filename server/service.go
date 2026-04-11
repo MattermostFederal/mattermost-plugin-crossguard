@@ -7,6 +7,7 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
@@ -112,7 +113,9 @@ func (p *Plugin) initTeamForCrossGuard(user *model.User, teamID string, conn sto
 
 	existing, err := p.kvstore.GetTeamConnections(teamID)
 	if err != nil {
-		p.API.LogError("Failed to get team connections", "team_id", teamID, "error", err.Error())
+		p.API.LogError("Failed to get team connections",
+			"error_code", errcode.ServiceInitTeamGetConnsFailed,
+			"team_id", teamID, "error", err.Error())
 		return nil, false, &apiError{Message: "failed to check team initialization state", Status: 500}
 	}
 
@@ -123,19 +126,25 @@ func (p *Plugin) initTeamForCrossGuard(user *model.User, teamID string, conn sto
 	}
 
 	if addErr := p.kvstore.AddTeamConnection(teamID, conn); addErr != nil {
-		p.API.LogError("Failed to add team connection", "team_id", teamID, "conn", connKey(conn), "error", addErr.Error())
+		p.API.LogError("Failed to add team connection",
+			"error_code", errcode.ServiceAddTeamConnFailed,
+			"team_id", teamID, "conn", connKey(conn), "error", addErr.Error())
 		return nil, false, &apiError{Message: "failed to save team initialization state", Status: 500}
 	}
 
 	updated, err := p.kvstore.GetTeamConnections(teamID)
 	if err != nil {
-		p.API.LogError("Failed to re-read team connections", "team_id", teamID, "error", err.Error())
+		p.API.LogError("Failed to re-read team connections",
+			"error_code", errcode.ServiceInitTeamReReadConnsFailed,
+			"team_id", teamID, "error", err.Error())
 		return nil, false, &apiError{Message: "failed to save team initialization state", Status: 500}
 	}
 
 	if len(updated) == 1 {
 		if err := p.kvstore.AddInitializedTeamID(teamID); err != nil {
-			p.API.LogError("Failed to add team to initialized list", "team_id", teamID, "error", err.Error())
+			p.API.LogError("Failed to add team to initialized list",
+				"error_code", errcode.ServiceAddTeamInitializedFailed,
+				"team_id", teamID, "error", err.Error())
 			return nil, false, &apiError{Message: "failed to save team initialization state", Status: 500}
 		}
 	}
@@ -149,7 +158,9 @@ func (p *Plugin) initTeamForCrossGuard(user *model.User, teamID string, conn sto
 			Message:   fmt.Sprintf("Cross Guard connection `%s` linked to this team by @%s. (team ID: %s, team name: %s)", displayName, user.Username, team.Id, team.Name),
 		}
 		if _, appErr := p.API.CreatePost(post); appErr != nil {
-			p.API.LogWarn("Failed to post initialization message", "error", appErr.Error())
+			p.API.LogWarn("Failed to post initialization message",
+				"error_code", errcode.ServicePostTeamInitMsgFailed,
+				"error", appErr.Error())
 		}
 	}
 
@@ -165,7 +176,9 @@ func (p *Plugin) getTeamStatus(teamID string) (*TeamStatusResponse, *apiError) {
 
 	conns, err := p.kvstore.GetTeamConnections(teamID)
 	if err != nil {
-		p.API.LogError("Failed to check team status", "team_id", teamID, "error", err.Error())
+		p.API.LogError("Failed to check team status",
+			"error_code", errcode.ServiceCheckTeamStatusFailed,
+			"team_id", teamID, "error", err.Error())
 		return nil, &apiError{Message: "failed to check team status", Status: 500}
 	}
 
@@ -228,7 +241,9 @@ func (p *Plugin) getTeamStatus(teamID string) (*TeamStatusResponse, *apiError) {
 func (p *Plugin) getGlobalStatus() (*GlobalStatusResponse, *apiError) {
 	teamIDs, err := p.kvstore.GetInitializedTeamIDs()
 	if err != nil {
-		p.API.LogError("Failed to get initialized teams", "error", err.Error())
+		p.API.LogError("Failed to get initialized teams",
+			"error_code", errcode.ServiceGetInitializedTeamsFailed,
+			"error", err.Error())
 		return nil, &apiError{Message: "failed to get initialized teams", Status: 500}
 	}
 
@@ -236,14 +251,18 @@ func (p *Plugin) getGlobalStatus() (*GlobalStatusResponse, *apiError) {
 	for _, teamID := range teamIDs {
 		team, appErr := p.API.GetTeam(teamID)
 		if appErr != nil {
-			p.API.LogWarn("Failed to look up team for status", "team_id", teamID, "error", appErr.Error())
+			p.API.LogWarn("Failed to look up team for status",
+				"error_code", errcode.ServiceTeamStatusLookupTeamFailed,
+				"team_id", teamID, "error", appErr.Error())
 			teams = append(teams, TeamStatusEntry{TeamID: teamID, DisplayName: "(unknown)", TeamName: "(error)"})
 			continue
 		}
 
 		conns, connErr := p.kvstore.GetTeamConnections(teamID)
 		if connErr != nil {
-			p.API.LogWarn("Failed to get team connections for status", "team_id", teamID, "error", connErr.Error())
+			p.API.LogWarn("Failed to get team connections for status",
+				"error_code", errcode.ServiceTeamStatusGetConnsFailed,
+				"team_id", teamID, "error", connErr.Error())
 		}
 
 		teams = append(teams, TeamStatusEntry{
@@ -266,11 +285,15 @@ func (p *Plugin) getGlobalStatus() (*GlobalStatusResponse, *apiError) {
 	}
 
 	if outErr != nil {
-		p.API.LogWarn("Failed to parse outbound connection configuration", "error", outErr.Error())
+		p.API.LogWarn("Failed to parse outbound connection configuration",
+			"error_code", errcode.ServiceParseOutboundConnFailed,
+			"error", outErr.Error())
 		resp.Warnings = append(resp.Warnings, "Failed to parse outbound connection configuration")
 	}
 	if inErr != nil {
-		p.API.LogWarn("Failed to parse inbound connection configuration", "error", inErr.Error())
+		p.API.LogWarn("Failed to parse inbound connection configuration",
+			"error_code", errcode.ServiceParseInboundConnFailed,
+			"error", inErr.Error())
 		resp.Warnings = append(resp.Warnings, "Failed to parse inbound connection configuration")
 	}
 
@@ -319,13 +342,17 @@ func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *ap
 
 	channelConns, err := p.kvstore.GetChannelConnections(channelID)
 	if err != nil {
-		p.API.LogError("Failed to get channel connections", "channel_id", channelID, "error", err.Error())
+		p.API.LogError("Failed to get channel connections",
+			"error_code", errcode.ServiceTeardownGetChanConnsFailed,
+			"channel_id", channelID, "error", err.Error())
 		return nil, &apiError{Message: "failed to get channel connections", Status: 500}
 	}
 
 	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
 	if err != nil {
-		p.API.LogError("Failed to get team connections", "team_id", channel.TeamId, "error", err.Error())
+		p.API.LogError("Failed to get team connections",
+			"error_code", errcode.ServiceTeardownGetTeamConnsFailed,
+			"team_id", channel.TeamId, "error", err.Error())
 		return nil, &apiError{Message: "failed to get team connections", Status: 500}
 	}
 
@@ -399,7 +426,9 @@ func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID string, co
 
 	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
 	if err != nil {
-		p.API.LogError("Failed to get team connections", "team_id", channel.TeamId, "error", err.Error())
+		p.API.LogError("Failed to get team connections",
+			"error_code", errcode.ServiceInitChanGetTeamConnsFailed,
+			"team_id", channel.TeamId, "error", err.Error())
 		return nil, false, &apiError{Message: "failed to check team initialization state", Status: 500}
 	}
 
@@ -418,7 +447,9 @@ func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID string, co
 
 	existing, err := p.kvstore.GetChannelConnections(channelID)
 	if err != nil {
-		p.API.LogError("Failed to get channel connections", "channel_id", channelID, "error", err.Error())
+		p.API.LogError("Failed to get channel connections",
+			"error_code", errcode.ServiceInitChanGetChanConnsFailed,
+			"channel_id", channelID, "error", err.Error())
 		return nil, false, &apiError{Message: "failed to check channel connection state", Status: 500}
 	}
 
@@ -429,13 +460,17 @@ func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID string, co
 	}
 
 	if addErr := p.kvstore.AddChannelConnection(channelID, conn); addErr != nil {
-		p.API.LogError("Failed to add channel connection", "channel_id", channelID, "conn", connKey(conn), "error", addErr.Error())
+		p.API.LogError("Failed to add channel connection",
+			"error_code", errcode.ServiceAddChanConnFailed,
+			"channel_id", channelID, "conn", connKey(conn), "error", addErr.Error())
 		return nil, false, &apiError{Message: "failed to save channel connection state", Status: 500}
 	}
 
 	updated, err := p.kvstore.GetChannelConnections(channelID)
 	if err != nil {
-		p.API.LogError("Failed to re-read channel connections", "channel_id", channelID, "error", err.Error())
+		p.API.LogError("Failed to re-read channel connections",
+			"error_code", errcode.ServiceInitChanReReadConnsFailed,
+			"channel_id", channelID, "error", err.Error())
 		return nil, false, &apiError{Message: "failed to save channel connection state", Status: 500}
 	}
 
@@ -445,7 +480,9 @@ func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID string, co
 	if appErr == nil {
 		freshChannel.Header = addCrossguardHeaderPrefix(freshChannel.Header)
 		if _, appErr := p.API.UpdateChannel(freshChannel); appErr != nil {
-			p.API.LogWarn("Failed to update channel header with CrossGuard prefix", "channel_id", channelID, "error", appErr.Error())
+			p.API.LogWarn("Failed to update channel header with CrossGuard prefix",
+				"error_code", errcode.ServiceChanHeaderPrefixFailed,
+				"channel_id", channelID, "error", appErr.Error())
 		}
 	}
 
@@ -456,7 +493,9 @@ func (p *Plugin) initChannelForCrossGuard(user *model.User, channelID string, co
 		Message:   fmt.Sprintf("Cross Guard connection `%s` linked to this channel by @%s. (channel ID: %s, channel name: %s)", displayName, user.Username, channel.Id, channel.Name),
 	}
 	if _, appErr := p.API.CreatePost(post); appErr != nil {
-		p.API.LogWarn("Failed to post channel init message", "error", appErr.Error())
+		p.API.LogWarn("Failed to post channel init message",
+			"error_code", errcode.ServicePostChanInitMsgFailed,
+			"error", appErr.Error())
 	}
 
 	return channel, false, nil
@@ -473,7 +512,9 @@ func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID string
 
 	existing, err := p.kvstore.GetChannelConnections(channelID)
 	if err != nil {
-		p.API.LogError("Failed to get channel connections", "channel_id", channelID, "error", err.Error())
+		p.API.LogError("Failed to get channel connections",
+			"error_code", errcode.ServiceRemoveChanGetConnsFailed,
+			"channel_id", channelID, "error", err.Error())
 		return nil, &apiError{Message: "failed to check channel connection state", Status: 500}
 	}
 
@@ -493,19 +534,25 @@ func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID string
 	}
 
 	if removeErr := p.kvstore.RemoveChannelConnection(channelID, conn); removeErr != nil {
-		p.API.LogError("Failed to remove channel connection", "channel_id", channelID, "conn", connKey(conn), "error", removeErr.Error())
+		p.API.LogError("Failed to remove channel connection",
+			"error_code", errcode.ServiceRemoveChanConnFailed,
+			"channel_id", channelID, "conn", connKey(conn), "error", removeErr.Error())
 		return nil, &apiError{Message: "failed to remove channel connection", Status: 500}
 	}
 
 	updated, err := p.kvstore.GetChannelConnections(channelID)
 	if err != nil {
-		p.API.LogError("Failed to re-read channel connections", "channel_id", channelID, "error", err.Error())
+		p.API.LogError("Failed to re-read channel connections",
+			"error_code", errcode.ServiceRemoveChanReReadConnsFailed,
+			"channel_id", channelID, "error", err.Error())
 		return nil, &apiError{Message: "failed to check channel connection state", Status: 500}
 	}
 
 	if len(updated) == 0 {
 		if delErr := p.kvstore.DeleteChannelConnections(channelID); delErr != nil {
-			p.API.LogError("Failed to delete channel connections", "channel_id", channelID, "error", delErr.Error())
+			p.API.LogError("Failed to delete channel connections",
+				"error_code", errcode.ServiceDeleteChanConnsFailed,
+				"channel_id", channelID, "error", delErr.Error())
 			return nil, &apiError{Message: "failed to remove channel connections", Status: 500}
 		}
 
@@ -513,7 +560,9 @@ func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID string
 		if fErr == nil {
 			freshChannel.Header = removeCrossguardHeaderPrefix(freshChannel.Header)
 			if _, appErr := p.API.UpdateChannel(freshChannel); appErr != nil {
-				p.API.LogWarn("Failed to remove CrossGuard prefix from channel header", "channel_id", channelID, "error", appErr.Error())
+				p.API.LogWarn("Failed to remove CrossGuard prefix from channel header",
+					"error_code", errcode.ServiceChanHeaderRemovePrefixFailed,
+					"channel_id", channelID, "error", appErr.Error())
 			}
 		}
 
@@ -533,7 +582,9 @@ func (p *Plugin) teardownChannelForCrossGuard(user *model.User, channelID string
 		Message:   msg,
 	}
 	if _, appErr := p.API.CreatePost(post); appErr != nil {
-		p.API.LogWarn("Failed to post channel teardown message", "error", appErr.Error())
+		p.API.LogWarn("Failed to post channel teardown message",
+			"error_code", errcode.ServicePostChanTeardownMsgFailed,
+			"error", appErr.Error())
 	}
 
 	return channel, nil
@@ -549,7 +600,9 @@ func (p *Plugin) teardownTeamForCrossGuard(user *model.User, teamID string, conn
 
 	existing, err := p.kvstore.GetTeamConnections(teamID)
 	if err != nil {
-		p.API.LogError("Failed to get team connections", "team_id", teamID, "error", err.Error())
+		p.API.LogError("Failed to get team connections",
+			"error_code", errcode.ServiceTeardownTeamGetConnsFailed,
+			"team_id", teamID, "error", err.Error())
 		return nil, &apiError{Message: "failed to check team initialization state", Status: 500}
 	}
 
@@ -569,19 +622,25 @@ func (p *Plugin) teardownTeamForCrossGuard(user *model.User, teamID string, conn
 	}
 
 	if removeErr := p.kvstore.RemoveTeamConnection(teamID, conn); removeErr != nil {
-		p.API.LogError("Failed to remove team connection", "team_id", teamID, "conn", connKey(conn), "error", removeErr.Error())
+		p.API.LogError("Failed to remove team connection",
+			"error_code", errcode.ServiceRemoveTeamConnFailed,
+			"team_id", teamID, "conn", connKey(conn), "error", removeErr.Error())
 		return nil, &apiError{Message: "failed to remove team connection", Status: 500}
 	}
 
 	updated, err := p.kvstore.GetTeamConnections(teamID)
 	if err != nil {
-		p.API.LogError("Failed to re-read team connections", "team_id", teamID, "error", err.Error())
+		p.API.LogError("Failed to re-read team connections",
+			"error_code", errcode.ServiceTeardownTeamReReadConnsFailed,
+			"team_id", teamID, "error", err.Error())
 		return nil, &apiError{Message: "failed to check team connection state", Status: 500}
 	}
 
 	if len(updated) == 0 {
 		if err := p.kvstore.RemoveInitializedTeamID(teamID); err != nil {
-			p.API.LogError("Failed to remove team from initialized list", "team_id", teamID, "error", err.Error())
+			p.API.LogError("Failed to remove team from initialized list",
+				"error_code", errcode.ServiceRemoveTeamInitializedFailed,
+				"team_id", teamID, "error", err.Error())
 			return nil, &apiError{Message: "failed to remove team from initialized list", Status: 500}
 		}
 	}
@@ -599,7 +658,9 @@ func (p *Plugin) teardownTeamForCrossGuard(user *model.User, teamID string, conn
 			Message:   msg,
 		}
 		if _, appErr := p.API.CreatePost(post); appErr != nil {
-			p.API.LogWarn("Failed to post team teardown message", "error", appErr.Error())
+			p.API.LogWarn("Failed to post team teardown message",
+				"error_code", errcode.ServicePostTeamTeardownMsgFailed,
+				"error", appErr.Error())
 		}
 	}
 
@@ -614,14 +675,18 @@ func (p *Plugin) getAllConnectionNames() []store.TeamConnection {
 
 	var conns []store.TeamConnection
 	if outErr != nil {
-		p.API.LogWarn("Failed to parse outbound connections", "error", outErr.Error())
+		p.API.LogWarn("Failed to parse outbound connections",
+			"error_code", errcode.ServiceGlobalParseOutConnFailed,
+			"error", outErr.Error())
 	} else {
 		for _, conn := range outbound {
 			conns = append(conns, store.TeamConnection{Direction: "outbound", Connection: conn.Name})
 		}
 	}
 	if inErr != nil {
-		p.API.LogWarn("Failed to parse inbound connections", "error", inErr.Error())
+		p.API.LogWarn("Failed to parse inbound connections",
+			"error_code", errcode.ServiceGlobalParseInConnFailed,
+			"error", inErr.Error())
 	} else {
 		for _, conn := range inbound {
 			conns = append(conns, store.TeamConnection{Direction: "inbound", Connection: conn.Name})
@@ -638,14 +703,18 @@ func (p *Plugin) getConnectionMap() map[string]ConnectionConfig {
 
 	m := make(map[string]ConnectionConfig, len(outbound)+len(inbound))
 	if outErr != nil {
-		p.API.LogWarn("Failed to parse outbound connections for map", "error", outErr.Error())
+		p.API.LogWarn("Failed to parse outbound connections for map",
+			"error_code", errcode.ServiceMapParseOutConnFailed,
+			"error", outErr.Error())
 	} else {
 		for _, conn := range outbound {
 			m["outbound:"+conn.Name] = conn
 		}
 	}
 	if inErr != nil {
-		p.API.LogWarn("Failed to parse inbound connections for map", "error", inErr.Error())
+		p.API.LogWarn("Failed to parse inbound connections for map",
+			"error_code", errcode.ServiceMapParseInConnFailed,
+			"error", inErr.Error())
 	} else {
 		for _, conn := range inbound {
 			m["inbound:"+conn.Name] = conn

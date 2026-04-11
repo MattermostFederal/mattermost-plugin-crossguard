@@ -90,7 +90,7 @@ func TestEnsureSyncUser_UsernameTruncation(t *testing.T) {
 	})).Return(&mmModel.User{Id: "new-id", Username: expectedMunged}, nil)
 	api.On("CreateTeamMember", "team1", "new-id").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan1", "new-id").Return(&mmModel.ChannelMember{}, nil)
-	api.On("LogWarn", "Truncated sync username to fit limit", "original", longUsername, "munged", expectedMunged).Return()
+	api.On("LogWarn", "Truncated sync username to fit limit", "error_code", mock.Anything, "original", longUsername, "munged", expectedMunged).Return()
 
 	userID, err := p.ensureSyncUser(longUsername, connName, "team1", "chan1")
 	require.NoError(t, err)
@@ -161,7 +161,7 @@ func TestResolveInboundUser_LookupNotFound(t *testing.T) {
 
 	notFoundErr := &mmModel.AppError{Message: "user not found"}
 	api.On("GetUserByUsername", "bob").Return(nil, notFoundErr)
-	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user", "error_code", mock.Anything,
 		"username", "bob", "conn", "low").Return()
 
 	api.On("GetUserByUsername", "bob.low").Return(nil, notFoundErr)
@@ -306,6 +306,6 @@ func TestEnsureMembership_RealError(t *testing.T) {
 
 	p.ensureMembership("user1", "team1", "chan1")
 	// LogWarn should have been called for the team member error
-	api.AssertCalled(t, "LogWarn", "Failed to add sync user to team",
+	api.AssertCalled(t, "LogWarn", "Failed to add sync user to team", "error_code", mock.Anything,
 		"user_id", "user1", "team_id", "team1", "error", "forbidden")
 }

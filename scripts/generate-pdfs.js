@@ -60,7 +60,7 @@ async function main() {
     }
 
     // Combined help PDF (4 pages merged)
-    const helpPages = ['help.html', 'commands.html', 'admin.html', 'api.html'];
+    const helpPages = ['help.html', 'commands.html', 'admin.html', 'api.html', 'error-codes.html'];
     const helpBuffers = [];
     for (const html of helpPages) {
         console.log(`Generating ${html} section for crossguard-help.pdf...`);

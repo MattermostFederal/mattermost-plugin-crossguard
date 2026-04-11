@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 )
 
@@ -894,7 +895,7 @@ func TestOnConfigurationChange_LoadError(t *testing.T) {
 func TestOnConfigurationChange_NoReconnectBeforeActivation(t *testing.T) {
 	api := &plugintest.API{}
 	api.On("LoadPluginConfiguration", mock.Anything).Return(nil)
-	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogWarn")
 
 	p := &Plugin{}
 	p.SetAPI(api)
@@ -920,7 +921,8 @@ func TestSetConfiguration_SamePointerLogs(t *testing.T) {
 	// Setting same pointer should log warning and not change config.
 	p.setConfiguration(cfg)
 
-	api.AssertCalled(t, "LogWarn", "setConfiguration called with the existing configuration")
+	api.AssertCalled(t, "LogWarn", "setConfiguration called with the existing configuration",
+		"error_code", errcode.ConfigSameConfigPassed)
 }
 
 func TestSetConfiguration_ReplaceConfig(t *testing.T) {

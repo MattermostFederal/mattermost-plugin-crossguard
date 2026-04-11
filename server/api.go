@@ -276,6 +276,14 @@ func (p *Plugin) handleTestAzureBlobConnection(w http.ResponseWriter, conn Conne
 		return
 	}
 
+	// Share the same numeric validation as config persistence so the "test"
+	// button catches out-of-range flush_interval_seconds / blob_lock_max_age_seconds
+	// before we even try to connect.
+	if errs := validateAzureBlobConnection(conn, "connection "+conn.Name); len(errs) > 0 {
+		writeJSONError(w, strings.Join(errs, "; "), http.StatusBadRequest)
+		return
+	}
+
 	if err := testAzureBlobConnectionFn(*conn.AzureBlob); err != nil {
 		p.API.LogError("Azure Blob connection test failed", "error", err.Error())
 		writeJSONError(w, "Azure Blob connection test failed: "+err.Error(), http.StatusBadGateway)

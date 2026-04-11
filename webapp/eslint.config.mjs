@@ -6,7 +6,7 @@ import reactHooksPlugin from 'eslint-plugin-react-hooks';
 
 export default [
     {
-        ignores: ['node_modules/**', 'dist/**', 'playwright/**', 'src/manifest.ts'],
+        ignores: ['node_modules/**', 'dist/**', 'playwright/**', 'coverage/**', 'coverage-ct/**', 'src/manifest.ts'],
     },
     {
         files: ['**/*.{js,jsx,ts,tsx}'],

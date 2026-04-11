@@ -149,7 +149,7 @@ func (p *Plugin) publishToOutbound(ctx context.Context, env *model.Envelope, con
 		return
 	}
 
-	for i, oc := range pool {
+	for _, oc := range pool {
 		if !isOutboundLinked(oc.name, conns) {
 			continue
 		}
@@ -214,26 +214,33 @@ func (p *Plugin) publishToOutbound(ctx context.Context, env *model.Envelope, con
 				}
 			}
 
-			p.updateOutboundHealth(i, !partFailed)
+			p.updateOutboundHealth(oc.name, !partFailed)
 			continue
 		}
 
 		if err := oc.provider.Publish(ctx, data); err != nil {
 			p.API.LogError("Failed to publish to outbound after retries",
 				"name", oc.name, "error", err.Error())
-			p.updateOutboundHealth(i, false)
+			p.updateOutboundHealth(oc.name, false)
 		} else {
-			p.updateOutboundHealth(i, true)
+			p.updateOutboundHealth(oc.name, true)
 		}
 	}
 }
 
-func (p *Plugin) updateOutboundHealth(index int, healthy bool) {
+// updateOutboundHealth marks the outbound connection with the given name as
+// healthy or unhealthy. Looking up by name (rather than by slice index from a
+// snapshot) keeps the health update pointing at the right connection even if
+// outboundConns has been reloaded in the meantime.
+func (p *Plugin) updateOutboundHealth(name string, healthy bool) {
 	p.outboundMu.Lock()
 	defer p.outboundMu.Unlock()
-	if index < len(p.outboundConns) {
-		p.outboundConns[index].healthy = healthy
-		p.outboundConns[index].lastCheckTime = time.Now()
+	for i := range p.outboundConns {
+		if p.outboundConns[i].name == name {
+			p.outboundConns[i].healthy = healthy
+			p.outboundConns[i].lastCheckTime = time.Now()
+			return
+		}
 	}
 }
 
@@ -287,7 +294,7 @@ func (p *Plugin) uploadPostFiles(post *mmModel.Post, conns []store.TeamConnectio
 				continue
 			}
 			if blobProvider, ok := oc.provider.(*azureBlobProvider); ok {
-				blobProvider.QueueFileRef(post.Id, fi.Id, oc.name, fi.Name)
+				blobProvider.QueueFileRef(post.Id, fi.Id, fi.Name)
 				continue
 			}
 			needsDownload = true

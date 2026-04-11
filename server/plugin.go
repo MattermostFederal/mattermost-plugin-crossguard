@@ -110,11 +110,14 @@ func (p *Plugin) OnDeactivate() error {
 	if p.cancel != nil {
 		p.cancel()
 	}
-	p.closeInbound()
-	p.wg.Wait()
+	// The retry goroutine dispatches to inbound handlers, so wait for it to
+	// finish before tearing down inbound state. cancel() above signals it to
+	// exit at the next tick.
 	if p.retryQueue != nil {
 		p.retryQueue.Wait()
 	}
+	p.closeInbound()
+	p.wg.Wait()
 	p.closeOutbound()
 	return nil
 }

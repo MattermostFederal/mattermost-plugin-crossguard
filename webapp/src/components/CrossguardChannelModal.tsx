@@ -1,4 +1,5 @@
 import manifest from 'manifest';
+import {providerLabel} from '../provider_label';
 import React from 'react';
 
 interface ConnectionStatus {
@@ -11,17 +12,6 @@ interface ConnectionStatus {
     file_transfer_enabled: boolean;
     file_filter_mode?: string;
     file_filter_types?: string;
-}
-
-function providerLabel(provider?: string): string {
-    switch (provider) {
-    case 'azure-queue':
-        return 'AZURE QUEUE';
-    case 'azure-blob':
-        return 'AZURE BLOB';
-    default:
-        return 'NATS';
-    }
 }
 
 interface ChannelStatusResponse {

@@ -593,6 +593,10 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                 setFormError('Queue Name is required.');
                 return;
             }
+            if (editForm.file_transfer_enabled && !azureQueue.blob_container_name.trim()) {
+                setFormError('Blob Container Name is required when file transfer is enabled.');
+                return;
+            }
 
             cleanedForm = {
                 ...editForm,
@@ -950,6 +954,7 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                             <div style={styles.inputGroup}>
                                 <label style={styles.label}>{'Service URL'}</label>
                                 <input
+                                    aria-label='Azure Blob Service URL'
                                     style={styles.input}
                                     type='text'
                                     value={editForm.azure_blob?.service_url || ''}
@@ -964,6 +969,7 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                             <div style={styles.inputGroup}>
                                 <label style={styles.label}>{'Account Name'}</label>
                                 <input
+                                    aria-label='Azure Blob Account Name'
                                     style={styles.input}
                                     type='text'
                                     value={editForm.azure_blob?.account_name || ''}
@@ -975,6 +981,7 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                             <div style={styles.inputGroup}>
                                 <label style={styles.label}>{'Account Key'}</label>
                                 <input
+                                    aria-label='Azure Blob Account Key'
                                     style={styles.input}
                                     type='password'
                                     value={editForm.azure_blob?.account_key || ''}
@@ -989,6 +996,7 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                             <div style={styles.inputGroup}>
                                 <label style={styles.label}>{'Blob Container Name'}</label>
                                 <input
+                                    aria-label='Azure Blob Container Name'
                                     style={styles.input}
                                     type='text'
                                     value={editForm.azure_blob?.blob_container_name || ''}
@@ -1003,13 +1011,22 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                             <div style={styles.inputGroup}>
                                 <label style={styles.label}>{'Flush Interval (seconds)'}</label>
                                 <input
+                                    aria-label='Azure Blob Flush Interval in seconds'
                                     style={styles.input}
                                     type='number'
                                     min={5}
+                                    step={1}
                                     value={editForm.azure_blob?.flush_interval_seconds ?? ''}
                                     onChange={(e) => {
                                         const raw = e.target.value;
-                                        const parsed = raw === '' ? undefined : Number(raw);
+                                        if (raw === '') {
+                                            handleAzureBlobChange('flush_interval_seconds', undefined);
+                                            return;
+                                        }
+                                        const parsed = parseInt(raw, 10);
+                                        if (Number.isNaN(parsed)) {
+                                            return;
+                                        }
                                         handleAzureBlobChange('flush_interval_seconds', parsed);
                                     }}
                                     disabled={disabled}

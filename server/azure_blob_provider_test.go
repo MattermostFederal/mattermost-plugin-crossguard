@@ -180,8 +180,8 @@ func TestPendingFileRef_JSONRoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "batch.files.json")
 
 	refs := []pendingFileRef{
-		{PostID: "p1", FileID: "f1", ConnName: "high", Filename: "report.pdf"},
-		{PostID: "p2", FileID: "f2", ConnName: "low", Filename: "spec.txt"},
+		{PostID: "p1", FileID: "f1", Filename: "report.pdf"},
+		{PostID: "p2", FileID: "f2", Filename: "spec.txt"},
 	}
 
 	data, err := json.Marshal(refs)
@@ -310,7 +310,7 @@ func TestAzureBlobProvider_QueueFileRef_WriteError(t *testing.T) {
 
 	// Should not panic; LogWarn is invoked on WriteFile error.
 	assert.NotPanics(t, func() {
-		a.QueueFileRef("p1", "f1", "high", "x.pdf")
+		a.QueueFileRef("p1", "f1", "x.pdf")
 	})
 
 	_ = a.walFile.Close()
@@ -319,7 +319,7 @@ func TestAzureBlobProvider_QueueFileRef_WriteError(t *testing.T) {
 func TestAzureBlobProvider_QueueFileRef(t *testing.T) {
 	t.Run("no WAL yet appends pending, no companion", func(t *testing.T) {
 		a, _, _ := newTestBlobProvider(t)
-		a.QueueFileRef("p1", "f1", "high", "report.pdf")
+		a.QueueFileRef("p1", "f1", "report.pdf")
 
 		a.pendingFilesMu.Lock()
 		defer a.pendingFilesMu.Unlock()
@@ -339,8 +339,8 @@ func TestAzureBlobProvider_QueueFileRef(t *testing.T) {
 		require.NoError(t, a.openWALFileLocked())
 		a.walMu.Unlock()
 
-		a.QueueFileRef("p1", "f1", "high", "a.pdf")
-		a.QueueFileRef("p2", "f2", "high", "b.pdf")
+		a.QueueFileRef("p1", "f1", "a.pdf")
+		a.QueueFileRef("p2", "f2", "b.pdf")
 
 		companion := a.walPath[:len(a.walPath)-len(walFileExt)] + walFilesExt
 		assert.FileExists(t, companion)
@@ -592,7 +592,7 @@ func TestAzureBlobProvider_FlushPendingFilesList(t *testing.T) {
 		a.getFile = func(id string) ([]byte, error) { return []byte("filedata"), nil }
 
 		refs := []pendingFileRef{
-			{PostID: "p1", FileID: "f1", ConnName: "high", Filename: "report.pdf"},
+			{PostID: "p1", FileID: "f1", Filename: "report.pdf"},
 		}
 		a.flushPendingFilesList(t.Context(), refs)
 
@@ -620,7 +620,7 @@ func TestAzureBlobProvider_FlushPendingFilesList(t *testing.T) {
 		}
 
 		a.flushPendingFilesList(t.Context(), []pendingFileRef{
-			{PostID: "p1", FileID: "f1", ConnName: "high", Filename: "a.pdf"},
+			{PostID: "p1", FileID: "f1", Filename: "a.pdf"},
 		})
 		assert.Len(t, a.pendingFiles, 1)
 	})
@@ -650,9 +650,22 @@ func TestAzureBlobProvider_UploadFile(t *testing.T) {
 
 func TestAzureBlobProvider_ProcessBlob(t *testing.T) {
 	acquireLock := func(kv *fakeKV) {
-		kv.getFn = func(key string, o any) error { return nil }
+		store := map[string][]byte{}
+		kv.getFn = func(key string, o any) error {
+			if p, ok := o.(*[]byte); ok {
+				*p = append((*p)[:0], store[key]...)
+			}
+			return nil
+		}
 		kv.setFn = func(key string, value any, options ...pluginapi.KVSetOption) (bool, error) {
+			if b, err := json.Marshal(value); err == nil {
+				store[key] = b
+			}
 			return true, nil
+		}
+		kv.delFn = func(key string) error {
+			delete(store, key)
+			return nil
 		}
 	}
 
@@ -923,7 +936,9 @@ func TestAzureBlobProvider_StartFlushLoop(t *testing.T) {
 	a.flushInterval = 10 * time.Millisecond
 	require.NoError(t, a.Publish(t.Context(), []byte("hello")))
 
-	a.startFlushLoop(t.Context())
+	loopCtx, loopCancel := context.WithCancel(t.Context())
+	a.outCancel = loopCancel
+	a.startFlushLoop(loopCtx)
 	assert.Eventually(t, func() bool {
 		ops.mu.Lock()
 		defer ops.mu.Unlock()
@@ -937,13 +952,14 @@ func TestAzureBlobProvider_RecoverDirectory(t *testing.T) {
 	t.Run("mixed contents uploads jsonl only", func(t *testing.T) {
 		a, _, _, ops := newTestBlobProviderWithOps(t)
 		dir := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "a.jsonl"), []byte("x"), 0o600))
+		walName := "conn-1-0.jsonl"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, walName), []byte("x"), 0o600))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "b.files.json"), []byte("[]"), 0o600))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "misc.txt"), []byte("x"), 0o600))
 
 		a.recoverDirectory(t.Context(), dir, false)
 		require.Len(t, ops.uploads, 1)
-		assert.Contains(t, ops.uploads[0].name, "messages/high/a.jsonl")
+		assert.Contains(t, ops.uploads[0].name, "messages/high/"+walName)
 		// companion .files.json is removed by recoverCompanionFiles.
 		_, err := os.Stat(filepath.Join(dir, "b.files.json"))
 		assert.True(t, os.IsNotExist(err))
@@ -955,7 +971,7 @@ func TestAzureBlobProvider_RecoverDirectory(t *testing.T) {
 			return errors.New("boom")
 		}
 		dir := t.TempDir()
-		p := filepath.Join(dir, "a.jsonl")
+		p := filepath.Join(dir, "conn-1-0.jsonl")
 		require.NoError(t, os.WriteFile(p, []byte("x"), 0o600))
 
 		a.recoverDirectory(t.Context(), dir, true)
@@ -1027,7 +1043,8 @@ func TestAzureBlobProvider_RecoverWALOnStartup_WithData(t *testing.T) {
 
 	staleConnDir := filepath.Join(root, oldNodeID, a.connName)
 	require.NoError(t, os.MkdirAll(staleConnDir, 0o750))
-	walPath := filepath.Join(staleConnDir, "batch.jsonl")
+	walName := "batch-1-0.jsonl"
+	walPath := filepath.Join(staleConnDir, walName)
 	require.NoError(t, os.WriteFile(walPath, []byte("line1\n"), 0o600))
 
 	// Also seed an unrelated subdir entry that should be ignored (not a dir with matching connName).
@@ -1047,7 +1064,7 @@ func TestAzureBlobProvider_RecoverWALOnStartup_WithData(t *testing.T) {
 	defer ops.mu.Unlock()
 	var found bool
 	for _, up := range ops.uploads {
-		if strings.HasSuffix(up.name, a.connName+"/batch.jsonl") {
+		if strings.HasSuffix(up.name, a.connName+"/"+walName) {
 			found = true
 			break
 		}
@@ -1196,7 +1213,7 @@ func TestAzureBlobProvider_Flush_PendingOnly(t *testing.T) {
 	a.getFile = func(id string) ([]byte, error) { return []byte("filedata"), nil }
 	a.pendingFilesMu.Lock()
 	a.pendingFiles = []pendingFileRef{
-		{PostID: "p1", FileID: "f1", ConnName: "high", Filename: "a.txt"},
+		{PostID: "p1", FileID: "f1", Filename: "a.txt"},
 	}
 	a.pendingFilesMu.Unlock()
 

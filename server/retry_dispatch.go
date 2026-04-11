@@ -54,10 +54,9 @@ func (p *Plugin) retryInboundMessage(entry *retryEntry, lastAttempt bool) bool {
 	if err != nil {
 		// The entry was already parseable at ingest time, so an unmarshal
 		// failure here signals corruption or a real bug. Route through
-		// handleRetryDropped so operators see it in diagnostics instead of
-		// dropping the message silently.
+		// handleRetryDropped so operators see it in diagnostics; it already
+		// emits a descriptive LogError, so we don't duplicate it here.
 		p.handleRetryDropped(entry, retryDropReasonUnmarshalFailed)
-		p.API.LogError("Retry: failed to unmarshal", "conn", entry.connName, "error", err.Error())
 		return true // drop malformed
 	}
 

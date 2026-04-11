@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 )
@@ -381,8 +382,14 @@ func validateAzureBlobConnection(conn ConnectionConfig, prefix string) []string 
 		errs = append(errs, fmt.Sprintf("%s: flush_interval_seconds must be at least 5", prefix))
 	}
 
-	if ab.BlobLockMaxAgeSeconds != 0 && ab.BlobLockMaxAgeSeconds < 30 {
-		errs = append(errs, fmt.Sprintf("%s: blob_lock_max_age_seconds must be at least 30", prefix))
+	if ab.BlobLockMaxAgeSeconds != 0 {
+		if ab.BlobLockMaxAgeSeconds < 30 {
+			errs = append(errs, fmt.Sprintf("%s: blob_lock_max_age_seconds must be at least 30", prefix))
+		}
+		if ab.BlobLockMaxAgeSeconds > int(blobLockMaxAgeCap/time.Second) {
+			errs = append(errs, fmt.Sprintf("%s: blob_lock_max_age_seconds must be at most %d",
+				prefix, int(blobLockMaxAgeCap/time.Second)))
+		}
 	}
 
 	return errs

@@ -918,7 +918,7 @@ func TestUpdateOutboundHealth_SetsHealthy(t *testing.T) {
 		{name: "conn-0", healthy: false, lastCheckTime: time.Now().Add(-time.Minute)},
 	}
 
-	p.updateOutboundHealth(0, true)
+	p.updateOutboundHealth("conn-0", true)
 
 	assert.True(t, p.outboundConns[0].healthy)
 	assert.WithinDuration(t, time.Now(), p.outboundConns[0].lastCheckTime, 2*time.Second)
@@ -930,21 +930,21 @@ func TestUpdateOutboundHealth_SetsUnhealthy(t *testing.T) {
 		{name: "conn-0", healthy: true, lastCheckTime: time.Now().Add(-time.Minute)},
 	}
 
-	p.updateOutboundHealth(0, false)
+	p.updateOutboundHealth("conn-0", false)
 
 	assert.False(t, p.outboundConns[0].healthy)
 	assert.WithinDuration(t, time.Now(), p.outboundConns[0].lastCheckTime, 2*time.Second)
 }
 
-func TestUpdateOutboundHealth_IndexOutOfRange(t *testing.T) {
+func TestUpdateOutboundHealth_UnknownName(t *testing.T) {
 	p := &Plugin{}
 	p.outboundConns = []outboundConn{
 		{name: "conn-0", healthy: true},
 	}
 
-	// Should not panic when index is beyond the slice length.
+	// Should not panic or mutate when the name does not match any entry.
 	assert.NotPanics(t, func() {
-		p.updateOutboundHealth(5, false)
+		p.updateOutboundHealth("missing", false)
 	})
 
 	// Original entry should be unchanged.

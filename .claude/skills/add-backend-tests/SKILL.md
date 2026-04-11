@@ -35,6 +35,13 @@ If coverage is below 90%, parse the output to build a prioritized list:
 - **Tier 3**: Functions below 80% coverage (moderate gaps)
 - **Tier 4**: Complex functions above 80% that have untested edge cases
 
+**Target large zero-coverage files first.** Within Tier 1, rank files by the number of zero-coverage functions they contain (and by file size for ties). A single file with 20 untested functions is a much bigger coverage win than 20 scattered functions across different files, and shared test setup (mocks, fixtures, helpers) can be reused across all functions in the same file. Group the plan so the largest zero-coverage file is fully addressed before moving to the next.
+
+Quick way to rank files by zero-coverage count:
+```bash
+make coverage-backend 2>&1 | awk '$NF == "0.0%"' | awk -F: '{print $1}' | sort | uniq -c | sort -rn
+```
+
 Skip trivial functions (main, manifest constants, simple getters under 5 lines).
 
 ### Step 3: Understand What Needs Testing
@@ -46,14 +53,19 @@ For each function in your priority list:
 3. **Identify untested paths**: error returns, edge cases, branch conditions, concurrent scenarios
 4. **Note dependencies**: what needs mocking (API calls, KV store, providers)
 
-### Step 4: Build Todo List
+### Step 4: Build Task List
 
-Use `TaskCreate` to create one task per function or logical group of functions needing tests. Each task should include:
+Before creating anything, call `TaskList` to check for pre-existing tasks from a prior run of this skill. Reuse, update, or delete stale tasks instead of creating duplicates.
+
+Then use `TaskCreate` to create one task per function or logical group of functions needing tests. Every task MUST set all three fields:
 
 - **subject**: `Test <FunctionName> in <file.go>` (imperative form)
 - **description**: Current coverage %, what specifically needs testing (list the untested branches, error paths, edge cases), and the tier (1-4)
+- **activeForm**: Present-continuous form shown in the spinner, e.g. `Testing HandleInbound semaphore paths`
 
-Group related functions into a single task when they share setup (e.g., all methods on the same receiver that need the same mock). Order tasks by tier (Tier 1 first).
+Group related functions into a single task when they share setup (e.g., all methods on the same receiver that need the same mock). Order tasks by tier (Tier 1 first), and within Tier 1 order by largest zero-coverage file first so shared fixtures and mocks can be built once and reused across the whole file.
+
+**The task list created here is the source of truth for Phase B.** Do not execute any test-writing work in Phase B that is not represented by a task. If you discover new work mid-execution, create a new task for it before doing the work.
 
 Example tasks:
 - `Test HandleInbound semaphore-full and context-cancel paths in inbound.go` (Tier 1, 0% coverage, needs mock provider + semaphore fill)
@@ -71,7 +83,14 @@ After the user approves the plan, work through the todo list writing tests.
 
 ### Step 6: Write Tests Using Project Patterns
 
-Mark each task as `in_progress` (via `TaskUpdate`) before starting it, and `completed` when tests pass.
+Phase B is a strict loop driven by the task list. Never skip a step, and never hold more than one task in `in_progress` at a time.
+
+1. Call `TaskList` and pick the next `pending` task (respect tier ordering from Step 4).
+2. Call `TaskUpdate` with `status: "in_progress"` **before** reading any source file or writing any test code for that task.
+3. Do the work: read source, read existing tests, write subtests, run `make test`, run `make check-style`.
+4. Only after `make test` passes and `make check-style` is clean, call `TaskUpdate` with `status: "completed"`.
+5. If blocked, leave the task `in_progress`, create a new task via `TaskCreate` describing the blocker, and move on. Do not silently skip.
+6. Loop back to step 1. Stop when `TaskList` shows no `pending` tasks.
 
 ### Test Infrastructure Available
 
@@ -221,28 +240,28 @@ Add tests to existing `*_test.go` files. The mapping:
 - `server/model/post_message.go` -> `server/model/post_message_test.go`
 - `server/model/test_message.go` -> `server/model/test_message_test.go`
 
-## Step 7: Implement in Phases
+## Step 7: Tier Reference (Task Ordering)
 
-Work through tiers in order. After each phase, validate before moving on.
+You do not run a separate "phases" workflow. You walk the task list from Step 4 top-to-bottom using the loop in Step 6. The tiers below are only a reference for how tasks should already be ordered, and for what kind of work each tier tends to involve:
 
-**Phase 1 - Quick wins (0% coverage, simple functions):**
-Functions with straightforward logic that just need basic test coverage. Often these are small utility functions, error type methods, or simple delegating wrappers.
+**Tier 1a - Quick wins (0% coverage, simple functions):**
+Functions with straightforward logic that just need basic test coverage. Often small utility functions, error type methods, or simple delegating wrappers. Easy to knock out first and raise the baseline.
 
-**Phase 2 - Integration tests (0% coverage, require embedded NATS):**
+**Tier 1b - Integration tests (0% coverage, require embedded NATS):**
 Provider functions that need a real NATS server. Use `startEmbeddedNATS(t)` and `connectToEmbeddedNATS(t, addr, subject)`.
 
-**Phase 3 - Branch coverage (low coverage functions):**
+**Tier 2 - Branch coverage (low coverage functions):**
 Functions that have tests but miss important branches. Read existing tests carefully to avoid duplication, then add subtests for uncovered paths.
 
-**Phase 4 - Edge cases and complex logic:**
+**Tier 3 - Edge cases and complex logic:**
 Message splitting (UTF-8 boundaries), file handling (retry exhaustion, filter policies), health check logic (recheck windows), concurrent scenarios (semaphore full, CAS retry).
 
-**Phase 5 - Interface extraction for testability (if needed):**
-If a dependency uses a concrete SDK type that cannot be mocked (e.g., Azure blob client), extract an interface to enable unit testing. Follow the existing `azureQueuer` pattern in `azure_provider.go`.
+**Tier 4 - Interface extraction for testability (if needed):**
+If a dependency uses a concrete SDK type that cannot be mocked (e.g., Azure blob client), extract an interface to enable unit testing. Follow the existing `azureQueuer` pattern in `azure_provider.go`. Create an explicit task for the extraction itself before creating tasks for the tests that depend on it.
 
-## Step 8: Validate After Each Phase
+## Step 8: Validate After Each Task
 
-After writing each batch of tests:
+Validation runs per task, not per batch. For the currently `in_progress` task, run:
 
 ```bash
 # Tests compile and pass
@@ -255,13 +274,13 @@ make check-style
 make coverage-backend 2>&1
 ```
 
-Compare coverage numbers against the baseline from Step 2. If a function you targeted is still at 0%, your test isn't exercising the right code path. Re-read the source and fix.
+Compare coverage numbers against the baseline from Step 2. If a function you targeted is still at 0%, your test isn't exercising the right code path. Re-read the source and fix before marking the task complete.
 
-Mark completed tasks via `TaskUpdate` with `status: "completed"` as each batch passes.
+Only after all three commands succeed, call `TaskUpdate` with `status: "completed"` for that task. Then return to Step 6 and pick up the next `pending` task.
 
 ## Step 9: Final Verification
 
-After all phases complete:
+After the Step 6 loop drains all pending tasks:
 
 ```bash
 # Full test suite passes
@@ -273,6 +292,8 @@ make check-style
 # Print final coverage summary
 make coverage-backend 2>&1
 ```
+
+Then call `TaskList` one more time and confirm there are zero `pending` or `in_progress` tasks left. If any remain, either finish them or delete them (via `TaskUpdate` with `status: "deleted"`) before reporting completion. Never leave stale tasks hanging.
 
 Report the before/after coverage delta per package and overall.
 

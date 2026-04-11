@@ -25,6 +25,22 @@ Keep Crossguard's user-facing documentation in sync with the code. This skill co
 
 Run these steps in order. Do not skip the PDF regeneration step, the PDFs are checked into the repo and must match the HTML.
 
+### Task tracking
+
+This workflow is driven by the harness task list. Do not work without a task.
+
+1. Start by calling `TaskList` to check for pre-existing tasks from a prior run. Reuse or delete stale tasks instead of duplicating.
+2. After completing Step 1 (Survey), use `TaskCreate` to create one task per artifact that actually needs changes. Typical tasks:
+   - `Update HTML help pages for <change>` (subject), `activeForm: Updating HTML help pages`
+   - `Update OpenAPI schema for <change>`, `activeForm: Updating OpenAPI schema`
+   - `Regenerate help PDFs`, `activeForm: Regenerating help PDFs`
+   - `Verify docs and report`, `activeForm: Verifying docs`
+   Every task MUST set `subject`, `description` (what specifically is changing and why), and `activeForm`.
+3. Walk the task list top-to-bottom. For each task: call `TaskUpdate` with `status: "in_progress"` **before** editing any file, do the work, then call `TaskUpdate` with `status: "completed"` only after the step's checks pass.
+4. Never hold more than one task in `in_progress` at a time.
+5. If blocked, leave the task `in_progress`, create a new task via `TaskCreate` describing the blocker, and move on. Do not silently skip.
+6. After Step 6 (Report), call `TaskList` one more time and confirm zero `pending` or `in_progress` tasks remain. Delete any stale ones via `TaskUpdate` with `status: "deleted"` before finishing.
+
 ### 1. Survey what changed
 
 Look at the current branch's diff against `main` and identify user-visible changes:

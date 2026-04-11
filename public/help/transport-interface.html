@@ -682,7 +682,7 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
                             <td><code>provider</code></td>
                             <td>string</td>
                             <td>No</td>
-                            <td>Transport provider: <code>"nats"</code> or <code>"azure-queue"</code>. Default: <code>"nats"</code>.</td>
+                            <td>Transport provider: <code>"nats"</code>, <code>"azure-queue"</code>, or <code>"azure-blob"</code>. Default: <code>"nats"</code>.</td>
                         </tr>
                         <tr>
                             <td><code>file_transfer_enabled</code></td>
@@ -1204,17 +1204,35 @@ Release semaphore</pre>
             <li>The marker only advances after a successful delete, ensuring blobs are re-listed on failure</li>
         </ol>
 
-        <h3>Azure Connection Configuration</h3>
+        <h3>Azure Queue Connection Configuration</h3>
         <table>
             <thead>
                 <tr><th>Field</th><th>JSON Key</th><th>Required</th><th>Description</th></tr>
             </thead>
             <tbody>
                 <tr>
-                    <td>Connection String</td>
-                    <td><code>connection_string</code></td>
+                    <td>Queue Service URL</td>
+                    <td><code>queue_service_url</code></td>
                     <td>Yes</td>
-                    <td>Azure Storage account connection string</td>
+                    <td>Azure Queue Storage service URL (e.g. <code>https://&lt;account&gt;.queue.core.windows.net</code>)</td>
+                </tr>
+                <tr>
+                    <td>Blob Service URL</td>
+                    <td><code>blob_service_url</code></td>
+                    <td>When file transfer enabled</td>
+                    <td>Azure Blob Storage service URL (e.g. <code>https://&lt;account&gt;.blob.core.windows.net</code>)</td>
+                </tr>
+                <tr>
+                    <td>Account Name</td>
+                    <td><code>account_name</code></td>
+                    <td>Yes</td>
+                    <td>Azure Storage account name</td>
+                </tr>
+                <tr>
+                    <td>Account Key</td>
+                    <td><code>account_key</code></td>
+                    <td>Yes</td>
+                    <td>Azure Storage shared access key (base64, treat as secret)</td>
                 </tr>
                 <tr>
                     <td>Queue Name</td>
@@ -1231,13 +1249,16 @@ Release semaphore</pre>
             </tbody>
         </table>
 
-                <h4>Example: Azure Connection</h4>
+                <h4>Example: Azure Queue Connection</h4>
 <pre><code>{
   "name": "azure-relay",
   "provider": "azure-queue",
   "file_transfer_enabled": true,
   "azure_queue": {
-    "connection_string": "DefaultEndpointsProtocol=https;AccountName=mystorageaccount;AccountKey=...;EndpointSuffix=core.windows.net",
+    "queue_service_url": "https://mystorageaccount.queue.core.windows.net",
+    "blob_service_url": "https://mystorageaccount.blob.core.windows.net",
+    "account_name": "mystorageaccount",
+    "account_key": "base64-account-key",
     "queue_name": "crossguard-relay",
     "blob_container_name": "crossguard-files"
   }
@@ -1245,11 +1266,102 @@ Release semaphore</pre>
 
         <h3>Auto-Provisioning</h3>
         <p>
-            Unlike NATS, the Azure provider automatically creates both the queue and the blob container
+            Unlike NATS, the Azure Queue provider automatically creates both the queue and the blob container
             on startup if they do not already exist. The "already exists" response (HTTP 409) is
             treated as success. No manual Azure infrastructure setup is required beyond creating the
-            storage account and providing the connection string.
+            storage account and providing credentials.
         </p>
+
+        <!-- Azure Blob Storage Transport -->
+        <h2>Azure Blob Storage Transport</h2>
+
+        <h3>Overview</h3>
+        <p>
+            The Azure Blob provider is a second Azure transport that does not use Azure Queue Storage
+            at all. Instead of enqueuing one queue message per relay event, the outbound side appends
+            messages to an in-memory write-ahead log (WAL) and periodically seals and uploads the WAL
+            as a single batch blob. The inbound side polls the blob container, takes a short-lived
+            lease on each batch blob, processes its messages, and deletes the blob. File attachments
+            are uploaded as deferred file blobs into the same container.
+        </p>
+        <p>
+            Use this transport when you want to amortize blob operations across many messages, avoid
+            per-message queue charges, or when the queue service is unavailable in your environment.
+            Expected end-to-end latency is bounded by <code>flush_interval_seconds</code>.
+        </p>
+
+        <h3>Message Lifecycle</h3>
+        <ol>
+            <li>Outbound appends each relay event to an in-memory WAL buffer.</li>
+            <li>Every <code>flush_interval_seconds</code> (default 60), the buffer is sealed and uploaded
+                as a batch blob under a time-ordered key.</li>
+            <li>Inbound lists the container on a poll cycle and, for each batch blob, acquires a lease.</li>
+            <li>While the lease is held, messages are delivered to the inbound handler.</li>
+            <li>On success, the blob is deleted and the lease is released. On failure, the lease
+                expires and another poller may retry.</li>
+            <li>If a lease grows older than <code>blob_lock_max_age_seconds</code> (default 300), it
+                is considered stale and another inbound node may break the lease and take over.</li>
+        </ol>
+
+        <h3>Azure Blob Connection Configuration</h3>
+        <table>
+            <thead>
+                <tr><th>Field</th><th>JSON Key</th><th>Required</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Service URL</td>
+                    <td><code>service_url</code></td>
+                    <td>Yes</td>
+                    <td>Azure Blob Storage service URL</td>
+                </tr>
+                <tr>
+                    <td>Account Name</td>
+                    <td><code>account_name</code></td>
+                    <td>Yes</td>
+                    <td>Azure Storage account name</td>
+                </tr>
+                <tr>
+                    <td>Account Key</td>
+                    <td><code>account_key</code></td>
+                    <td>Yes</td>
+                    <td>Azure Storage shared access key (base64, treat as secret)</td>
+                </tr>
+                <tr>
+                    <td>Blob Container Name</td>
+                    <td><code>blob_container_name</code></td>
+                    <td>Yes</td>
+                    <td>Container holding both batch WAL blobs and deferred file blobs (auto-created if missing)</td>
+                </tr>
+                <tr>
+                    <td>Flush Interval</td>
+                    <td><code>flush_interval_seconds</code></td>
+                    <td>No</td>
+                    <td>Seconds between WAL flushes. Default 60, minimum 5.</td>
+                </tr>
+                <tr>
+                    <td>Blob Lock Max Age</td>
+                    <td><code>blob_lock_max_age_seconds</code></td>
+                    <td>No</td>
+                    <td>Seconds before a stale lease may be broken. Default 300, minimum 30.</td>
+                </tr>
+            </tbody>
+        </table>
+
+                <h4>Example: Azure Blob Connection</h4>
+<pre><code>{
+  "name": "azure-blob-relay",
+  "provider": "azure-blob",
+  "file_transfer_enabled": true,
+  "azure_blob": {
+    "service_url": "https://mystorageaccount.blob.core.windows.net",
+    "account_name": "mystorageaccount",
+    "account_key": "base64-account-key",
+    "blob_container_name": "crossguard-wal",
+    "flush_interval_seconds": 60,
+    "blob_lock_max_age_seconds": 300
+  }
+}</code></pre>
 
         <!-- Loop Prevention -->
         <h2>Loop Prevention</h2>

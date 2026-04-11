@@ -4,8 +4,9 @@ info:
   description: >
     Defines the message envelope, payload schemas, and connection
     configuration used by the Cross Guard plugin to relay events between
-    Mattermost instances. Messages are transported over NATS or Azure
-    Queue Storage depending on the connection's `provider` setting. The
+    Mattermost instances. Messages are transported over NATS, Azure
+    Queue Storage, or Azure Blob Storage (batched WAL) depending on the
+    connection's `provider` setting. The
     wire format (JSON or XML) is controlled by the outbound connection's
     `message_format` setting. Inbound messages are auto-detected by
     inspecting the first non-whitespace byte. XML element names and
@@ -15,8 +16,10 @@ info:
     name: Mattermost Federal
 
 # These paths model logical message operations, not HTTP endpoints.
-# NATS connections use pub/sub directly; Azure connections use Queue
-# Storage with polling-based delivery.
+# NATS connections use pub/sub directly; Azure Queue connections use
+# Queue Storage with polling-based delivery; Azure Blob connections
+# batch messages into write-ahead log blobs that the inbound side
+# polls, leases, and deletes.
 paths:
   /publish:
     post:
@@ -26,8 +29,10 @@ paths:
         Represents the act of publishing a Cross Guard message envelope to
         an outbound connection. For NATS, this publishes to the configured
         subject (e.g. `crossguard.high`). For Azure Queue Storage, the
-        message is Base64-encoded and enqueued. The transport is determined
-        by the connection's `provider` setting.
+        message is Base64-encoded and enqueued. For Azure Blob Storage,
+        the message is appended to an in-memory WAL buffer that is
+        periodically sealed and uploaded as a batch blob. The transport
+        is determined by the connection's `provider` setting.
       x-nats-subject: "crossguard.{domain}"
       requestBody:
         required: true
@@ -50,7 +55,9 @@ paths:
         Represents the receipt of a Cross Guard message envelope on an
         inbound connection. For NATS, messages arrive via subscription
         callback. For Azure Queue Storage, messages are dequeued via
-        polling (5-second interval). The format (JSON or XML) is
+        polling (5-second interval). For Azure Blob Storage, batch WAL
+        blobs are listed, leased, and processed message-by-message
+        before the blob is deleted. The format (JSON or XML) is
         auto-detected on receipt regardless of provider.
       x-nats-subject: "crossguard.{domain}"
       requestBody:
@@ -317,7 +324,8 @@ components:
         Configuration for a single connection (inbound or outbound).
         Stored in plugin settings as a JSON array. The `provider` field
         determines which nested configuration block is used. Exactly one
-        of `nats` or `azure_queue` should be present, matching the provider.
+        of `nats`, `azure_queue`, or `azure_blob` should be present,
+        matching the provider.
       required:
         - name
         - provider
@@ -335,6 +343,7 @@ components:
           enum:
             - nats
             - azure-queue
+            - azure-blob
           description: >
             Transport provider for this connection. Determines which
             nested configuration block is used and how messages are
@@ -345,7 +354,11 @@ components:
           description: >
             Whether file attachment relay is enabled for this connection.
             For NATS, files are stored in a JetStream Object Store bucket.
-            For Azure, files are stored in an Azure Blob Storage container.
+            For Azure Queue, files are stored in an Azure Blob Storage
+            container referenced by `azure_queue.blob_container_name`.
+            For Azure Blob, files are stored as deferred file blobs in
+            the same container referenced by
+            `azure_blob.blob_container_name`.
           default: false
         file_filter_mode:
           type: string
@@ -388,6 +401,11 @@ components:
           description: >
             Azure Queue Storage provider configuration. Required when
             provider is `azure-queue`.
+        azure_blob:
+          $ref: "#/components/schemas/AzureBlobProviderConfig"
+          description: >
+            Azure Blob Storage provider configuration. Required when
+            provider is `azure-blob`.
 
     # ------------------------------------------------------------------
     # NATS provider configuration
@@ -507,6 +525,75 @@ components:
             if it does not exist.
           examples:
             - "crossguard-files"
+
+    # ------------------------------------------------------------------
+    # Azure Blob provider configuration
+    # ------------------------------------------------------------------
+    AzureBlobProviderConfig:
+      type: object
+      description: >
+        Configuration fields specific to the Azure Blob Storage transport
+        provider. This provider does not use Azure Queue Storage. The
+        outbound side appends messages to an in-memory write-ahead log
+        (WAL) and periodically seals and uploads the WAL as a single
+        batch blob. The inbound side polls the container, takes a
+        short-lived lease on each batch blob, processes it, and deletes
+        it. File attachments are stored as deferred file blobs in the
+        same container. The container is auto-created on startup if it
+        does not exist.
+      required:
+        - service_url
+        - account_name
+        - account_key
+        - blob_container_name
+      properties:
+        service_url:
+          type: string
+          description: >
+            Azure Blob Storage service URL. For production Azure, the
+            standard form is `https://<account>.blob.core.windows.net`.
+            For Azurite (local emulator), use
+            `http://azurite:10000/devstoreaccount1`.
+          examples:
+            - "https://myaccount.blob.core.windows.net"
+        account_name:
+          type: string
+          description: >
+            Azure Storage account name. Used with `account_key` to form a
+            shared-key credential.
+          examples:
+            - "myaccount"
+        account_key:
+          type: string
+          description: >
+            Azure Storage account shared access key (base64). Treat as a
+            secret.
+        blob_container_name:
+          type: string
+          description: >
+            Name of the Azure Blob container that holds both batch WAL
+            blobs and deferred file blobs. Auto-created on startup if it
+            does not exist.
+          examples:
+            - "crossguard-wal"
+        flush_interval_seconds:
+          type: integer
+          description: >
+            How often the outbound side seals the current write-ahead
+            log blob and uploads it. Lower values reduce end-to-end
+            latency at the cost of more blob operations. Must be at
+            least 5 when set.
+          minimum: 5
+          default: 60
+        blob_lock_max_age_seconds:
+          type: integer
+          description: >
+            Maximum age of a blob lease before the inbound side
+            considers it stale and takes over processing. Prevents a
+            crashed inbound node from stalling delivery. Must be at
+            least 30 when set.
+          minimum: 30
+          default: 300
 
     # ------------------------------------------------------------------
     # NATS file transfer protocol (reference)

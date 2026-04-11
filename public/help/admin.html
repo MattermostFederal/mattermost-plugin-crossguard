@@ -94,6 +94,12 @@
                     <td>Azure Blob Storage</td>
                     <td>At-least-once</td>
                 </tr>
+                <tr>
+                    <td><strong>Azure Blob Storage</strong></td>
+                    <td>Write-ahead log batched to blobs (periodic flush)</td>
+                    <td>Deferred file blobs alongside batch WAL blobs</td>
+                    <td>At-least-once</td>
+                </tr>
             </tbody>
         </table>
 
@@ -116,7 +122,7 @@
                     <td><strong>Provider</strong></td>
                     <td><code>provider</code></td>
                     <td>Yes</td>
-                    <td><code>"nats"</code> or <code>"azure-queue"</code>. Empty treated as <code>"nats"</code>.</td>
+                    <td><code>"nats"</code>, <code>"azure-queue"</code>, or <code>"azure-blob"</code>. Empty treated as <code>"nats"</code>.</td>
                     <td>Transport provider for this connection. Determines which provider-specific fields are required. Default: <code>"nats"</code>.</td>
                 </tr>
                 <tr>
@@ -230,19 +236,40 @@
             </tbody>
         </table>
 
-        <h3>Azure Provider Fields</h3>
-        <p>These fields appear when the provider is set to <strong>Azure Queue Storage</strong>. In JSON, they are nested under the <code>"azure_queue"</code> key (e.g., <code>"azure_queue": {"connection_string": "...", "queue_name": "..."}</code>).</p>
+        <h3>Azure Queue Provider Fields</h3>
+        <p>These fields appear when the provider is set to <strong>Azure Queue Storage</strong>. In JSON, they are nested under the <code>"azure_queue"</code> key (e.g., <code>"azure_queue": {"queue_service_url": "...", "account_name": "...", "account_key": "...", "queue_name": "..."}</code>).</p>
         <table>
             <thead>
                 <tr><th>Field</th><th>JSON Key</th><th>Required</th><th>Validation</th><th>Description</th></tr>
             </thead>
             <tbody>
                 <tr>
-                    <td><strong>Connection String</strong></td>
-                    <td><code>connection_string</code></td>
+                    <td><strong>Queue Service URL</strong></td>
+                    <td><code>queue_service_url</code></td>
+                    <td>Yes</td>
+                    <td>Non-empty, valid URL</td>
+                    <td>Azure Queue Storage service URL. For production Azure, the standard form is <code>https://&lt;account&gt;.queue.core.windows.net</code>. For Azurite (local emulator), use <code>http://azurite:10001/devstoreaccount1</code>.</td>
+                </tr>
+                <tr>
+                    <td><strong>Blob Service URL</strong></td>
+                    <td><code>blob_service_url</code></td>
+                    <td>Conditional</td>
+                    <td>Required when <code>file_transfer_enabled</code> is <code>true</code>. Must be a valid URL.</td>
+                    <td>Azure Blob Storage service URL. For production Azure, the standard form is <code>https://&lt;account&gt;.blob.core.windows.net</code>.</td>
+                </tr>
+                <tr>
+                    <td><strong>Account Name</strong></td>
+                    <td><code>account_name</code></td>
                     <td>Yes</td>
                     <td>Non-empty string</td>
-                    <td>Azure Storage account connection string. Obtain from the Azure Portal under Storage Account > Access Keys.</td>
+                    <td>Azure Storage account name. Paired with <code>account_key</code> to form a shared-key credential.</td>
+                </tr>
+                <tr>
+                    <td><strong>Account Key</strong></td>
+                    <td><code>account_key</code></td>
+                    <td>Yes</td>
+                    <td>Non-empty string</td>
+                    <td>Azure Storage account shared access key (base64). Treat as a secret. Obtain from the Azure Portal under Storage Account &gt; Access Keys.</td>
                 </tr>
                 <tr>
                     <td><strong>Queue Name</strong></td>
@@ -261,6 +288,58 @@
             </tbody>
         </table>
 
+        <h3>Azure Blob Provider Fields</h3>
+        <p>These fields appear when the provider is set to <strong>Azure Blob Storage</strong> (the batched WAL transport, distinct from the Azure Queue provider above). In JSON, they are nested under the <code>"azure_blob"</code> key. Instead of a queue, the outbound side batches messages into a write-ahead log blob and flushes it on an interval; the inbound side polls the container, takes a short-lived lease on each batch blob, processes it, and deletes it. File attachments are stored as deferred blobs alongside the batch blobs in the same container.</p>
+        <table>
+            <thead>
+                <tr><th>Field</th><th>JSON Key</th><th>Required</th><th>Validation</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td><strong>Service URL</strong></td>
+                    <td><code>service_url</code></td>
+                    <td>Yes</td>
+                    <td>Non-empty, valid URL</td>
+                    <td>Azure Blob Storage service URL. For production Azure, the standard form is <code>https://&lt;account&gt;.blob.core.windows.net</code>. For Azurite, use <code>http://azurite:10000/devstoreaccount1</code>.</td>
+                </tr>
+                <tr>
+                    <td><strong>Account Name</strong></td>
+                    <td><code>account_name</code></td>
+                    <td>Yes</td>
+                    <td>Non-empty string</td>
+                    <td>Azure Storage account name. Paired with <code>account_key</code> to form a shared-key credential.</td>
+                </tr>
+                <tr>
+                    <td><strong>Account Key</strong></td>
+                    <td><code>account_key</code></td>
+                    <td>Yes</td>
+                    <td>Non-empty string</td>
+                    <td>Azure Storage account shared access key (base64). Treat as a secret.</td>
+                </tr>
+                <tr>
+                    <td><strong>Blob Container Name</strong></td>
+                    <td><code>blob_container_name</code></td>
+                    <td>Yes</td>
+                    <td>Non-empty string</td>
+                    <td>Name of the Azure Blob container holding both batch WAL blobs and (when file transfer is enabled) deferred file blobs. Auto-created if it does not exist. Both sides must use the same container name.</td>
+                </tr>
+                <tr>
+                    <td><strong>Flush Interval</strong></td>
+                    <td><code>flush_interval_seconds</code></td>
+                    <td>No</td>
+                    <td>Integer. If set, must be at least <code>5</code>.</td>
+                    <td>How often the outbound side seals the current write-ahead log blob and uploads it. Default: <code>60</code> seconds. Lower values reduce end-to-end latency at the cost of more blob operations.</td>
+                </tr>
+                <tr>
+                    <td><strong>Blob Lock Max Age</strong></td>
+                    <td><code>blob_lock_max_age_seconds</code></td>
+                    <td>No</td>
+                    <td>Integer. If set, must be at least <code>30</code>.</td>
+                    <td>Maximum age of a blob lease before the inbound side considers it stale and takes over processing. Default: <code>300</code> seconds (5 minutes). Prevents a crashed inbound node from stalling delivery.</td>
+                </tr>
+            </tbody>
+        </table>
+
         <!-- Validation Rules -->
         <h3>Validation Rules Summary</h3>
         <ol>
@@ -270,8 +349,10 @@
             <li>Both sides of a relay must use the same NATS subject</li>
             <li>Auth credentials must be complete (both username AND password for credentials auth)</li>
             <li>TLS cert and key must be provided as a pair (enforced at config save time)</li>
-            <li>Azure connections require <code>connection_string</code> and <code>queue_name</code></li>
-            <li>Azure connections require <code>blob_container_name</code> when file transfer is enabled</li>
+            <li>Azure Queue connections require <code>queue_service_url</code>, <code>account_name</code>, <code>account_key</code>, and <code>queue_name</code></li>
+            <li>Azure Queue connections require <code>blob_service_url</code> and <code>blob_container_name</code> when file transfer is enabled</li>
+            <li>Azure Blob connections require <code>service_url</code>, <code>account_name</code>, <code>account_key</code>, and <code>blob_container_name</code></li>
+            <li>Azure Blob <code>flush_interval_seconds</code> must be at least 5 when set; <code>blob_lock_max_age_seconds</code> must be at least 30 when set</li>
         </ol>
 
         <!-- Relay Settings -->
@@ -464,28 +545,50 @@ Inbound:  [{"name": "from-a", "provider": "nats", "nats": {"address": "nats://na
 
         <h3>Azure Queue Storage Setup</h3>
 
-        <h4>Server A (sender via Azure)</h4>
+        <h4>Server A (sender via Azure Queue)</h4>
 <pre><code>Outbound Connections:
 [{
   "name": "azure-to-b",
   "provider": "azure-queue",
   "azure_queue": {
-    "connection_string": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
+    "queue_service_url": "https://mystorageaccount.queue.core.windows.net",
+    "blob_service_url": "https://mystorageaccount.blob.core.windows.net",
+    "account_name": "mystorageaccount",
+    "account_key": "base64-account-key",
     "queue_name": "crossguard-relay",
     "blob_container_name": "crossguard-files"
   },
   "file_transfer_enabled": true
 }]</code></pre>
 
-        <h4>Server B (receiver via Azure)</h4>
+        <h4>Server B (receiver via Azure Queue)</h4>
 <pre><code>Inbound Connections:
 [{
   "name": "azure-from-a",
   "provider": "azure-queue",
   "azure_queue": {
-    "connection_string": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
+    "queue_service_url": "https://mystorageaccount.queue.core.windows.net",
+    "blob_service_url": "https://mystorageaccount.blob.core.windows.net",
+    "account_name": "mystorageaccount",
+    "account_key": "base64-account-key",
     "queue_name": "crossguard-relay",
     "blob_container_name": "crossguard-files"
+  },
+  "file_transfer_enabled": true
+}]</code></pre>
+
+        <h4>Azure Blob variant (batched WAL transport)</h4>
+<pre><code>Outbound Connections:
+[{
+  "name": "azure-blob-to-b",
+  "provider": "azure-blob",
+  "azure_blob": {
+    "service_url": "https://mystorageaccount.blob.core.windows.net",
+    "account_name": "mystorageaccount",
+    "account_key": "base64-account-key",
+    "blob_container_name": "crossguard-wal",
+    "flush_interval_seconds": 60,
+    "blob_lock_max_age_seconds": 300
   },
   "file_transfer_enabled": true
 }]</code></pre>

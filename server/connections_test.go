@@ -720,19 +720,19 @@ func TestCreateProvider_MissingNATSConfig(t *testing.T) {
 	assert.ErrorIs(t, err, errMissingNATSConfig)
 }
 
-func TestCreateProvider_MissingAzureConfig(t *testing.T) {
+func TestCreateProvider_MissingAzureQueueConfig(t *testing.T) {
 	api := &plugintest.API{}
 	addLogMocks(api)
 	p, _ := setupTestPluginWithRouter(api)
 
 	cfg := ConnectionConfig{
-		Name:     "test-conn",
-		Provider: "azure",
-		Azure:    nil,
+		Name:       "test-conn",
+		Provider:   "azure-queue",
+		AzureQueue: nil,
 	}
 	_, err := p.createProvider(cfg, "Outbound")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, errMissingAzureConfig)
+	assert.ErrorIs(t, err, errMissingAzureQueueConfig)
 }
 
 func TestUploadPostFiles_NoFileEnabledConns(t *testing.T) {

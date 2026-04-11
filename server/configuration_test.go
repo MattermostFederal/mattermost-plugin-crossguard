@@ -570,109 +570,99 @@ func TestBuildTestMessage(t *testing.T) {
 }
 
 func TestAzureConfigValidation(t *testing.T) {
-	t.Run("valid azure connection passes", func(t *testing.T) {
-		conns := []ConnectionConfig{
-			{
-				Name:     "az-test",
-				Provider: "azure",
-				Azure: &AzureProviderConfig{
-					ConnectionString: "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc;EndpointSuffix=core.windows.net",
-					QueueName:        "my-queue",
-				},
-			},
+	validAzureQueue := func() *AzureQueueProviderConfig {
+		return &AzureQueueProviderConfig{
+			QueueServiceURL: "https://test.queue.core.windows.net",
+			BlobServiceURL:  "https://test.blob.core.windows.net",
+			AccountName:     "test",
+			AccountKey:      "abc",
+			QueueName:       "my-queue",
 		}
+	}
+
+	t.Run("valid azure connection passes", func(t *testing.T) {
+		conns := []ConnectionConfig{{
+			Name: "az-test", Provider: "azure-queue", AzureQueue: validAzureQueue(),
+		}}
 		data, _ := json.Marshal(conns)
-		cfg := &configuration{OutboundConnections: string(data)}
-		assert.NoError(t, cfg.validate())
+		assert.NoError(t, (&configuration{OutboundConnections: string(data)}).validate())
 	})
 
-	t.Run("azure missing connection_string fails", func(t *testing.T) {
-		conns := []ConnectionConfig{
-			{
-				Name:     "az-test",
-				Provider: "azure",
-				Azure: &AzureProviderConfig{
-					ConnectionString: "",
-					QueueName:        "my-queue",
-				},
-			},
-		}
+	t.Run("azure missing queue_service_url fails", func(t *testing.T) {
+		az := validAzureQueue()
+		az.QueueServiceURL = ""
+		conns := []ConnectionConfig{{Name: "az-test", Provider: "azure-queue", AzureQueue: az}}
 		data, _ := json.Marshal(conns)
-		cfg := &configuration{OutboundConnections: string(data)}
-		err := cfg.validate()
+		err := (&configuration{OutboundConnections: string(data)}).validate()
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "connection_string is required")
+		assert.Contains(t, err.Error(), "queue_service_url is required")
+	})
+
+	t.Run("azure missing account_name fails", func(t *testing.T) {
+		az := validAzureQueue()
+		az.AccountName = ""
+		conns := []ConnectionConfig{{Name: "az-test", Provider: "azure-queue", AzureQueue: az}}
+		data, _ := json.Marshal(conns)
+		err := (&configuration{OutboundConnections: string(data)}).validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "account_name is required")
+	})
+
+	t.Run("azure missing account_key fails", func(t *testing.T) {
+		az := validAzureQueue()
+		az.AccountKey = ""
+		conns := []ConnectionConfig{{Name: "az-test", Provider: "azure-queue", AzureQueue: az}}
+		data, _ := json.Marshal(conns)
+		err := (&configuration{OutboundConnections: string(data)}).validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "account_key is required")
 	})
 
 	t.Run("azure missing queue_name fails", func(t *testing.T) {
-		conns := []ConnectionConfig{
-			{
-				Name:     "az-test",
-				Provider: "azure",
-				Azure: &AzureProviderConfig{
-					ConnectionString: "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc;EndpointSuffix=core.windows.net",
-					QueueName:        "",
-				},
-			},
-		}
+		az := validAzureQueue()
+		az.QueueName = ""
+		conns := []ConnectionConfig{{Name: "az-test", Provider: "azure-queue", AzureQueue: az}}
 		data, _ := json.Marshal(conns)
-		cfg := &configuration{OutboundConnections: string(data)}
-		err := cfg.validate()
+		err := (&configuration{OutboundConnections: string(data)}).validate()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "queue_name is required")
 	})
 
 	t.Run("azure missing blob_container_name with file transfer fails", func(t *testing.T) {
-		conns := []ConnectionConfig{
-			{
-				Name:                "az-test",
-				Provider:            "azure",
-				FileTransferEnabled: true,
-				Azure: &AzureProviderConfig{
-					ConnectionString:  "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc;EndpointSuffix=core.windows.net",
-					QueueName:         "my-queue",
-					BlobContainerName: "",
-				},
-			},
-		}
+		az := validAzureQueue()
+		az.BlobContainerName = ""
+		conns := []ConnectionConfig{{
+			Name: "az-test", Provider: "azure-queue", FileTransferEnabled: true, AzureQueue: az,
+		}}
 		data, _ := json.Marshal(conns)
-		cfg := &configuration{OutboundConnections: string(data)}
-		err := cfg.validate()
+		err := (&configuration{OutboundConnections: string(data)}).validate()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "blob_container_name is required")
 	})
 
 	t.Run("azure with blob_container_name and file transfer passes", func(t *testing.T) {
-		conns := []ConnectionConfig{
-			{
-				Name:                "az-test",
-				Provider:            "azure",
-				FileTransferEnabled: true,
-				Azure: &AzureProviderConfig{
-					ConnectionString:  "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc;EndpointSuffix=core.windows.net",
-					QueueName:         "my-queue",
-					BlobContainerName: "my-container",
-				},
-			},
-		}
+		az := validAzureQueue()
+		az.BlobContainerName = "my-container"
+		conns := []ConnectionConfig{{
+			Name: "az-test", Provider: "azure-queue", FileTransferEnabled: true, AzureQueue: az,
+		}}
 		data, _ := json.Marshal(conns)
-		cfg := &configuration{OutboundConnections: string(data)}
-		assert.NoError(t, cfg.validate())
+		assert.NoError(t, (&configuration{OutboundConnections: string(data)}).validate())
 	})
 
-	t.Run("azure missing azure config block fails", func(t *testing.T) {
+	t.Run("azure-queue missing azure_queue config block fails", func(t *testing.T) {
 		conns := []ConnectionConfig{
 			{
-				Name:     "az-test",
-				Provider: "azure",
-				Azure:    nil,
+				Name:       "az-test",
+				Provider:   "azure-queue",
+				AzureQueue: nil,
 			},
 		}
 		data, _ := json.Marshal(conns)
 		cfg := &configuration{OutboundConnections: string(data)}
 		err := cfg.validate()
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "azure config block is required")
+		assert.Contains(t, err.Error(), "azure_queue config block is required")
 	})
 
 	t.Run("nats missing nats config block fails", func(t *testing.T) {
@@ -712,18 +702,136 @@ func TestAzureConfigValidation(t *testing.T) {
 				NATS:     &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.test", AuthType: "none"},
 			},
 			{
-				Name:     "az-conn",
-				Provider: "azure",
-				Azure: &AzureProviderConfig{
-					ConnectionString: "DefaultEndpointsProtocol=https;AccountName=test;AccountKey=abc;EndpointSuffix=core.windows.net",
-					QueueName:        "my-queue",
-				},
+				Name:       "az-conn",
+				Provider:   "azure-queue",
+				AzureQueue: validAzureQueue(),
 			},
 		}
 		data, _ := json.Marshal(conns)
-		cfg := &configuration{OutboundConnections: string(data)}
-		assert.NoError(t, cfg.validate())
+		assert.NoError(t, (&configuration{OutboundConnections: string(data)}).validate())
 	})
+}
+
+func TestAzureBlobConfigValidation(t *testing.T) {
+	validAzureBlob := func() *AzureBlobProviderConfig {
+		return &AzureBlobProviderConfig{
+			ServiceURL:        "https://test.blob.core.windows.net",
+			AccountName:       "test",
+			AccountKey:        "abc",
+			BlobContainerName: "my-container",
+		}
+	}
+	validAzureQueue := func() *AzureQueueProviderConfig {
+		return &AzureQueueProviderConfig{
+			QueueServiceURL: "https://test.queue.core.windows.net",
+			BlobServiceURL:  "https://test.blob.core.windows.net",
+			AccountName:     "test",
+			AccountKey:      "abc",
+			QueueName:       "my-queue",
+		}
+	}
+
+	t.Run("valid azure-blob connection passes", func(t *testing.T) {
+		conns := []ConnectionConfig{{
+			Name: "blob-test", Provider: "azure-blob", AzureBlob: validAzureBlob(),
+		}}
+		data, _ := json.Marshal(conns)
+		assert.NoError(t, (&configuration{OutboundConnections: string(data)}).validate())
+	})
+
+	t.Run("azure-blob with valid flush interval passes", func(t *testing.T) {
+		ab := validAzureBlob()
+		ab.FlushIntervalSeconds = 30
+		conns := []ConnectionConfig{{Name: "blob-test", Provider: "azure-blob", AzureBlob: ab}}
+		data, _ := json.Marshal(conns)
+		assert.NoError(t, (&configuration{OutboundConnections: string(data)}).validate())
+	})
+
+	t.Run("azure-blob missing service_url fails", func(t *testing.T) {
+		ab := validAzureBlob()
+		ab.ServiceURL = ""
+		conns := []ConnectionConfig{{Name: "blob-test", Provider: "azure-blob", AzureBlob: ab}}
+		data, _ := json.Marshal(conns)
+		err := (&configuration{OutboundConnections: string(data)}).validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "service_url is required")
+	})
+
+	t.Run("azure-blob missing account_name fails", func(t *testing.T) {
+		ab := validAzureBlob()
+		ab.AccountName = ""
+		conns := []ConnectionConfig{{Name: "blob-test", Provider: "azure-blob", AzureBlob: ab}}
+		data, _ := json.Marshal(conns)
+		err := (&configuration{OutboundConnections: string(data)}).validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "account_name is required")
+	})
+
+	t.Run("azure-blob missing account_key fails", func(t *testing.T) {
+		ab := validAzureBlob()
+		ab.AccountKey = ""
+		conns := []ConnectionConfig{{Name: "blob-test", Provider: "azure-blob", AzureBlob: ab}}
+		data, _ := json.Marshal(conns)
+		err := (&configuration{OutboundConnections: string(data)}).validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "account_key is required")
+	})
+
+	t.Run("azure-blob missing blob_container_name fails", func(t *testing.T) {
+		ab := validAzureBlob()
+		ab.BlobContainerName = ""
+		conns := []ConnectionConfig{{Name: "blob-test", Provider: "azure-blob", AzureBlob: ab}}
+		data, _ := json.Marshal(conns)
+		err := (&configuration{OutboundConnections: string(data)}).validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "blob_container_name is required")
+	})
+
+	t.Run("azure-blob flush_interval below minimum fails", func(t *testing.T) {
+		ab := validAzureBlob()
+		ab.FlushIntervalSeconds = 3
+		conns := []ConnectionConfig{{Name: "blob-test", Provider: "azure-blob", AzureBlob: ab}}
+		data, _ := json.Marshal(conns)
+		err := (&configuration{OutboundConnections: string(data)}).validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "flush_interval_seconds must be at least 5")
+	})
+
+	t.Run("azure-blob missing config block fails", func(t *testing.T) {
+		conns := []ConnectionConfig{{Name: "blob-test", Provider: "azure-blob", AzureBlob: nil}}
+		data, _ := json.Marshal(conns)
+		err := (&configuration{OutboundConnections: string(data)}).validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "azure_blob config block is required")
+	})
+
+	t.Run("mixed providers including azure-blob pass", func(t *testing.T) {
+		conns := []ConnectionConfig{
+			{
+				Name:     "nats-conn",
+				Provider: "nats",
+				NATS:     &NATSProviderConfig{Address: "nats://localhost:4222", Subject: "crossguard.test", AuthType: "none"},
+			},
+			{Name: "az-conn", Provider: "azure-queue", AzureQueue: validAzureQueue()},
+			{Name: "blob-conn", Provider: "azure-blob", AzureBlob: validAzureBlob()},
+		}
+		data, _ := json.Marshal(conns)
+		assert.NoError(t, (&configuration{OutboundConnections: string(data)}).validate())
+	})
+}
+
+func TestParseConnections_AzureBlobProvider(t *testing.T) {
+	raw := `[{"name":"blob-test","provider":"azure-blob","azure_blob":{"service_url":"https://test.blob.core.windows.net","account_name":"test","account_key":"abc","blob_container_name":"mycontainer","flush_interval_seconds":45}}]`
+	conns, err := parseConnections(raw)
+	require.NoError(t, err)
+	require.Len(t, conns, 1)
+	assert.Equal(t, ProviderAzureBlob, conns[0].Provider)
+	require.NotNil(t, conns[0].AzureBlob)
+	assert.Equal(t, "https://test.blob.core.windows.net", conns[0].AzureBlob.ServiceURL)
+	assert.Equal(t, "test", conns[0].AzureBlob.AccountName)
+	assert.Equal(t, "abc", conns[0].AzureBlob.AccountKey)
+	assert.Equal(t, "mycontainer", conns[0].AzureBlob.BlobContainerName)
+	assert.Equal(t, 45, conns[0].AzureBlob.FlushIntervalSeconds)
 }
 
 func TestParseFilterTypes_MultipleCommas(t *testing.T) {
@@ -851,16 +959,20 @@ func TestOnConfigurationChange_WithReconnect(t *testing.T) {
 // Additional configuration edge-case tests (new)
 // ---------------------------------------------------------------------------
 
-func TestParseConnections_AzureProvider(t *testing.T) {
-	input := `[{"name":"az-conn","provider":"azure","azure":{"connection_string":"DefaultEndpoints...","queue_name":"myqueue","blob_container_name":"myblob"}}]`
+func TestParseConnections_AzureQueueProvider(t *testing.T) {
+	input := `[{"name":"az-conn","provider":"azure-queue","azure_queue":{"queue_service_url":"https://test.queue.core.windows.net","blob_service_url":"https://test.blob.core.windows.net","account_name":"test","account_key":"abc","queue_name":"myqueue","blob_container_name":"myblob"}}]`
 	conns, err := parseConnections(input)
 	require.NoError(t, err)
 	require.Len(t, conns, 1)
 	assert.Equal(t, "az-conn", conns[0].Name)
-	assert.Equal(t, ProviderAzure, conns[0].Provider)
-	require.NotNil(t, conns[0].Azure)
-	assert.Equal(t, "myqueue", conns[0].Azure.QueueName)
-	assert.Equal(t, "myblob", conns[0].Azure.BlobContainerName)
+	assert.Equal(t, ProviderAzureQueue, conns[0].Provider)
+	require.NotNil(t, conns[0].AzureQueue)
+	assert.Equal(t, "https://test.queue.core.windows.net", conns[0].AzureQueue.QueueServiceURL)
+	assert.Equal(t, "https://test.blob.core.windows.net", conns[0].AzureQueue.BlobServiceURL)
+	assert.Equal(t, "test", conns[0].AzureQueue.AccountName)
+	assert.Equal(t, "abc", conns[0].AzureQueue.AccountKey)
+	assert.Equal(t, "myqueue", conns[0].AzureQueue.QueueName)
+	assert.Equal(t, "myblob", conns[0].AzureQueue.BlobContainerName)
 	assert.Nil(t, conns[0].NATS)
 }
 

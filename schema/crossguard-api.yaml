@@ -317,7 +317,7 @@ components:
         Configuration for a single connection (inbound or outbound).
         Stored in plugin settings as a JSON array. The `provider` field
         determines which nested configuration block is used. Exactly one
-        of `nats` or `azure` should be present, matching the provider.
+        of `nats` or `azure_queue` should be present, matching the provider.
       required:
         - name
         - provider
@@ -334,7 +334,7 @@ components:
           type: string
           enum:
             - nats
-            - azure
+            - azure-queue
           description: >
             Transport provider for this connection. Determines which
             nested configuration block is used and how messages are
@@ -383,11 +383,11 @@ components:
           $ref: "#/components/schemas/NATSProviderConfig"
           description: >
             NATS provider configuration. Required when provider is `nats`.
-        azure:
-          $ref: "#/components/schemas/AzureProviderConfig"
+        azure_queue:
+          $ref: "#/components/schemas/AzureQueueProviderConfig"
           description: >
             Azure Queue Storage provider configuration. Required when
-            provider is `azure`.
+            provider is `azure-queue`.
 
     # ------------------------------------------------------------------
     # NATS provider configuration
@@ -448,7 +448,7 @@ components:
     # ------------------------------------------------------------------
     # Azure provider configuration
     # ------------------------------------------------------------------
-    AzureProviderConfig:
+    AzureQueueProviderConfig:
       type: object
       description: >
         Configuration fields specific to the Azure Queue Storage transport
@@ -457,16 +457,40 @@ components:
         files. Queues and blob containers are auto-created on startup if
         they do not exist.
       required:
-        - connection_string
+        - queue_service_url
+        - account_name
+        - account_key
         - queue_name
       properties:
-        connection_string:
+        queue_service_url:
           type: string
           description: >
-            Azure Storage account connection string. Contains the account
-            name, key, and endpoint information. Treat as a secret.
+            Azure Queue Storage service URL. For production Azure, the
+            standard form is `https://<account>.queue.core.windows.net`.
+            For Azurite (local emulator), use
+            `http://azurite:10001/devstoreaccount1`.
           examples:
-            - "DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey=...;EndpointSuffix=core.windows.net"
+            - "https://myaccount.queue.core.windows.net"
+        blob_service_url:
+          type: string
+          description: >
+            Azure Blob Storage service URL. Required when
+            `file_transfer_enabled` is true. For production Azure, the
+            standard form is `https://<account>.blob.core.windows.net`.
+          examples:
+            - "https://myaccount.blob.core.windows.net"
+        account_name:
+          type: string
+          description: >
+            Azure Storage account name. Used with `account_key` to form a
+            shared-key credential.
+          examples:
+            - "myaccount"
+        account_key:
+          type: string
+          description: >
+            Azure Storage account shared access key (base64). Treat as a
+            secret.
         queue_name:
           type: string
           description: >

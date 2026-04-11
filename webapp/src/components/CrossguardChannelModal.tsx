@@ -4,12 +4,24 @@ import React from 'react';
 interface ConnectionStatus {
     name: string;
     direction: string;
+    provider?: string;
     linked: boolean;
     orphaned?: boolean;
     remote_team_name?: string;
     file_transfer_enabled: boolean;
     file_filter_mode?: string;
     file_filter_types?: string;
+}
+
+function providerLabel(provider?: string): string {
+    switch (provider) {
+    case 'azure-queue':
+        return 'AZURE QUEUE';
+    case 'azure-blob':
+        return 'AZURE BLOB';
+    default:
+        return 'NATS';
+    }
 }
 
 interface ChannelStatusResponse {
@@ -360,9 +372,10 @@ const CrossguardChannelModal: React.FC = () => {
                         color: accentColor,
                     };
 
+                    const provLabel = providerLabel(conn.provider);
                     const badgeLabel = isInbound ?
-                        'NATS \u2192 MATTERMOST' :
-                        'MATTERMOST \u2192 NATS';
+                        `${provLabel} \u2192 MATTERMOST` :
+                        `MATTERMOST \u2192 ${provLabel}`;
 
                     return (
                         <div

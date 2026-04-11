@@ -256,25 +256,25 @@ func TestHandleTestConnection(t *testing.T) {
 		api.On("GetUser", "admin-id").Return(adminUser, nil)
 		p, _ := setupTestPluginWithRouter(api)
 
-		body := map[string]any{"provider": "azure"}
+		body := map[string]any{"provider": "azure-queue"}
 		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
 		w := httptest.NewRecorder()
 		p.ServeHTTP(nil, w, r)
 
 		require.Equal(t, http.StatusBadRequest, w.Code)
 		resp := decodeJSONResponse(t, w)
-		assert.Contains(t, resp["error"], "azure config block")
+		assert.Contains(t, resp["error"], "azure_queue config block")
 	})
 
-	t.Run("Azure missing connection_string returns 400", func(t *testing.T) {
+	t.Run("Azure missing queue_service_url returns 400", func(t *testing.T) {
 		api := &plugintest.API{}
 		mockLog(api)
 		api.On("GetUser", "admin-id").Return(adminUser, nil)
 		p, _ := setupTestPluginWithRouter(api)
 
 		body := map[string]any{
-			"provider": "azure",
-			"azure":    map[string]any{"queue_name": "myqueue"},
+			"provider":    "azure-queue",
+			"azure_queue": map[string]any{"queue_name": "myqueue"},
 		}
 		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
 		w := httptest.NewRecorder()
@@ -282,7 +282,7 @@ func TestHandleTestConnection(t *testing.T) {
 
 		require.Equal(t, http.StatusBadRequest, w.Code)
 		resp := decodeJSONResponse(t, w)
-		assert.Contains(t, resp["error"], "connection_string is required")
+		assert.Contains(t, resp["error"], "queue_service_url is required")
 	})
 
 	t.Run("Azure missing queue_name returns 400", func(t *testing.T) {
@@ -292,8 +292,12 @@ func TestHandleTestConnection(t *testing.T) {
 		p, _ := setupTestPluginWithRouter(api)
 
 		body := map[string]any{
-			"provider": "azure",
-			"azure":    map[string]any{"connection_string": "DefaultEndpointsProtocol=https;AccountName=x"},
+			"provider": "azure-queue",
+			"azure_queue": map[string]any{
+				"queue_service_url": "https://x.queue.core.windows.net",
+				"account_name":      "x",
+				"account_key":       "abc",
+			},
 		}
 		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
 		w := httptest.NewRecorder()

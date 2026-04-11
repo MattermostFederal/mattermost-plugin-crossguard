@@ -66,10 +66,12 @@ func (p *Plugin) handleTestConnection(w http.ResponseWriter, r *http.Request) {
 	switch conn.Provider {
 	case ProviderNATS, "":
 		p.handleTestNATSConnection(w, conn, direction)
-	case ProviderAzure:
-		p.handleTestAzureConnection(w, conn, direction)
+	case ProviderAzureQueue:
+		p.handleTestAzureQueueConnection(w, conn, direction)
+	case ProviderAzureBlob:
+		p.handleTestAzureBlobConnection(w, conn, direction)
 	default:
-		writeJSONError(w, "provider must be \"nats\" or \"azure\"", http.StatusBadRequest)
+		writeJSONError(w, "provider must be \"nats\", \"azure-queue\", or \"azure-blob\"", http.StatusBadRequest)
 	}
 }
 
@@ -202,25 +204,35 @@ func (p *Plugin) handleTestNATSInbound(w http.ResponseWriter, nc *nats.Conn, con
 	})
 }
 
-func (p *Plugin) handleTestAzureConnection(w http.ResponseWriter, conn ConnectionConfig, _ string) {
-	if conn.Azure == nil {
-		writeJSONError(w, "azure config block is required", http.StatusBadRequest)
+func (p *Plugin) handleTestAzureQueueConnection(w http.ResponseWriter, conn ConnectionConfig, _ string) {
+	if conn.AzureQueue == nil {
+		writeJSONError(w, "azure_queue config block is required", http.StatusBadRequest)
 		return
 	}
 
-	if strings.TrimSpace(conn.Azure.ConnectionString) == "" {
-		writeJSONError(w, "connection_string is required", http.StatusBadRequest)
+	if strings.TrimSpace(conn.AzureQueue.QueueServiceURL) == "" {
+		writeJSONError(w, "queue_service_url is required", http.StatusBadRequest)
 		return
 	}
 
-	if strings.TrimSpace(conn.Azure.QueueName) == "" {
+	if strings.TrimSpace(conn.AzureQueue.AccountName) == "" {
+		writeJSONError(w, "account_name is required", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(conn.AzureQueue.AccountKey) == "" {
+		writeJSONError(w, "account_key is required", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(conn.AzureQueue.QueueName) == "" {
 		writeJSONError(w, "queue_name is required", http.StatusBadRequest)
 		return
 	}
 
-	if err := testAzureConnection(*conn.Azure); err != nil {
-		p.API.LogError("Azure connection test failed", "error", err.Error())
-		writeJSONError(w, "Azure connection test failed: "+err.Error(), http.StatusBadGateway)
+	if err := testAzureQueueConnection(*conn.AzureQueue); err != nil {
+		p.API.LogError("Azure Queue connection test failed", "error", err.Error())
+		writeJSONError(w, "Azure Queue connection test failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
@@ -229,6 +241,46 @@ func (p *Plugin) handleTestAzureConnection(w http.ResponseWriter, conn Connectio
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":  "ok",
 		"message": "Azure Queue Storage connection test successful",
+	})
+}
+
+func (p *Plugin) handleTestAzureBlobConnection(w http.ResponseWriter, conn ConnectionConfig, _ string) {
+	if conn.AzureBlob == nil {
+		writeJSONError(w, "azure_blob config block is required", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(conn.AzureBlob.ServiceURL) == "" {
+		writeJSONError(w, "service_url is required", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(conn.AzureBlob.AccountName) == "" {
+		writeJSONError(w, "account_name is required", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(conn.AzureBlob.AccountKey) == "" {
+		writeJSONError(w, "account_key is required", http.StatusBadRequest)
+		return
+	}
+
+	if strings.TrimSpace(conn.AzureBlob.BlobContainerName) == "" {
+		writeJSONError(w, "blob_container_name is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := testAzureBlobConnection(*conn.AzureBlob); err != nil {
+		p.API.LogError("Azure Blob connection test failed", "error", err.Error())
+		writeJSONError(w, "Azure Blob connection test failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"message": "Azure Blob Storage connection test successful",
 	})
 }
 

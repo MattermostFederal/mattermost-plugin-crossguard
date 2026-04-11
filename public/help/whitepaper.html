@@ -993,7 +993,7 @@ Topology 3: Guard Network (Classified)
         </p>
         <ul>
             <li><strong>name:</strong> Unique identifier, lowercase alphanumeric with hyphens (e.g., <code>relay-to-server-b</code>)</li>
-            <li><strong>provider:</strong> Transport provider type (<code>"nats"</code> or <code>"azure"</code>). Provider-specific fields are nested under the corresponding key.</li>
+            <li><strong>provider:</strong> Transport provider type (<code>"nats"</code> or <code>"azure-queue"</code>). Provider-specific fields are nested under the corresponding key.</li>
         </ul>
         <h4>NATS Provider Fields (nested under <code>"nats"</code>)</h4>
         <ul>
@@ -1002,7 +1002,7 @@ Topology 3: Guard Network (Classified)
             <li><strong>TLS settings:</strong> <code>tls_enabled</code>, <code>client_cert</code>, <code>client_key</code>, <code>ca_cert</code></li>
             <li><strong>Auth settings:</strong> <code>auth_type</code> (<code>none</code>, <code>token</code>, or <code>credentials</code>), plus type-specific fields</li>
         </ul>
-        <h4>Azure Provider Fields (nested under <code>"azure"</code>)</h4>
+        <h4>Azure Queue Provider Fields (nested under <code>"azure_queue"</code>)</h4>
         <ul>
             <li><strong>connection_string:</strong> Azure Storage connection string (contains the account name and key; treated as a secret, encrypted at rest by Mattermost)</li>
             <li><strong>queue_name:</strong> Name of the Azure Storage queue (user-configurable, created automatically if it does not exist)</li>

@@ -42,14 +42,28 @@ type azureProvider struct {
 	queueClient     azureQueuer
 	containerClient *container.Client
 	api             plugin.API
-	cfg             AzureProviderConfig
+	cfg             AzureQueueProviderConfig
 	cancel          context.CancelFunc
 	handler         func(data []byte) error
 	pollDone        chan struct{}
 }
 
-func newAzureProvider(cfg AzureProviderConfig, api plugin.API) (QueueProvider, error) {
-	queueClient, err := azqueue.NewQueueClientFromConnectionString(cfg.ConnectionString, cfg.QueueName, nil)
+// buildQueueURL joins a queue service URL and queue name into a full queue URL.
+func buildQueueURL(serviceURL, queueName string) string {
+	return strings.TrimRight(serviceURL, "/") + "/" + queueName
+}
+
+// buildBlobContainerURL joins a blob service URL and container name into a full container URL.
+func buildBlobContainerURL(serviceURL, containerName string) string {
+	return strings.TrimRight(serviceURL, "/") + "/" + containerName
+}
+
+func newAzureProvider(cfg AzureQueueProviderConfig, api plugin.API) (QueueProvider, error) {
+	queueCred, err := azqueue.NewSharedKeyCredential(cfg.AccountName, cfg.AccountKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Azure Queue shared key credential: %w", err)
+	}
+	queueClient, err := azqueue.NewQueueClientWithSharedKeyCredential(buildQueueURL(cfg.QueueServiceURL, cfg.QueueName), queueCred, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Azure Queue client: %w", err)
 	}
@@ -66,7 +80,11 @@ func newAzureProvider(cfg AzureProviderConfig, api plugin.API) (QueueProvider, e
 
 	var containerClient *container.Client
 	if cfg.BlobContainerName != "" {
-		containerClient, err = container.NewClientFromConnectionString(cfg.ConnectionString, cfg.BlobContainerName, nil)
+		blobCred, credErr := container.NewSharedKeyCredential(cfg.AccountName, cfg.AccountKey)
+		if credErr != nil {
+			return nil, fmt.Errorf("failed to create Azure Blob shared key credential: %w", credErr)
+		}
+		containerClient, err = container.NewClientWithSharedKeyCredential(buildBlobContainerURL(cfg.BlobServiceURL, cfg.BlobContainerName), blobCred, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create Azure Blob container client: %w", err)
 		}
@@ -293,9 +311,13 @@ func (a *azureProvider) Close() error {
 	return nil
 }
 
-// testAzureConnection tests connectivity to Azure Queue Storage by sending and receiving a test message.
-func testAzureConnection(cfg AzureProviderConfig) error {
-	queueClient, err := azqueue.NewQueueClientFromConnectionString(cfg.ConnectionString, cfg.QueueName, nil)
+// testAzureQueueConnection tests connectivity to Azure Queue Storage by sending and receiving a test message.
+func testAzureQueueConnection(cfg AzureQueueProviderConfig) error {
+	cred, err := azqueue.NewSharedKeyCredential(cfg.AccountName, cfg.AccountKey)
+	if err != nil {
+		return fmt.Errorf("failed to create shared key credential: %w", err)
+	}
+	queueClient, err := azqueue.NewQueueClientWithSharedKeyCredential(buildQueueURL(cfg.QueueServiceURL, cfg.QueueName), cred, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create queue client: %w", err)
 	}

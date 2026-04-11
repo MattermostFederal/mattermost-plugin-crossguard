@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -24,24 +25,26 @@ const (
 	fileFilterModeAllow = "allow"
 	fileFilterModeDeny  = "deny"
 
-	ProviderNATS  = "nats"
-	ProviderAzure = "azure"
+	ProviderNATS       = "nats"
+	ProviderAzureQueue = "azure-queue"
+	ProviderAzureBlob  = "azure-blob"
 )
 
 var (
-	errMissingNATSConfig  = errors.New("nats config block is required when provider is \"nats\"")
-	errMissingAzureConfig = errors.New("azure config block is required when provider is \"azure\"")
+	errMissingNATSConfig       = errors.New("nats config block is required when provider is \"nats\"")
+	errMissingAzureQueueConfig = errors.New("azure_queue config block is required when provider is \"azure-queue\"")
+	errMissingAzureBlobConfig  = errors.New("azure_blob config block is required when provider is \"azure-blob\"")
 )
 
 func errUnknownProvider(p string) error {
-	return fmt.Errorf("unknown provider %q, must be \"nats\" or \"azure\"", p)
+	return fmt.Errorf("unknown provider %q, must be \"nats\", \"azure-queue\", or \"azure-blob\"", p)
 }
 
 // ConnectionConfig represents a single connection configuration.
 // It supports both NATS and Azure providers via nested sub-structs.
 type ConnectionConfig struct {
 	Name     string `json:"name"`
-	Provider string `json:"provider"` // "nats" or "azure"
+	Provider string `json:"provider"` // "nats", "azure-queue", or "azure-blob"
 
 	// Common fields
 	FileTransferEnabled bool   `json:"file_transfer_enabled"`
@@ -50,8 +53,9 @@ type ConnectionConfig struct {
 	MessageFormat       string `json:"message_format"`    // "json" or "xml"
 
 	// Provider-specific (exactly one must be set, matching Provider)
-	NATS  *NATSProviderConfig  `json:"nats,omitempty"`
-	Azure *AzureProviderConfig `json:"azure,omitempty"`
+	NATS       *NATSProviderConfig       `json:"nats,omitempty"`
+	AzureQueue *AzureQueueProviderConfig `json:"azure_queue,omitempty"`
+	AzureBlob  *AzureBlobProviderConfig  `json:"azure_blob,omitempty"`
 }
 
 // NATSProviderConfig holds NATS-specific connection settings.
@@ -69,11 +73,23 @@ type NATSProviderConfig struct {
 	CACert     string `json:"ca_cert"`
 }
 
-// AzureProviderConfig holds Azure Queue Storage and Blob Storage connection settings.
-type AzureProviderConfig struct {
-	ConnectionString  string `json:"connection_string"`
+// AzureQueueProviderConfig holds Azure Queue Storage and Blob Storage connection settings.
+type AzureQueueProviderConfig struct {
+	QueueServiceURL   string `json:"queue_service_url"`
+	BlobServiceURL    string `json:"blob_service_url"`
+	AccountName       string `json:"account_name"`
+	AccountKey        string `json:"account_key"`
 	QueueName         string `json:"queue_name"`
 	BlobContainerName string `json:"blob_container_name"`
+}
+
+// AzureBlobProviderConfig holds Azure Blob Storage provider settings for batch message relay.
+type AzureBlobProviderConfig struct {
+	ServiceURL           string `json:"service_url"`
+	AccountName          string `json:"account_name"`
+	AccountKey           string `json:"account_key"`
+	BlobContainerName    string `json:"blob_container_name"`
+	FlushIntervalSeconds int    `json:"flush_interval_seconds,omitempty"` // default 60
 }
 
 func isFileAllowed(filename, filterMode, filterTypes string) bool {
@@ -204,10 +220,12 @@ func validateConnectionList(connections []ConnectionConfig, direction string, al
 		switch conn.Provider {
 		case ProviderNATS, "":
 			errs = append(errs, validateNATSConnection(conn, prefix)...)
-		case ProviderAzure:
-			errs = append(errs, validateAzureConnection(conn, prefix)...)
+		case ProviderAzureQueue:
+			errs = append(errs, validateAzureQueueConnection(conn, prefix)...)
+		case ProviderAzureBlob:
+			errs = append(errs, validateAzureBlobConnection(conn, prefix)...)
 		default:
-			errs = append(errs, fmt.Sprintf("%s: provider must be \"nats\" or \"azure\"", prefix))
+			errs = append(errs, fmt.Sprintf("%s: provider must be \"nats\", \"azure-queue\", or \"azure-blob\"", prefix))
 		}
 
 		if conn.MessageFormat == "" {
@@ -287,18 +305,36 @@ func validateNATSConnection(conn ConnectionConfig, prefix string) []string {
 	return errs
 }
 
-func validateAzureConnection(conn ConnectionConfig, prefix string) []string {
+func validateAzureQueueConnection(conn ConnectionConfig, prefix string) []string {
 	var errs []string
 
-	if conn.Azure == nil {
-		errs = append(errs, fmt.Sprintf("%s: azure config block is required when provider is \"azure\"", prefix))
+	if conn.AzureQueue == nil {
+		errs = append(errs, fmt.Sprintf("%s: azure_queue config block is required when provider is \"azure-queue\"", prefix))
 		return errs
 	}
 
-	az := conn.Azure
+	az := conn.AzureQueue
 
-	if strings.TrimSpace(az.ConnectionString) == "" {
-		errs = append(errs, fmt.Sprintf("%s: connection_string is required", prefix))
+	if strings.TrimSpace(az.QueueServiceURL) == "" {
+		errs = append(errs, fmt.Sprintf("%s: queue_service_url is required", prefix))
+	} else if _, err := url.Parse(az.QueueServiceURL); err != nil {
+		errs = append(errs, fmt.Sprintf("%s: queue_service_url is not a valid URL: %v", prefix, err))
+	}
+
+	if conn.FileTransferEnabled {
+		if strings.TrimSpace(az.BlobServiceURL) == "" {
+			errs = append(errs, fmt.Sprintf("%s: blob_service_url is required when file_transfer_enabled is true", prefix))
+		} else if _, err := url.Parse(az.BlobServiceURL); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: blob_service_url is not a valid URL: %v", prefix, err))
+		}
+	}
+
+	if strings.TrimSpace(az.AccountName) == "" {
+		errs = append(errs, fmt.Sprintf("%s: account_name is required", prefix))
+	}
+
+	if strings.TrimSpace(az.AccountKey) == "" {
+		errs = append(errs, fmt.Sprintf("%s: account_key is required", prefix))
 	}
 
 	if strings.TrimSpace(az.QueueName) == "" {
@@ -307,6 +343,41 @@ func validateAzureConnection(conn ConnectionConfig, prefix string) []string {
 
 	if conn.FileTransferEnabled && strings.TrimSpace(az.BlobContainerName) == "" {
 		errs = append(errs, fmt.Sprintf("%s: blob_container_name is required when file_transfer_enabled is true", prefix))
+	}
+
+	return errs
+}
+
+func validateAzureBlobConnection(conn ConnectionConfig, prefix string) []string {
+	var errs []string
+
+	if conn.AzureBlob == nil {
+		errs = append(errs, fmt.Sprintf("%s: azure_blob config block is required when provider is \"azure-blob\"", prefix))
+		return errs
+	}
+
+	ab := conn.AzureBlob
+
+	if strings.TrimSpace(ab.ServiceURL) == "" {
+		errs = append(errs, fmt.Sprintf("%s: service_url is required", prefix))
+	} else if _, err := url.Parse(ab.ServiceURL); err != nil {
+		errs = append(errs, fmt.Sprintf("%s: service_url is not a valid URL: %v", prefix, err))
+	}
+
+	if strings.TrimSpace(ab.AccountName) == "" {
+		errs = append(errs, fmt.Sprintf("%s: account_name is required", prefix))
+	}
+
+	if strings.TrimSpace(ab.AccountKey) == "" {
+		errs = append(errs, fmt.Sprintf("%s: account_key is required", prefix))
+	}
+
+	if strings.TrimSpace(ab.BlobContainerName) == "" {
+		errs = append(errs, fmt.Sprintf("%s: blob_container_name is required", prefix))
+	}
+
+	if ab.FlushIntervalSeconds != 0 && ab.FlushIntervalSeconds < 5 {
+		errs = append(errs, fmt.Sprintf("%s: flush_interval_seconds must be at least 5", prefix))
 	}
 
 	return errs
@@ -363,6 +434,10 @@ func (p *Plugin) OnConfigurationChange() error {
 	}
 
 	p.setConfiguration(cfg)
+
+	if p.retryQueue != nil {
+		p.retryQueue.SetMaxAge(p.computeRetryMaxAge())
+	}
 
 	if p.relaySem != nil {
 		p.reconnectOutbound()

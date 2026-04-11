@@ -682,7 +682,7 @@ Set "crossguard_relayed" property (prevents relay loops)</pre>
                             <td><code>provider</code></td>
                             <td>string</td>
                             <td>No</td>
-                            <td>Transport provider: <code>"nats"</code> or <code>"azure"</code>. Default: <code>"nats"</code>.</td>
+                            <td>Transport provider: <code>"nats"</code> or <code>"azure-queue"</code>. Default: <code>"nats"</code>.</td>
                         </tr>
                         <tr>
                             <td><code>file_transfer_enabled</code></td>
@@ -1234,9 +1234,9 @@ Release semaphore</pre>
                 <h4>Example: Azure Connection</h4>
 <pre><code>{
   "name": "azure-relay",
-  "provider": "azure",
+  "provider": "azure-queue",
   "file_transfer_enabled": true,
-  "azure": {
+  "azure_queue": {
     "connection_string": "DefaultEndpointsProtocol=https;AccountName=mystorageaccount;AccountKey=...;EndpointSuffix=core.windows.net",
     "queue_name": "crossguard-relay",
     "blob_container_name": "crossguard-files"

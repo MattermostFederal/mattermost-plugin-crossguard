@@ -51,6 +51,7 @@ type RedactedConnection struct {
 	FileFilterTypes     string `json:"file_filter_types,omitempty"`
 	MessageFormat       string `json:"message_format,omitempty"`
 	QueueName           string `json:"queue_name,omitempty"`
+	BlobContainerName   string `json:"blob_container_name,omitempty"`
 }
 
 // GlobalStatusResponse is the JSON response for the system-wide status endpoint.
@@ -202,6 +203,7 @@ func (p *Plugin) getTeamStatus(teamID string) (*TeamStatusResponse, *apiError) {
 		statuses = append(statuses, ConnectionStatus{
 			Name:                tc.Connection,
 			Direction:           tc.Direction,
+			Provider:            cc.Provider,
 			Linked:              isLinked,
 			Orphaned:            !inConfig,
 			RemoteTeamName:      tc.RemoteTeamName,
@@ -288,6 +290,7 @@ type ChannelStatusResponse struct {
 type ConnectionStatus struct {
 	Name                string `json:"name"`
 	Direction           string `json:"direction"`
+	Provider            string `json:"provider,omitempty"`
 	Linked              bool   `json:"linked"`
 	Orphaned            bool   `json:"orphaned,omitempty"`
 	RemoteTeamName      string `json:"remote_team_name,omitempty"`
@@ -365,6 +368,7 @@ func (p *Plugin) getChannelStatus(channelID string) (*ChannelStatusResponse, *ap
 		statuses = append(statuses, ConnectionStatus{
 			Name:                tc.Connection,
 			Direction:           tc.Direction,
+			Provider:            cc.Provider,
 			Linked:              isLinked,
 			Orphaned:            !inConfig,
 			RemoteTeamName:      tc.RemoteTeamName,
@@ -702,8 +706,12 @@ func redactConnection(conn ConnectionConfig, direction string) RedactedConnectio
 		rc.AuthType = conn.NATS.AuthType
 		rc.Subject = conn.NATS.Subject
 	}
-	if conn.Azure != nil {
-		rc.QueueName = conn.Azure.QueueName
+	if conn.AzureQueue != nil {
+		rc.QueueName = conn.AzureQueue.QueueName
+		rc.BlobContainerName = conn.AzureQueue.BlobContainerName
+	}
+	if conn.AzureBlob != nil {
+		rc.BlobContainerName = conn.AzureBlob.BlobContainerName
 	}
 	return rc
 }

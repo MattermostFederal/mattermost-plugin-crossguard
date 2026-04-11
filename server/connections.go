@@ -279,6 +279,24 @@ func (p *Plugin) uploadPostFiles(post *mmModel.Post, conns []store.TeamConnectio
 			continue
 		}
 
+		// First pass: azure-blob providers defer the upload via QueueFileRef.
+		// Determine whether any non-blob providers still need the file bytes.
+		needsDownload := false
+		for _, oc := range fileConns {
+			if !isFileAllowed(fi.Name, oc.fileFilterMode, oc.fileFilterTypes) {
+				continue
+			}
+			if blobProvider, ok := oc.provider.(*azureBlobProvider); ok {
+				blobProvider.QueueFileRef(post.Id, fi.Id, oc.name, fi.Name)
+				continue
+			}
+			needsDownload = true
+		}
+
+		if !needsDownload {
+			continue
+		}
+
 		fileData, appErr := p.API.GetFile(fi.Id)
 		if appErr != nil {
 			p.API.LogError("Failed to download file for relay",
@@ -287,6 +305,9 @@ func (p *Plugin) uploadPostFiles(post *mmModel.Post, conns []store.TeamConnectio
 		}
 
 		for _, oc := range fileConns {
+			if _, ok := oc.provider.(*azureBlobProvider); ok {
+				continue
+			}
 			if !isFileAllowed(fi.Name, oc.fileFilterMode, oc.fileFilterTypes) {
 				p.API.LogInfo("Outbound file filtered by policy",
 					"file", fi.Name, "conn", oc.name)
@@ -330,11 +351,24 @@ func (p *Plugin) createProvider(cfg ConnectionConfig, direction string) (QueuePr
 			return nil, errMissingNATSConfig
 		}
 		return newNATSProvider(*cfg.NATS, p.API, direction)
-	case ProviderAzure:
-		if cfg.Azure == nil {
-			return nil, errMissingAzureConfig
+	case ProviderAzureQueue:
+		if cfg.AzureQueue == nil {
+			return nil, errMissingAzureQueueConfig
 		}
-		return newAzureProvider(*cfg.Azure, p.API)
+		return newAzureProvider(*cfg.AzureQueue, p.API)
+	case ProviderAzureBlob:
+		if cfg.AzureBlob == nil {
+			return nil, errMissingAzureBlobConfig
+		}
+		getFile := func(fileID string) ([]byte, error) {
+			data, appErr := p.API.GetFile(fileID)
+			if appErr != nil {
+				return nil, appErr
+			}
+			return data, nil
+		}
+		isOutbound := direction == "Outbound"
+		return newAzureBlobProvider(p.ctx, *cfg.AzureBlob, p.API, &p.client.KV, p.nodeID, cfg.Name, getFile, isOutbound)
 	default:
 		return nil, errUnknownProvider(cfg.Provider)
 	}

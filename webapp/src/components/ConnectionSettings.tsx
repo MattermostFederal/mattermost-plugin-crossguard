@@ -1,7 +1,7 @@
 import manifest from 'manifest';
 import React from 'react';
 
-type ProviderType = 'nats' | 'azure';
+type ProviderType = 'nats' | 'azure-queue' | 'azure-blob';
 
 interface NATSProviderConfig {
     address: string;
@@ -16,10 +16,21 @@ interface NATSProviderConfig {
     ca_cert: string;
 }
 
-interface AzureProviderConfig {
-    connection_string: string;
+interface AzureQueueProviderConfig {
+    queue_service_url: string;
+    blob_service_url: string;
+    account_name: string;
+    account_key: string;
     queue_name: string;
     blob_container_name: string;
+}
+
+interface AzureBlobProviderConfig {
+    service_url: string;
+    account_name: string;
+    account_key: string;
+    blob_container_name: string;
+    flush_interval_seconds?: number;
 }
 
 interface Connection {
@@ -30,7 +41,8 @@ interface Connection {
     file_filter_types: string;
     message_format: 'json' | 'xml';
     nats?: NATSProviderConfig;
-    azure?: AzureProviderConfig;
+    azure_queue?: AzureQueueProviderConfig;
+    azure_blob?: AzureBlobProviderConfig;
 }
 
 interface CustomSettingProps {
@@ -73,10 +85,21 @@ const emptyNATSConfig: NATSProviderConfig = {
     ca_cert: '',
 };
 
-const emptyAzureConfig: AzureProviderConfig = {
-    connection_string: '',
+const emptyAzureQueueConfig: AzureQueueProviderConfig = {
+    queue_service_url: '',
+    blob_service_url: '',
+    account_name: '',
+    account_key: '',
     queue_name: '',
     blob_container_name: '',
+};
+
+const emptyAzureBlobConfig: AzureBlobProviderConfig = {
+    service_url: '',
+    account_name: '',
+    account_key: '',
+    blob_container_name: '',
+    flush_interval_seconds: 60,
 };
 
 const emptyConnection: Connection = {
@@ -545,15 +568,28 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                 ...editForm,
                 name: trimmedName,
                 nats: {...nats, subject: trimmedSubject},
-                azure: undefined,
+                azure_queue: undefined,
+                azure_blob: undefined,
             };
-        } else {
-            const azure = editForm.azure || emptyAzureConfig;
-            if (!azure.connection_string.trim()) {
-                setFormError('Connection String is required.');
+        } else if (editForm.provider === 'azure-queue') {
+            const azureQueue = editForm.azure_queue || emptyAzureQueueConfig;
+            if (!azureQueue.queue_service_url.trim()) {
+                setFormError('Queue Service URL is required.');
                 return;
             }
-            if (!azure.queue_name.trim()) {
+            if (editForm.file_transfer_enabled && !azureQueue.blob_service_url.trim()) {
+                setFormError('Blob Service URL is required when file transfer is enabled.');
+                return;
+            }
+            if (!azureQueue.account_name.trim()) {
+                setFormError('Account Name is required.');
+                return;
+            }
+            if (!azureQueue.account_key.trim()) {
+                setFormError('Account Key is required.');
+                return;
+            }
+            if (!azureQueue.queue_name.trim()) {
                 setFormError('Queue Name is required.');
                 return;
             }
@@ -561,8 +597,40 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
             cleanedForm = {
                 ...editForm,
                 name: trimmedName,
-                azure: {...azure},
+                azure_queue: {...azureQueue},
                 nats: undefined,
+                azure_blob: undefined,
+            };
+        } else {
+            const azureBlob = editForm.azure_blob || emptyAzureBlobConfig;
+            if (!azureBlob.service_url.trim()) {
+                setFormError('Service URL is required.');
+                return;
+            }
+            if (!azureBlob.account_name.trim()) {
+                setFormError('Account Name is required.');
+                return;
+            }
+            if (!azureBlob.account_key.trim()) {
+                setFormError('Account Key is required.');
+                return;
+            }
+            if (!azureBlob.blob_container_name.trim()) {
+                setFormError('Blob Container Name is required.');
+                return;
+            }
+            const flush = azureBlob.flush_interval_seconds;
+            if (flush === undefined || Number.isNaN(flush) || flush < 5) {
+                setFormError('Flush Interval must be at least 5 seconds.');
+                return;
+            }
+
+            cleanedForm = {
+                ...editForm,
+                name: trimmedName,
+                azure_blob: {...azureBlob},
+                nats: undefined,
+                azure_queue: undefined,
             };
         }
 
@@ -614,13 +682,22 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                     if (!prev.nats) {
                         updated.nats = {...emptyNATSConfig};
                     }
-                    updated.azure = undefined;
+                    updated.azure_queue = undefined;
+                    updated.azure_blob = undefined;
                 }
-                if (fieldValue === 'azure') {
-                    if (!prev.azure) {
-                        updated.azure = {...emptyAzureConfig};
+                if (fieldValue === 'azure-queue') {
+                    if (!prev.azure_queue) {
+                        updated.azure_queue = {...emptyAzureQueueConfig};
                     }
                     updated.nats = undefined;
+                    updated.azure_blob = undefined;
+                }
+                if (fieldValue === 'azure-blob') {
+                    if (!prev.azure_blob) {
+                        updated.azure_blob = {...emptyAzureBlobConfig};
+                    }
+                    updated.nats = undefined;
+                    updated.azure_queue = undefined;
                 }
                 return updated;
             });
@@ -636,10 +713,17 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
         }));
     };
 
-    const handleAzureChange = (field: keyof AzureProviderConfig, fieldValue: string) => {
+    const handleAzureQueueChange = (field: keyof AzureQueueProviderConfig, fieldValue: string) => {
         setEditForm((prev) => ({
             ...prev,
-            azure: {...(prev.azure || emptyAzureConfig), [field]: fieldValue},
+            azure_queue: {...(prev.azure_queue || emptyAzureQueueConfig), [field]: fieldValue},
+        }));
+    };
+
+    const handleAzureBlobChange = (field: keyof AzureBlobProviderConfig, fieldValue: string | number | undefined) => {
+        setEditForm((prev) => ({
+            ...prev,
+            azure_blob: {...(prev.azure_blob || emptyAzureBlobConfig), [field]: fieldValue},
         }));
     };
 
@@ -754,7 +838,8 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                                 disabled={disabled}
                             >
                                 <option value='nats'>{'NATS'}</option>
-                                <option value='azure'>{'Azure Queue Storage'}</option>
+                                <option value='azure-queue'>{'Azure Queue Storage'}</option>
+                                <option value='azure-blob'>{'Azure Blob Storage (Batched)'}</option>
                             </select>
                         </div>
                     </div>
@@ -791,20 +876,59 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                         </>
                     )}
 
-                    {editForm.provider === 'azure' && (
+                    {editForm.provider === 'azure-queue' && (
                         <>
                             <div style={styles.inputGroup}>
-                                <label style={styles.label}>{'Connection String'}</label>
+                                <label style={styles.label}>{'Queue Service URL'}</label>
+                                <input
+                                    style={styles.input}
+                                    type='text'
+                                    value={editForm.azure_queue?.queue_service_url || ''}
+                                    onChange={(e) => handleAzureQueueChange('queue_service_url', e.target.value)}
+                                    disabled={disabled}
+                                    placeholder='https://myaccount.queue.core.windows.net'
+                                />
+                                <div style={styles.helpText}>
+                                    {'Azure Queue Storage service endpoint. For example, https://myaccount.queue.core.windows.net.'}
+                                </div>
+                            </div>
+                            <div style={styles.inputGroup}>
+                                <label style={styles.label}>{'Blob Service URL'}</label>
+                                <input
+                                    style={styles.input}
+                                    type='text'
+                                    value={editForm.azure_queue?.blob_service_url || ''}
+                                    onChange={(e) => handleAzureQueueChange('blob_service_url', e.target.value)}
+                                    disabled={disabled}
+                                    placeholder='https://myaccount.blob.core.windows.net'
+                                />
+                                <div style={styles.helpText}>
+                                    {'Azure Blob Storage service endpoint. Required when file transfer is enabled. For example, https://myaccount.blob.core.windows.net.'}
+                                </div>
+                            </div>
+                            <div style={styles.inputGroup}>
+                                <label style={styles.label}>{'Account Name'}</label>
+                                <input
+                                    style={styles.input}
+                                    type='text'
+                                    value={editForm.azure_queue?.account_name || ''}
+                                    onChange={(e) => handleAzureQueueChange('account_name', e.target.value)}
+                                    disabled={disabled}
+                                    placeholder='myaccount'
+                                />
+                            </div>
+                            <div style={styles.inputGroup}>
+                                <label style={styles.label}>{'Account Key'}</label>
                                 <input
                                     style={styles.input}
                                     type='password'
-                                    value={editForm.azure?.connection_string || ''}
-                                    onChange={(e) => handleAzureChange('connection_string', e.target.value)}
+                                    value={editForm.azure_queue?.account_key || ''}
+                                    onChange={(e) => handleAzureQueueChange('account_key', e.target.value)}
                                     disabled={disabled}
-                                    placeholder='DefaultEndpointsProtocol=https;AccountName=...'
+                                    placeholder='Paste key from Azure portal'
                                 />
                                 <div style={styles.helpText}>
-                                    {'Azure Storage account connection string.'}
+                                    {'Azure Storage account shared key.'}
                                 </div>
                             </div>
                             <div style={styles.inputGroup}>
@@ -812,11 +936,87 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                                 <input
                                     style={styles.input}
                                     type='text'
-                                    value={editForm.azure?.queue_name || ''}
-                                    onChange={(e) => handleAzureChange('queue_name', e.target.value)}
+                                    value={editForm.azure_queue?.queue_name || ''}
+                                    onChange={(e) => handleAzureQueueChange('queue_name', e.target.value)}
                                     disabled={disabled}
                                     placeholder='crossguard-messages'
                                 />
+                            </div>
+                        </>
+                    )}
+
+                    {editForm.provider === 'azure-blob' && (
+                        <>
+                            <div style={styles.inputGroup}>
+                                <label style={styles.label}>{'Service URL'}</label>
+                                <input
+                                    style={styles.input}
+                                    type='text'
+                                    value={editForm.azure_blob?.service_url || ''}
+                                    onChange={(e) => handleAzureBlobChange('service_url', e.target.value)}
+                                    disabled={disabled}
+                                    placeholder='https://myaccount.blob.core.windows.net'
+                                />
+                                <div style={styles.helpText}>
+                                    {'Azure Blob Storage service endpoint. For example, https://myaccount.blob.core.windows.net.'}
+                                </div>
+                            </div>
+                            <div style={styles.inputGroup}>
+                                <label style={styles.label}>{'Account Name'}</label>
+                                <input
+                                    style={styles.input}
+                                    type='text'
+                                    value={editForm.azure_blob?.account_name || ''}
+                                    onChange={(e) => handleAzureBlobChange('account_name', e.target.value)}
+                                    disabled={disabled}
+                                    placeholder='myaccount'
+                                />
+                            </div>
+                            <div style={styles.inputGroup}>
+                                <label style={styles.label}>{'Account Key'}</label>
+                                <input
+                                    style={styles.input}
+                                    type='password'
+                                    value={editForm.azure_blob?.account_key || ''}
+                                    onChange={(e) => handleAzureBlobChange('account_key', e.target.value)}
+                                    disabled={disabled}
+                                    placeholder='Paste key from Azure portal'
+                                />
+                                <div style={styles.helpText}>
+                                    {'Azure Storage account shared key.'}
+                                </div>
+                            </div>
+                            <div style={styles.inputGroup}>
+                                <label style={styles.label}>{'Blob Container Name'}</label>
+                                <input
+                                    style={styles.input}
+                                    type='text'
+                                    value={editForm.azure_blob?.blob_container_name || ''}
+                                    onChange={(e) => handleAzureBlobChange('blob_container_name', e.target.value)}
+                                    disabled={disabled}
+                                    placeholder='crossguard-batches'
+                                />
+                                <div style={styles.helpText}>
+                                    {'Blob container used for both batched message files and deferred file attachments.'}
+                                </div>
+                            </div>
+                            <div style={styles.inputGroup}>
+                                <label style={styles.label}>{'Flush Interval (seconds)'}</label>
+                                <input
+                                    style={styles.input}
+                                    type='number'
+                                    min={5}
+                                    value={editForm.azure_blob?.flush_interval_seconds ?? ''}
+                                    onChange={(e) => {
+                                        const raw = e.target.value;
+                                        const parsed = raw === '' ? undefined : Number(raw);
+                                        handleAzureBlobChange('flush_interval_seconds', parsed);
+                                    }}
+                                    disabled={disabled}
+                                />
+                                <div style={styles.helpText}>
+                                    {'How often batched message files are uploaded to blob storage. Default 60 seconds, minimum 5.'}
+                                </div>
                             </div>
                         </>
                     )}
@@ -970,19 +1170,19 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                             {'Enable File Transfer'}
                         </label>
                         <div style={styles.helpText}>
-                            {editForm.provider === 'nats' ?
-                                'Relay file attachments on posts across this connection. Requires JetStream on the NATS server.' :
-                                'Relay file attachments on posts across this connection. Files are stored in Azure Blob Storage.'}
+                            {editForm.provider === 'nats' && 'Relay file attachments on posts across this connection. Requires JetStream on the NATS server.'}
+                            {editForm.provider === 'azure-queue' && 'Relay file attachments on posts across this connection. Files are stored in Azure Blob Storage.'}
+                            {editForm.provider === 'azure-blob' && 'Relay file attachments on posts across this connection. Files are deferred and uploaded after each message batch flush.'}
                         </div>
                     </div>
-                    {editForm.file_transfer_enabled && editForm.provider === 'azure' && (
+                    {editForm.file_transfer_enabled && editForm.provider === 'azure-queue' && (
                         <div style={styles.inputGroup}>
                             <label style={styles.label}>{'Blob Container Name'}</label>
                             <input
                                 style={styles.input}
                                 type='text'
-                                value={editForm.azure?.blob_container_name || ''}
-                                onChange={(e) => handleAzureChange('blob_container_name', e.target.value)}
+                                value={editForm.azure_queue?.blob_container_name || ''}
+                                onChange={(e) => handleAzureQueueChange('blob_container_name', e.target.value)}
                                 disabled={disabled}
                                 placeholder='crossguard-files'
                             />
@@ -1055,7 +1255,12 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
         }
 
         const status = testStatus[index];
-        const providerLabel = conn.provider === 'azure' ? 'Azure' : 'NATS';
+        let providerLabel = 'NATS';
+        if (conn.provider === 'azure-queue') {
+            providerLabel = 'Azure Queue';
+        } else if (conn.provider === 'azure-blob') {
+            providerLabel = 'Azure Blob';
+        }
 
         return (
             <div
@@ -1103,10 +1308,16 @@ const ConnectionSettings: React.FC<CustomSettingProps> = ({
                             </div>
                         </>
                     )}
-                    {conn.provider === 'azure' && (
+                    {conn.provider === 'azure-queue' && (
                         <div style={styles.cardMetaItem}>
                             <span style={styles.cardMetaLabel}>{'Queue'}</span>
-                            {conn.azure?.queue_name}
+                            {conn.azure_queue?.queue_name}
+                        </div>
+                    )}
+                    {conn.provider === 'azure-blob' && (
+                        <div style={styles.cardMetaItem}>
+                            <span style={styles.cardMetaLabel}>{'Container'}</span>
+                            {conn.azure_blob?.blob_container_name}
                         </div>
                     )}
                     {conn.file_transfer_enabled && (

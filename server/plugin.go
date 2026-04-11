@@ -50,6 +50,9 @@ type Plugin struct {
 	outboundConns []outboundConn
 	inboundMu     sync.RWMutex
 	inboundConns  []inboundConn
+
+	nodeID     string
+	retryQueue *retryQueue
 }
 
 func (p *Plugin) OnActivate() error {
@@ -91,6 +94,12 @@ func (p *Plugin) OnActivate() error {
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.relaySem = make(chan struct{}, relaySemaphoreSize)
 	p.fileSem = make(chan struct{}, fileSemaphoreSize)
+	p.nodeID = model.NewId()
+
+	maxAge := p.computeRetryMaxAge()
+	p.retryQueue = newRetryQueue(maxAge)
+	p.retryQueue.Start(p.ctx, p.retryInboundMessage, p.handleRetryDropped)
+
 	p.connectOutbound()
 	p.connectInbound()
 
@@ -103,6 +112,9 @@ func (p *Plugin) OnDeactivate() error {
 	}
 	p.closeInbound()
 	p.wg.Wait()
+	if p.retryQueue != nil {
+		p.retryQueue.Wait()
+	}
 	p.closeOutbound()
 	return nil
 }

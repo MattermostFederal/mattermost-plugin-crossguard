@@ -239,7 +239,7 @@ func TestAzurePollQueue_ContextCancellation(t *testing.T) {
 	p := &azureProvider{
 		queueClient: mq,
 		api:         newTestAPI(),
-		cfg:         AzureProviderConfig{QueueName: "test-q"},
+		cfg:         AzureQueueProviderConfig{QueueName: "test-q"},
 	}
 
 	done := make(chan struct{})
@@ -275,7 +275,7 @@ func TestAzurePollQueue_DequeueError_Continues(t *testing.T) {
 	p := &azureProvider{
 		queueClient: mq,
 		api:         newTestAPI(),
-		cfg:         AzureProviderConfig{QueueName: "test-q"},
+		cfg:         AzureQueueProviderConfig{QueueName: "test-q"},
 	}
 
 	done := make(chan struct{})
@@ -326,7 +326,7 @@ func TestAzurePollQueue_MalformedBase64_DeletesMessage(t *testing.T) {
 	p := &azureProvider{
 		queueClient: mq,
 		api:         newTestAPI(),
-		cfg:         AzureProviderConfig{QueueName: "test-q"},
+		cfg:         AzureQueueProviderConfig{QueueName: "test-q"},
 	}
 
 	done := make(chan struct{})
@@ -377,7 +377,7 @@ func TestAzurePollQueue_HandlerError_DoesNotDelete(t *testing.T) {
 	p := &azureProvider{
 		queueClient: mq,
 		api:         newTestAPI(),
-		cfg:         AzureProviderConfig{QueueName: "test-q"},
+		cfg:         AzureQueueProviderConfig{QueueName: "test-q"},
 		handler: func(data []byte) error {
 			return fmt.Errorf("handler failure")
 		},
@@ -430,7 +430,7 @@ func TestAzurePollQueue_HandlerSuccess_DeletesMessage(t *testing.T) {
 	p := &azureProvider{
 		queueClient: mq,
 		api:         newTestAPI(),
-		cfg:         AzureProviderConfig{QueueName: "test-q"},
+		cfg:         AzureQueueProviderConfig{QueueName: "test-q"},
 		handler: func(data []byte) error {
 			return nil
 		},
@@ -493,7 +493,7 @@ func TestAzurePollQueue_NilFields_Skipped(t *testing.T) {
 	p := &azureProvider{
 		queueClient: mq,
 		api:         newTestAPI(),
-		cfg:         AzureProviderConfig{QueueName: "test-q"},
+		cfg:         AzureQueueProviderConfig{QueueName: "test-q"},
 		handler: func(data []byte) error {
 			atomic.AddInt64(&handlerCalled, 1)
 			return nil
@@ -526,7 +526,7 @@ func TestAzureSubscribe_InitializesFields(t *testing.T) {
 	p := &azureProvider{
 		queueClient: mq,
 		api:         newTestAPI(),
-		cfg:         AzureProviderConfig{QueueName: "test-q"},
+		cfg:         AzureQueueProviderConfig{QueueName: "test-q"},
 	}
 
 	handler := func(data []byte) error { return nil }
@@ -551,7 +551,7 @@ func TestAzureClose_WaitsPollDone(t *testing.T) {
 	p := &azureProvider{
 		queueClient: mq,
 		api:         newTestAPI(),
-		cfg:         AzureProviderConfig{QueueName: "test-q"},
+		cfg:         AzureQueueProviderConfig{QueueName: "test-q"},
 	}
 
 	handler := func(data []byte) error { return nil }

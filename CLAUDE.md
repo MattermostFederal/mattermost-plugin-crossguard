@@ -161,6 +161,7 @@ After setup:
 | `make docker-smoke-test` | Quick NATS relay smoke test (single low-to-high message) |
 | `make docker-integration-test` | Full integration suite (loopback, files, XML, Azure) |
 | `make docker-azure-smoke-test` | Run Azure Queue/Blob relay smoke test via Azurite |
+| `make docker-azure-blob-smoke-test` | Run Azure Blob batched (WAL + deferred file) smoke test via Azurite |
 | `make docker-disable` | Disable plugin on both servers |
 | `make docker-enable` | Enable plugin on both servers |
 | `make docker-plugin-list` | List installed plugins on both servers |

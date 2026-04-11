@@ -82,8 +82,8 @@
                 <h4>Request Body (Azure)</h4>
 <pre><code>{
   "name": "azure-relay",
-  "provider": "azure",
-  "azure": {
+  "provider": "azure-queue",
+  "azure_queue": {
     "connection_string": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
     "queue_name": "crossguard-relay"
   }
@@ -100,8 +100,8 @@
                 </ul>
                 <h5>Azure</h5>
                 <ul>
-                    <li><code>azure.connection_string</code> required</li>
-                    <li><code>azure.queue_name</code> required</li>
+                    <li><code>azure_queue.connection_string</code> required</li>
+                    <li><code>azure_queue.queue_name</code> required</li>
                 </ul>
 
                 <h4>Success Response (outbound) - 200</h4>
@@ -323,7 +323,7 @@
     {
       "name": "azure-relay",
       "direction": "outbound",
-      "provider": "azure",
+      "provider": "azure-queue",
       "queue_name": "crossguard-relay",
       "file_transfer_enabled": false,
       "message_format": "json"

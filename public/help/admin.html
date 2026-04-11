@@ -116,7 +116,7 @@
                     <td><strong>Provider</strong></td>
                     <td><code>provider</code></td>
                     <td>Yes</td>
-                    <td><code>"nats"</code> or <code>"azure"</code>. Empty treated as <code>"nats"</code>.</td>
+                    <td><code>"nats"</code> or <code>"azure-queue"</code>. Empty treated as <code>"nats"</code>.</td>
                     <td>Transport provider for this connection. Determines which provider-specific fields are required. Default: <code>"nats"</code>.</td>
                 </tr>
                 <tr>
@@ -231,7 +231,7 @@
         </table>
 
         <h3>Azure Provider Fields</h3>
-        <p>These fields appear when the provider is set to <strong>Azure Queue Storage</strong>. In JSON, they are nested under the <code>"azure"</code> key (e.g., <code>"azure": {"connection_string": "...", "queue_name": "..."}</code>).</p>
+        <p>These fields appear when the provider is set to <strong>Azure Queue Storage</strong>. In JSON, they are nested under the <code>"azure_queue"</code> key (e.g., <code>"azure_queue": {"connection_string": "...", "queue_name": "..."}</code>).</p>
         <table>
             <thead>
                 <tr><th>Field</th><th>JSON Key</th><th>Required</th><th>Validation</th><th>Description</th></tr>
@@ -468,8 +468,8 @@ Inbound:  [{"name": "from-a", "provider": "nats", "nats": {"address": "nats://na
 <pre><code>Outbound Connections:
 [{
   "name": "azure-to-b",
-  "provider": "azure",
-  "azure": {
+  "provider": "azure-queue",
+  "azure_queue": {
     "connection_string": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
     "queue_name": "crossguard-relay",
     "blob_container_name": "crossguard-files"
@@ -481,8 +481,8 @@ Inbound:  [{"name": "from-a", "provider": "nats", "nats": {"address": "nats://na
 <pre><code>Inbound Connections:
 [{
   "name": "azure-from-a",
-  "provider": "azure",
-  "azure": {
+  "provider": "azure-queue",
+  "azure_queue": {
     "connection_string": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
     "queue_name": "crossguard-relay",
     "blob_container_name": "crossguard-files"

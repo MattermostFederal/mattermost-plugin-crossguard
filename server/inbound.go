@@ -144,37 +144,46 @@ func (p *Plugin) handleInboundMessage(connName string) func(data []byte) error {
 				return
 			}
 
+			var (
+				missing  bool
+				remoteID string
+			)
 			switch env.Type {
 			case model.MessageTypePost:
 				if env.PostMessage == nil {
 					p.API.LogError("Inbound post: missing payload", "conn", connName)
 					return
 				}
-				p.handleInboundPost(connName, env.PostMessage)
+				missing = p.handleInboundPost(connName, env.PostMessage, false)
+				remoteID = env.PostMessage.PostID
 			case model.MessageTypeUpdate:
 				if env.PostMessage == nil {
 					p.API.LogError("Inbound update: missing payload", "conn", connName)
 					return
 				}
-				p.handleInboundUpdate(connName, env.PostMessage)
+				missing = p.handleInboundUpdate(connName, env.PostMessage)
+				remoteID = env.PostMessage.PostID
 			case model.MessageTypeDelete:
 				if env.DeleteMessage == nil {
 					p.API.LogError("Inbound delete: missing payload", "conn", connName)
 					return
 				}
-				p.handleInboundDelete(connName, env.DeleteMessage)
+				missing = p.handleInboundDelete(connName, env.DeleteMessage)
+				remoteID = env.DeleteMessage.PostID
 			case model.MessageTypeReactionAdd:
 				if env.ReactionMessage == nil {
 					p.API.LogError("Inbound reaction add: missing payload", "conn", connName)
 					return
 				}
-				p.handleInboundReaction(connName, env.ReactionMessage, true)
+				missing = p.handleInboundReaction(connName, env.ReactionMessage, true)
+				remoteID = env.ReactionMessage.PostID
 			case model.MessageTypeReactionRemove:
 				if env.ReactionMessage == nil {
 					p.API.LogError("Inbound reaction remove: missing payload", "conn", connName)
 					return
 				}
-				p.handleInboundReaction(connName, env.ReactionMessage, false)
+				missing = p.handleInboundReaction(connName, env.ReactionMessage, false)
+				remoteID = env.ReactionMessage.PostID
 			case model.MessageTypeTest:
 				if env.TestMessage != nil {
 					p.API.LogInfo("Received inbound test message", "conn", connName, "id", env.TestMessage.ID)
@@ -183,6 +192,17 @@ func (p *Plugin) handleInboundMessage(connName string) func(data []byte) error {
 				}
 			default:
 				p.API.LogWarn("Unknown inbound message type", "conn", connName, "type", env.Type)
+				return
+			}
+
+			if missing && p.retryQueue != nil {
+				if !p.retryQueue.Enqueue(connName, data, remoteID, env.Type) {
+					p.API.LogError("Missing message: queue full, dropping message",
+						"conn", connName, "type", env.Type, "remote_post_id", remoteID, "queue_size", retryQueueMaxSize)
+					return
+				}
+				p.API.LogWarn("Missing message: queuing for retry",
+					"conn", connName, "type", env.Type, "remote_post_id", remoteID, "queue_size", p.retryQueue.Len())
 			}
 		})
 
@@ -260,11 +280,15 @@ func (p *Plugin) findTeamByRewrite(connName, remoteTeamName string) (*mmModel.Te
 	return team, nil
 }
 
-func (p *Plugin) handleInboundPost(connName string, postMsg *model.PostMessage) {
+// handleInboundPost creates a local post from a remote PostMessage. If the
+// message is a thread reply whose root has no mapping yet, it returns
+// missing=true when lastAttempt=false, so the caller can enqueue for retry.
+// On lastAttempt=true, it creates the post as standalone (no RootId) instead.
+func (p *Plugin) handleInboundPost(connName string, postMsg *model.PostMessage, lastAttempt bool) (missing bool) {
 	team, channel, err := p.resolveTeamAndChannel(connName, postMsg.TeamName, postMsg.ChannelName)
 	if err != nil {
 		p.API.LogWarn("Inbound post: resolve failed", "conn", connName, "error", err.Error())
-		return
+		return false
 	}
 
 	// Idempotency check for at-least-once delivery (Azure Queue).
@@ -274,13 +298,13 @@ func (p *Plugin) handleInboundPost(connName string, postMsg *model.PostMessage) 
 			"conn", connName, "postID", postMsg.PostID, "error", err.Error())
 	}
 	if existingLocalID != "" {
-		return // already processed, skip
+		return false // already processed, skip
 	}
 
 	userID, err := p.resolveInboundUser(postMsg.Username, connName, team.Id, channel.Id)
 	if err != nil {
 		p.API.LogError("Inbound post: resolve user failed", "conn", connName, "username", postMsg.Username, "error", err.Error())
-		return
+		return false
 	}
 
 	post := &mmModel.Post{
@@ -295,56 +319,67 @@ func (p *Plugin) handleInboundPost(connName string, postMsg *model.PostMessage) 
 		if err != nil {
 			p.API.LogWarn("Inbound post: failed to look up root mapping", "conn", connName, "remote_root_id", postMsg.RootID, "error", err.Error())
 		}
-		if localRootID != "" {
+		switch {
+		case localRootID != "":
 			post.RootId = localRootID
+		case !lastAttempt:
+			// Root not found yet, queue for retry
+			return true
+		default:
+			// lastAttempt and still no root - create as standalone
+			p.API.LogWarn("Inbound post: root not found after retries, creating standalone",
+				"conn", connName, "remote_root_id", postMsg.RootID)
 		}
 	}
 
 	created, appErr := p.API.CreatePost(post)
 	if appErr != nil {
 		p.API.LogError("Inbound post: create failed", "conn", connName, "error", appErr.Error())
-		return
+		return false
 	}
 
 	if err := p.kvstore.SetPostMapping(connName, postMsg.PostID, created.Id); err != nil {
 		p.API.LogError("Inbound post: failed to store post mapping", "conn", connName, "remote_id", postMsg.PostID, "local_id", created.Id, "error", err.Error())
 	}
+	return false
 }
 
-func (p *Plugin) handleInboundUpdate(connName string, postMsg *model.PostMessage) {
+// handleInboundUpdate returns missing=true if the post mapping is not yet
+// available (kv lookup error or empty), signaling the caller to enqueue the
+// message for retry.
+func (p *Plugin) handleInboundUpdate(connName string, postMsg *model.PostMessage) (missing bool) {
 	localPostID, err := p.kvstore.GetPostMapping(connName, postMsg.PostID)
 	if err != nil {
 		p.API.LogError("Inbound update: failed to look up post mapping",
 			"conn", connName, "remote_id", postMsg.PostID, "error", err.Error())
-		return
+		return true
 	}
 	if localPostID == "" {
-		p.API.LogWarn("Inbound update: no post mapping found", "conn", connName, "remote_id", postMsg.PostID)
-		return
+		return true
 	}
 
 	existing, appErr := p.API.GetPost(localPostID)
 	if appErr != nil {
 		p.API.LogError("Inbound update: failed to get local post", "conn", connName, "local_id", localPostID, "error", appErr.Error())
-		return
+		return false
 	}
 
 	existing.Message = postMsg.MessageText
 	if _, appErr := p.API.UpdatePost(existing); appErr != nil {
 		p.API.LogError("Inbound update: failed to update post", "conn", connName, "local_id", localPostID, "error", appErr.Error())
 	}
+	return false
 }
 
-func (p *Plugin) handleInboundDelete(connName string, deleteMsg *model.DeleteMessage) {
+func (p *Plugin) handleInboundDelete(connName string, deleteMsg *model.DeleteMessage) (missing bool) {
 	localPostID, err := p.kvstore.GetPostMapping(connName, deleteMsg.PostID)
 	if err != nil {
 		p.API.LogError("Inbound delete: failed to look up post mapping",
 			"conn", connName, "remote_id", deleteMsg.PostID, "error", err.Error())
-		return
+		return true
 	}
 	if localPostID == "" {
-		p.API.LogWarn("Inbound delete: no post mapping found", "conn", connName, "remote_id", deleteMsg.PostID)
-		return
+		return true
 	}
 
 	if err := p.kvstore.SetDeletingFlag(localPostID); err != nil {
@@ -362,30 +397,30 @@ func (p *Plugin) handleInboundDelete(connName string, deleteMsg *model.DeleteMes
 	if err := p.kvstore.DeletePostMapping(connName, deleteMsg.PostID); err != nil {
 		p.API.LogWarn("Inbound delete: failed to remove post mapping", "conn", connName, "remote_id", deleteMsg.PostID, "error", err.Error())
 	}
+	return false
 }
 
-func (p *Plugin) handleInboundReaction(connName string, reactionMsg *model.ReactionMessage, add bool) {
+func (p *Plugin) handleInboundReaction(connName string, reactionMsg *model.ReactionMessage, add bool) (missing bool) {
 	localPostID, err := p.kvstore.GetPostMapping(connName, reactionMsg.PostID)
 	if err != nil {
 		p.API.LogError("Inbound reaction: failed to look up post mapping",
 			"conn", connName, "remote_id", reactionMsg.PostID, "error", err.Error())
-		return
+		return true
 	}
 	if localPostID == "" {
-		p.API.LogWarn("Inbound reaction: no post mapping found", "conn", connName, "remote_id", reactionMsg.PostID)
-		return
+		return true
 	}
 
 	team, channel, err := p.resolveTeamAndChannel(connName, reactionMsg.TeamName, reactionMsg.ChannelName)
 	if err != nil {
 		p.API.LogWarn("Inbound reaction: resolve failed", "conn", connName, "error", err.Error())
-		return
+		return false
 	}
 
 	userID, err := p.resolveInboundUser(reactionMsg.Username, connName, team.Id, channel.Id)
 	if err != nil {
 		p.API.LogError("Inbound reaction: resolve user failed", "conn", connName, "username", reactionMsg.Username, "error", err.Error())
-		return
+		return false
 	}
 
 	reaction := &mmModel.Reaction{
@@ -403,6 +438,7 @@ func (p *Plugin) handleInboundReaction(connName string, reactionMsg *model.React
 			p.API.LogError("Inbound reaction: remove failed", "conn", connName, "post_id", localPostID, "error", appErr.Error())
 		}
 	}
+	return false
 }
 
 // watchFiles uses the provider's WatchFiles to monitor for new file uploads.

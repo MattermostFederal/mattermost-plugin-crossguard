@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/blockblob"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/container"
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azqueue"
 	"github.com/mattermost/mattermost/server/public/plugin"
@@ -21,7 +20,6 @@ const (
 	azureMaxMessageSize = 48000
 
 	azureQueuePollInterval = 5 * time.Second
-	azureBlobPollInterval  = 15 * time.Second
 	azureVisibilityTimeout = 5 * time.Minute
 	azureDequeueBatchSize  = int32(32)
 
@@ -29,6 +27,10 @@ const (
 	azureErrContainerAlreadyExists = "ContainerAlreadyExists"
 	blobMetadataHeadersKey         = "crossguard_headers"
 )
+
+// azureBlobPollInterval is the blob poll interval for azureProvider. Declared
+// as var so tests can shrink it.
+var azureBlobPollInterval = 15 * time.Second
 
 // azureQueuer abstracts Azure Queue operations for testability.
 type azureQueuer interface {
@@ -40,16 +42,30 @@ type azureQueuer interface {
 // azureProvider implements QueueProvider using Azure Queue Storage and Azure Blob Storage.
 type azureProvider struct {
 	queueClient     azureQueuer
-	containerClient *container.Client
+	containerClient azureBlobOps
 	api             plugin.API
-	cfg             AzureProviderConfig
+	cfg             AzureQueueProviderConfig
 	cancel          context.CancelFunc
 	handler         func(data []byte) error
 	pollDone        chan struct{}
 }
 
-func newAzureProvider(cfg AzureProviderConfig, api plugin.API) (QueueProvider, error) {
-	queueClient, err := azqueue.NewQueueClientFromConnectionString(cfg.ConnectionString, cfg.QueueName, nil)
+// buildQueueURL joins a queue service URL and queue name into a full queue URL.
+func buildQueueURL(serviceURL, queueName string) string {
+	return strings.TrimRight(serviceURL, "/") + "/" + queueName
+}
+
+// buildBlobContainerURL joins a blob service URL and container name into a full container URL.
+func buildBlobContainerURL(serviceURL, containerName string) string {
+	return strings.TrimRight(serviceURL, "/") + "/" + containerName
+}
+
+func newAzureProvider(cfg AzureQueueProviderConfig, api plugin.API) (QueueProvider, error) {
+	queueCred, err := azqueue.NewSharedKeyCredential(cfg.AccountName, cfg.AccountKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Azure Queue shared key credential: %w", err)
+	}
+	queueClient, err := azqueue.NewQueueClientWithSharedKeyCredential(buildQueueURL(cfg.QueueServiceURL, cfg.QueueName), queueCred, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Azure Queue client: %w", err)
 	}
@@ -64,17 +80,22 @@ func newAzureProvider(cfg AzureProviderConfig, api plugin.API) (QueueProvider, e
 		}
 	}
 
-	var containerClient *container.Client
+	var blobOps azureBlobOps
 	if cfg.BlobContainerName != "" {
-		containerClient, err = container.NewClientFromConnectionString(cfg.ConnectionString, cfg.BlobContainerName, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Azure Blob container client: %w", err)
+		blobCred, credErr := container.NewSharedKeyCredential(cfg.AccountName, cfg.AccountKey)
+		if credErr != nil {
+			return nil, fmt.Errorf("failed to create Azure Blob shared key credential: %w", credErr)
 		}
+		containerClient, clientErr := container.NewClientWithSharedKeyCredential(buildBlobContainerURL(cfg.BlobServiceURL, cfg.BlobContainerName), blobCred, nil)
+		if clientErr != nil {
+			return nil, fmt.Errorf("failed to create Azure Blob container client: %w", clientErr)
+		}
+		blobOps = &containerClientAdapter{client: containerClient}
 
 		// Ensure the blob container exists (fresh timeout, independent of queue creation).
 		blobCtx, blobCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer blobCancel()
-		if _, createErr := containerClient.Create(blobCtx, nil); createErr != nil {
+		if createErr := blobOps.CreateContainer(blobCtx); createErr != nil {
 			if !strings.Contains(createErr.Error(), azureErrContainerAlreadyExists) {
 				api.LogWarn("Azure Blob: could not create container (may already exist)", "container", cfg.BlobContainerName, "error", createErr.Error())
 			}
@@ -83,7 +104,7 @@ func newAzureProvider(cfg AzureProviderConfig, api plugin.API) (QueueProvider, e
 
 	return &azureProvider{
 		queueClient:     queueClient,
-		containerClient: containerClient,
+		containerClient: blobOps,
 		api:             api,
 		cfg:             cfg,
 	}, nil
@@ -186,8 +207,6 @@ func (a *azureProvider) UploadFile(ctx context.Context, key string, data []byte,
 		return fmt.Errorf("blob container not configured")
 	}
 
-	blobClient := a.containerClient.NewBlockBlobClient(key)
-
 	meta := azureBlobMetadata{Headers: headers}
 	metaJSON, _ := json.Marshal(meta)
 
@@ -196,10 +215,7 @@ func (a *azureProvider) UploadFile(ctx context.Context, key string, data []byte,
 		blobMetadataHeadersKey: &encoded,
 	}
 
-	_, err := blobClient.Upload(ctx, newNopCloser(data), &blockblob.UploadOptions{
-		Metadata: blobMeta,
-	})
-	if err != nil {
+	if err := a.containerClient.UploadBlob(ctx, key, data, blobMeta); err != nil {
 		return fmt.Errorf("failed to upload blob %q: %w", key, err)
 	}
 	return nil
@@ -210,7 +226,6 @@ func (a *azureProvider) WatchFiles(ctx context.Context, handler func(key string,
 		return nil
 	}
 
-	var lastMarker string
 	for {
 		select {
 		case <-ctx.Done():
@@ -218,62 +233,35 @@ func (a *azureProvider) WatchFiles(ctx context.Context, handler func(key string,
 		case <-time.After(azureBlobPollInterval):
 		}
 
-		pager := a.containerClient.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{
-			Marker:  optStr(lastMarker),
-			Include: container.ListBlobsInclude{Metadata: true},
-		})
+		blobs, err := a.containerClient.ListBlobs(ctx, "", true)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			a.api.LogError("Azure Blob list failed", "container", a.cfg.BlobContainerName, "error", err.Error())
+			continue
+		}
 
-		for pager.More() {
-			resp, err := pager.NextPage(ctx)
+		for _, blob := range blobs {
+			headers := extractBlobHeaders(blob.Metadata)
+
+			data, err := a.containerClient.DownloadBlob(ctx, blob.Name)
 			if err != nil {
-				if ctx.Err() != nil {
-					return nil
-				}
-				a.api.LogError("Azure Blob list failed", "container", a.cfg.BlobContainerName, "error", err.Error())
-				break
+				a.api.LogWarn("Azure Blob: failed to download",
+					"blob", blob.Name, "error", err.Error())
+				continue
 			}
 
-			for _, blob := range resp.Segment.BlobItems {
-				if blob.Name == nil {
-					continue
-				}
+			if err := handler(blob.Name, data, headers); err != nil {
+				a.api.LogWarn("Azure Blob: handler returned error",
+					"blob", blob.Name, "error", err.Error())
+				continue
+			}
 
-				blobClient := a.containerClient.NewBlockBlobClient(*blob.Name)
-
-				headers := extractBlobHeaders(blob.Metadata)
-
-				// Download blob data.
-				downloadResp, err := blobClient.DownloadStream(ctx, nil)
-				if err != nil {
-					a.api.LogWarn("Azure Blob: failed to download",
-						"blob", *blob.Name, "error", err.Error())
-					continue
-				}
-
-				data, err := io.ReadAll(downloadResp.Body)
-				_ = downloadResp.Body.Close()
-				if err != nil {
-					a.api.LogWarn("Azure Blob: failed to read download",
-						"blob", *blob.Name, "error", err.Error())
-					continue
-				}
-
-				if err := handler(*blob.Name, data, headers); err != nil {
-					a.api.LogWarn("Azure Blob: handler returned error",
-						"blob", *blob.Name, "error", err.Error())
-					continue
-				}
-
-				// Delete blob after successful processing. Only advance the
-				// marker if the delete succeeds so the blob is re-listed on
-				// the next poll cycle when deletion fails.
-				if _, err := blobClient.Delete(ctx, nil); err != nil {
-					a.api.LogWarn("Azure Blob: failed to delete after processing",
-						"blob", *blob.Name, "error", err.Error())
-					continue
-				}
-
-				lastMarker = *blob.Name
+			if err := a.containerClient.DeleteBlob(ctx, blob.Name); err != nil {
+				a.api.LogWarn("Azure Blob: failed to delete after processing",
+					"blob", blob.Name, "error", err.Error())
+				continue
 			}
 		}
 	}
@@ -293,9 +281,13 @@ func (a *azureProvider) Close() error {
 	return nil
 }
 
-// testAzureConnection tests connectivity to Azure Queue Storage by sending and receiving a test message.
-func testAzureConnection(cfg AzureProviderConfig) error {
-	queueClient, err := azqueue.NewQueueClientFromConnectionString(cfg.ConnectionString, cfg.QueueName, nil)
+// testAzureQueueConnection tests connectivity to Azure Queue Storage by sending and receiving a test message.
+func testAzureQueueConnection(cfg AzureQueueProviderConfig) error {
+	cred, err := azqueue.NewSharedKeyCredential(cfg.AccountName, cfg.AccountKey)
+	if err != nil {
+		return fmt.Errorf("failed to create shared key credential: %w", err)
+	}
+	queueClient, err := azqueue.NewQueueClientWithSharedKeyCredential(buildQueueURL(cfg.QueueServiceURL, cfg.QueueName), cred, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create queue client: %w", err)
 	}

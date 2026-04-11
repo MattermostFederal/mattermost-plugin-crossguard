@@ -988,12 +988,12 @@ Topology 3: Guard Network (Classified)
         <p>
             Transport connections are configured in the Mattermost System Console under
             <strong>Plugins &gt; Cross Guard</strong>. Inbound and outbound connections are
-            configured as JSON arrays. Each connection specifies a provider type (NATS or Azure
-            Queue Storage) along with provider-specific settings:
+            configured as JSON arrays. Each connection specifies a provider type (NATS, Azure
+            Queue Storage, or Azure Blob Storage) along with provider-specific settings:
         </p>
         <ul>
             <li><strong>name:</strong> Unique identifier, lowercase alphanumeric with hyphens (e.g., <code>relay-to-server-b</code>)</li>
-            <li><strong>provider:</strong> Transport provider type (<code>"nats"</code> or <code>"azure"</code>). Provider-specific fields are nested under the corresponding key.</li>
+            <li><strong>provider:</strong> Transport provider type (<code>"nats"</code>, <code>"azure-queue"</code>, or <code>"azure-blob"</code>). Provider-specific fields are nested under the corresponding key.</li>
         </ul>
         <h4>NATS Provider Fields (nested under <code>"nats"</code>)</h4>
         <ul>
@@ -1002,11 +1002,21 @@ Topology 3: Guard Network (Classified)
             <li><strong>TLS settings:</strong> <code>tls_enabled</code>, <code>client_cert</code>, <code>client_key</code>, <code>ca_cert</code></li>
             <li><strong>Auth settings:</strong> <code>auth_type</code> (<code>none</code>, <code>token</code>, or <code>credentials</code>), plus type-specific fields</li>
         </ul>
-        <h4>Azure Provider Fields (nested under <code>"azure"</code>)</h4>
+        <h4>Azure Queue Provider Fields (nested under <code>"azure_queue"</code>)</h4>
         <ul>
-            <li><strong>connection_string:</strong> Azure Storage connection string (contains the account name and key; treated as a secret, encrypted at rest by Mattermost)</li>
+            <li><strong>queue_service_url:</strong> Azure Queue Storage service URL (e.g., <code>https://&lt;account&gt;.queue.core.windows.net</code>)</li>
+            <li><strong>blob_service_url:</strong> Azure Blob Storage service URL, required when <code>file_transfer_enabled</code> is true</li>
+            <li><strong>account_name / account_key:</strong> Shared-key credentials (treated as secrets, encrypted at rest by Mattermost)</li>
             <li><strong>queue_name:</strong> Name of the Azure Storage queue (user-configurable, created automatically if it does not exist)</li>
             <li><strong>blob_container_name:</strong> Name of the Azure Blob container for file transfers (user-configurable, created automatically if it does not exist)</li>
+        </ul>
+        <h4>Azure Blob Provider Fields (nested under <code>"azure_blob"</code>)</h4>
+        <ul>
+            <li><strong>service_url:</strong> Azure Blob Storage service URL</li>
+            <li><strong>account_name / account_key:</strong> Shared-key credentials (treated as secrets, encrypted at rest by Mattermost)</li>
+            <li><strong>blob_container_name:</strong> Container that holds both batch WAL blobs and deferred file blobs (auto-created if missing)</li>
+            <li><strong>flush_interval_seconds:</strong> Interval at which the outbound WAL buffer is sealed and uploaded as a batch blob. Default 60 seconds, minimum 5.</li>
+            <li><strong>blob_lock_max_age_seconds:</strong> Maximum lease age before a stall is broken by another inbound poller. Default 300 seconds, minimum 30.</li>
         </ul>
         <p>
             Configuration changes trigger live reconnection. The plugin closes existing transport

@@ -1,9 +1,12 @@
 import manifest from 'manifest';
 import React from 'react';
 
+import {providerLabel} from '../provider_label';
+
 interface ConnectionStatus {
     name: string;
     direction: string;
+    provider?: string;
     linked: boolean;
     orphaned?: boolean;
     remote_team_name?: string;
@@ -360,9 +363,8 @@ const CrossguardChannelModal: React.FC = () => {
                         color: accentColor,
                     };
 
-                    const badgeLabel = isInbound ?
-                        'NATS \u2192 MATTERMOST' :
-                        'MATTERMOST \u2192 NATS';
+                    const provLabel = providerLabel(conn.provider);
+                    const badgeLabel = isInbound ? `${provLabel} \u2192 MATTERMOST` : `MATTERMOST \u2192 ${provLabel}`;
 
                     return (
                         <div

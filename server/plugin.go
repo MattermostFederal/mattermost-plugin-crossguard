@@ -50,6 +50,9 @@ type Plugin struct {
 	outboundConns []outboundConn
 	inboundMu     sync.RWMutex
 	inboundConns  []inboundConn
+
+	nodeID     string
+	retryQueue *retryQueue
 }
 
 func (p *Plugin) OnActivate() error {
@@ -91,6 +94,12 @@ func (p *Plugin) OnActivate() error {
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	p.relaySem = make(chan struct{}, relaySemaphoreSize)
 	p.fileSem = make(chan struct{}, fileSemaphoreSize)
+	p.nodeID = model.NewId()
+
+	maxAge := p.computeRetryMaxAge()
+	p.retryQueue = newRetryQueue(maxAge)
+	p.retryQueue.Start(p.ctx, p.retryInboundMessage, p.handleRetryDropped)
+
 	p.connectOutbound()
 	p.connectInbound()
 
@@ -100,6 +109,12 @@ func (p *Plugin) OnActivate() error {
 func (p *Plugin) OnDeactivate() error {
 	if p.cancel != nil {
 		p.cancel()
+	}
+	// The retry goroutine dispatches to inbound handlers, so wait for it to
+	// finish before tearing down inbound state. cancel() above signals it to
+	// exit at the next tick.
+	if p.retryQueue != nil {
+		p.retryQueue.Wait()
 	}
 	p.closeInbound()
 	p.wg.Wait()

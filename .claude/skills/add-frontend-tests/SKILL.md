@@ -31,7 +31,14 @@ This executes two commands:
 - `npm run test:coverage` - unit tests (`.spec.ts`) with C8, reports to `webapp/coverage/`
 - `npm run test:pw-ct-coverage` - component tests (`.pw.tsx`) with C8, reports to `webapp/coverage-ct/`
 
-Parse the C8 text output to build a prioritized list:
+**Two-gate exit check.** Only stop if BOTH gates pass:
+
+1. **Overall gate**: total coverage is ≥ 90%.
+2. **Per-file floor gate**: no individual source file is below 70% coverage. When evaluating this gate, exclude test files and test utilities: any `*.pw.tsx`, any `*.spec.ts`, and anything under `test-utils/`.
+
+If both gates pass, report the overall coverage number plus confirmation that every non-test source file is at or above the 70% floor, congratulate the user, and exit plan mode. No additional tests are needed.
+
+If either gate fails (overall < 90%, OR any non-test source file < 70%), parse the C8 text output to build a prioritized list:
 - **Tier 1**: Files/functions at 0% coverage (completely untested)
 - **Tier 2**: Files/functions below 60% coverage (significant gaps)
 - **Tier 3**: Files/functions below 80% coverage (moderate gaps)
@@ -48,14 +55,19 @@ For each file in your priority list:
 3. **Identify untested paths**: error states, loading states, empty/null props, user interactions, API failures, edge cases
 4. **Note dependencies**: what needs mocking (API routes, global state, browser APIs)
 
-### Step 4: Build Todo List
+### Step 4: Build Task List
 
-Use `TaskCreate` to create one task per component or logical group of files needing tests. Each task should include:
+Before creating anything, call `TaskList` to check for pre-existing tasks from a prior run of this skill. Reuse, update, or delete stale tasks instead of creating duplicates.
+
+Then use `TaskCreate` to create one task per component or logical group of files needing tests. Every task MUST set all three fields:
 
 - **subject**: `Test <ComponentName> in <file>` (imperative form)
 - **description**: Current coverage %, what specifically needs testing (list the untested states, interactions, error paths), and the tier (1-4)
+- **activeForm**: Present-continuous form shown in the spinner, e.g. `Testing CrossguardUserPopover error states`
 
 Group related files into a single task when they share setup (e.g., a component and its Story wrapper). Order tasks by tier (Tier 1 first).
+
+**The task list created here is the source of truth for Phase B.** Do not execute any test-writing work in Phase B that is not represented by a task. If you discover new work mid-execution, create a new task for it before doing the work.
 
 Example tasks:
 - `Test CrossguardUserPopover error and empty states in CrossguardUserPopover.pw.tsx` (Tier 1, 0% coverage, needs route mocks for API failure + empty user list)
@@ -73,7 +85,14 @@ After the user approves the plan, work through the todo list writing tests.
 
 ### Step 6: Write Tests Using Project Patterns
 
-Mark each task as `in_progress` (via `TaskUpdate`) before starting it, and `completed` when tests pass.
+Phase B is a strict loop driven by the task list. Never skip a step, and never hold more than one task in `in_progress` at a time.
+
+1. Call `TaskList` and pick the next `pending` task (respect tier ordering from Step 4).
+2. Call `TaskUpdate` with `status: "in_progress"` **before** reading any source file or writing any test code for that task.
+3. Do the work: read source, read existing tests, write subtests, run `npm run test` and/or `npm run test:pw-ct`, run `make check-style`.
+4. Only after tests pass and `make check-style` is clean, call `TaskUpdate` with `status: "completed"`.
+5. If blocked, leave the task `in_progress`, create a new task via `TaskCreate` describing the blocker, and move on. Do not silently skip.
+6. Loop back to step 1. Stop when `TaskList` shows no `pending` tasks.
 
 ### Two Test Types
 
@@ -308,28 +327,28 @@ Add tests to existing test files or create new ones following the pattern:
 **Plugin class tests:**
 - `src/index.tsx` -> `src/index.pw.tsx`
 
-## Step 7: Implement in Phases
+## Step 7: Tier Reference (Task Ordering)
 
-Work through tiers in order. After each phase, validate before moving on.
+You do not run a separate "phases" workflow. You walk the task list from Step 4 top-to-bottom using the loop in Step 6. The tiers below are only a reference for how tasks should already be ordered, and for what kind of work each tier tends to involve:
 
-**Phase 1 - Quick wins (0% coverage, simple components):**
+**Tier 1a - Quick wins (0% coverage, simple components):**
 Components or utilities with no tests at all. Start with the simplest ones to build momentum.
 
-**Phase 2 - Component tests (low coverage components):**
+**Tier 1b - Component tests (low coverage components):**
 Components that have some tests but miss important states (error, loading, empty). Add edge case test files if the main test file is already large.
 
-**Phase 3 - Interaction and integration tests:**
+**Tier 2 - Interaction and integration tests:**
 Test complex user flows: modal open/close/submit, form validation, multi-step interactions, API call chains.
 
-**Phase 4 - Edge cases and error resilience:**
+**Tier 3 - Edge cases and error resilience:**
 Malformed JSON inputs, network failures, rapid user interactions, concurrent state updates, cleanup during unmount.
 
-**Phase 5 - Story wrapper creation (if needed):**
-If a component needs internal state exposed for testing, create a `*Story.tsx` wrapper following the existing pattern in `ConnectionSettingsStory.tsx`. The story component captures callbacks via `window.__testCalls`.
+**Tier 4 - Story wrapper creation (if needed):**
+If a component needs internal state exposed for testing, create a `*Story.tsx` wrapper following the existing pattern in `ConnectionSettingsStory.tsx`. The story component captures callbacks via `window.__testCalls`. Create an explicit task for the wrapper itself before creating tasks for the tests that depend on it.
 
-## Step 8: Validate After Each Phase
+## Step 8: Validate After Each Task
 
-After writing each batch of tests:
+Validation runs per task, not per batch. For the currently `in_progress` task, run:
 
 ```bash
 # Unit tests pass
@@ -345,13 +364,13 @@ make check-style
 make coverage-frontend 2>&1
 ```
 
-Compare coverage numbers against the baseline from Step 2. If a file you targeted still shows low coverage, your tests aren't exercising the right code paths. Re-read the source and fix.
+Compare coverage numbers against the baseline from Step 2. If a file you targeted still shows low coverage, your tests aren't exercising the right code paths. Re-read the source and fix before marking the task complete.
 
-Mark completed tasks via `TaskUpdate` with `status: "completed"` as each batch passes.
+Only after all four commands succeed, call `TaskUpdate` with `status: "completed"` for that task. Then return to Step 6 and pick up the next `pending` task.
 
 ## Step 9: Final Verification
 
-After all phases complete:
+After the Step 6 loop drains all pending tasks:
 
 ```bash
 # Full test suite passes
@@ -363,6 +382,8 @@ make check-style
 # Print final coverage summary
 make coverage-frontend 2>&1
 ```
+
+Then call `TaskList` one more time and confirm there are zero `pending` or `in_progress` tasks left. If any remain, either finish them or delete them (via `TaskUpdate` with `status: "deleted"`) before reporting completion. Never leave stale tasks hanging.
 
 Report the before/after coverage delta per file and overall.
 

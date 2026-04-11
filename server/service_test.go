@@ -230,9 +230,12 @@ func TestRedactConnections(t *testing.T) {
 		outbound := []ConnectionConfig{
 			{
 				Name:     "az-conn",
-				Provider: ProviderAzure,
-				Azure: &AzureProviderConfig{
-					ConnectionString:  "DefaultEndpointsProtocol=https;AccountName=test",
+				Provider: ProviderAzureQueue,
+				AzureQueue: &AzureQueueProviderConfig{
+					QueueServiceURL:   "https://test.queue.core.windows.net",
+					BlobServiceURL:    "https://test.blob.core.windows.net",
+					AccountName:       "test",
+					AccountKey:        "super-secret",
 					QueueName:         "my-queue",
 					BlobContainerName: "my-container",
 				},

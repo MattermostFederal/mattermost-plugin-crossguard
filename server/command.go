@@ -32,6 +32,40 @@ func connectionLabel(format string, fileEnabled bool, filterMode, filterTypes st
 	return label
 }
 
+func providerLabel(provider string) string {
+	if provider == "" {
+		return ProviderNATS
+	}
+	return provider
+}
+
+func providerDetails(conn RedactedConnection) string {
+	switch conn.Provider {
+	case ProviderAzureQueue:
+		parts := []string{"queue: " + conn.QueueName}
+		if conn.BlobContainerName != "" {
+			parts = append(parts, "blob: "+conn.BlobContainerName)
+		}
+		return strings.Join(parts, ", ")
+	case ProviderAzureBlob:
+		return "blob: " + conn.BlobContainerName
+	case ProviderNATS, "":
+		parts := []string{}
+		if conn.Address != "" {
+			parts = append(parts, conn.Address)
+		}
+		if conn.Subject != "" {
+			parts = append(parts, "subject: "+conn.Subject)
+		}
+		if conn.AuthType != "" {
+			parts = append(parts, "auth: "+conn.AuthType)
+		}
+		return strings.Join(parts, ", ")
+	default:
+		return conn.Provider
+	}
+}
+
 func fileTransferLabelEmoji(enabled bool, filterMode, filterTypes string) string {
 	if !enabled {
 		return ":x: Off"
@@ -334,7 +368,7 @@ func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandRespo
 				continue
 			}
 			label := connectionLabel(cs.MessageFormat, cs.FileTransferEnabled, cs.FileFilterMode, cs.FileFilterTypes)
-			fmt.Fprintf(&sb, "- `%s:%s` (%s)\n", cs.Direction, cs.Name, label)
+			fmt.Fprintf(&sb, "- `%s:%s` (%s, %s)\n", cs.Direction, cs.Name, providerLabel(cs.Provider), label)
 		}
 	}
 
@@ -345,7 +379,7 @@ func (p *Plugin) executeStatusTeam(teamID, channelID string) *model.CommandRespo
 			key := connKey(tc)
 			cc := connMap[key]
 			clabel := connectionLabel(cc.MessageFormat, cc.FileTransferEnabled, cc.FileFilterMode, cc.FileFilterTypes)
-			fmt.Fprintf(&sb, "- `%s` (%s)\n", key, clabel)
+			fmt.Fprintf(&sb, "- `%s` (%s, %s)\n", key, providerLabel(cc.Provider), clabel)
 		}
 	}
 
@@ -393,7 +427,7 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 			key := connKey(tc)
 			cc := connMap[key]
 			clabel := connectionLabel(cc.MessageFormat, cc.FileTransferEnabled, cc.FileFilterMode, cc.FileFilterTypes)
-			fmt.Fprintf(&sb, "- `%s` (%s)\n", key, clabel)
+			fmt.Fprintf(&sb, "- `%s` (%s, %s)\n", key, providerLabel(cc.Provider), clabel)
 		}
 	}
 
@@ -415,14 +449,14 @@ func (p *Plugin) executeStatusSystemAdmin(channelID string) *model.CommandRespon
 
 	if len(resp.Connections) > 0 {
 		sb.WriteString("\n**Connections:**\n\n")
-		sb.WriteString("| Name | Direction | Address | Auth Type | Subject | Format | Files |\n")
-		sb.WriteString("|:-----|:----------|:--------|:----------|:--------|:-------|:------|\n")
+		sb.WriteString("| Name | Direction | Provider | Details | Format | Files |\n")
+		sb.WriteString("|:-----|:----------|:---------|:--------|:-------|:------|\n")
 		for _, conn := range resp.Connections {
 			format := conn.MessageFormat
 			if format == "" {
 				format = "json"
 			}
-			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %s | %s |\n", conn.Name, conn.Direction, conn.Address, conn.AuthType, conn.Subject, format, fileTransferLabelEmoji(conn.FileTransferEnabled, conn.FileFilterMode, conn.FileFilterTypes))
+			fmt.Fprintf(&sb, "| %s | %s | %s | %s | %s | %s |\n", conn.Name, conn.Direction, providerLabel(conn.Provider), providerDetails(conn), format, fileTransferLabelEmoji(conn.FileTransferEnabled, conn.FileFilterMode, conn.FileFilterTypes))
 		}
 	}
 

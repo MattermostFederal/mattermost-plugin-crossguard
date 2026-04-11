@@ -17,12 +17,12 @@ const natsConnection = {
 
 const azureConnection = {
     name: 'test-azure',
-    provider: 'azure',
+    provider: 'azure-queue',
     file_transfer_enabled: false,
     file_filter_mode: '',
     file_filter_types: '',
     message_format: 'json',
-    azure: {connection_string: 'DefaultEndpointsProtocol=https;AccountName=test', queue_name: 'test-queue', blob_container_name: ''},
+    azure_queue: {queue_service_url: 'https://test.queue.core.windows.net', blob_service_url: 'https://test.blob.core.windows.net', account_name: 'test', account_key: 'abc', queue_name: 'test-queue', blob_container_name: ''},
 };
 
 function defaultProps(overrides?: Partial<{id: string; value: string; disabled: boolean}>) {
@@ -193,7 +193,7 @@ test.describe('ConnectionSettings', () => {
 
         test('displays Queue metadata', async ({mount}) => {
             const component = await mount(<ConnectionSettingsStory {...defaultProps({value: singleAzure})}/>);
-            await expect(component.getByText('Queue')).toBeVisible();
+            await expect(component.getByText('Queue', {exact: true})).toBeVisible();
             await expect(component.getByText('test-queue')).toBeVisible();
         });
 
@@ -504,8 +504,9 @@ test.describe('ConnectionSettings', () => {
             const component = await mount(<ConnectionSettingsStory {...defaultProps()}/>);
             await component.getByRole('button', {name: '+ Add Connection'}).click();
             const providerSelect = component.locator('select').first();
-            await providerSelect.selectOption('azure');
-            await expect(component.getByText('Connection String', {exact: true})).toBeVisible();
+            await providerSelect.selectOption('azure-queue');
+            await expect(component.getByText('Queue Service URL', {exact: true})).toBeVisible();
+            await expect(component.getByText('Account Key', {exact: true})).toBeVisible();
             await expect(component.getByText('Queue Name', {exact: true})).toBeVisible();
         });
 
@@ -514,7 +515,7 @@ test.describe('ConnectionSettings', () => {
             await component.getByRole('button', {name: '+ Add Connection'}).click();
             await expect(component.getByText('Address')).toBeVisible();
             const providerSelect = component.locator('select').first();
-            await providerSelect.selectOption('azure');
+            await providerSelect.selectOption('azure-queue');
             await expect(component.getByText('Address')).not.toBeVisible();
         });
 
@@ -522,17 +523,17 @@ test.describe('ConnectionSettings', () => {
             const component = await mount(<ConnectionSettingsStory {...defaultProps()}/>);
             await component.getByRole('button', {name: '+ Add Connection'}).click();
             const providerSelect = component.locator('select').first();
-            await providerSelect.selectOption('azure');
-            await expect(component.getByText('Connection String', {exact: true})).toBeVisible();
+            await providerSelect.selectOption('azure-queue');
+            await expect(component.getByText('Queue Service URL', {exact: true})).toBeVisible();
             await providerSelect.selectOption('nats');
-            await expect(component.getByText('Connection String', {exact: true})).not.toBeVisible();
+            await expect(component.getByText('Queue Service URL', {exact: true})).not.toBeVisible();
         });
 
         test('initializes empty config when switching providers', async ({mount}) => {
             const component = await mount(<ConnectionSettingsStory {...defaultProps()}/>);
             await component.getByRole('button', {name: '+ Add Connection'}).click();
             const providerSelect = component.locator('select').first();
-            await providerSelect.selectOption('azure');
+            await providerSelect.selectOption('azure-queue');
 
             // Azure fields should have empty/default values
             const connStringInput = component.locator('input[type="password"]');
@@ -638,15 +639,15 @@ test.describe('ConnectionSettings', () => {
             await expect(component.getByText('Username and password are required when auth type is Credentials.')).toBeVisible();
         });
 
-        test('shows error when Azure connection_string is empty', async ({mount}) => {
+        test('shows error when Azure queue_service_url is empty', async ({mount}) => {
             const component = await mount(<ConnectionSettingsStory {...defaultProps()}/>);
             await component.getByRole('button', {name: '+ Add Connection'}).click();
             const nameInput = component.locator('input[placeholder="my-connection"]');
             await nameInput.fill('test');
             const providerSelect = component.locator('select').first();
-            await providerSelect.selectOption('azure');
+            await providerSelect.selectOption('azure-queue');
             await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
-            await expect(component.getByText('Connection String is required.')).toBeVisible();
+            await expect(component.getByText('Queue Service URL is required.')).toBeVisible();
         });
 
         test('shows error when Azure queue_name is empty', async ({mount}) => {
@@ -655,9 +656,10 @@ test.describe('ConnectionSettings', () => {
             const nameInput = component.locator('input[placeholder="my-connection"]');
             await nameInput.fill('test');
             const providerSelect = component.locator('select').first();
-            await providerSelect.selectOption('azure');
-            const connStringInput = component.locator('input[type="password"]');
-            await connStringInput.fill('DefaultEndpointsProtocol=https;AccountName=test');
+            await providerSelect.selectOption('azure-queue');
+            await component.locator('input[placeholder="https://myaccount.queue.core.windows.net"]').fill('https://test.queue.core.windows.net');
+            await component.locator('input[placeholder="myaccount"]').fill('test');
+            await component.locator('input[placeholder="Paste key from Azure portal"]').fill('abc');
             await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
             await expect(component.getByText('Queue Name is required.')).toBeVisible();
         });
@@ -787,7 +789,7 @@ test.describe('ConnectionSettings', () => {
             const component = await mount(<ConnectionSettingsStory {...defaultProps()}/>);
             await component.getByRole('button', {name: '+ Add Connection'}).click();
             const providerSelect = component.locator('select').first();
-            await providerSelect.selectOption('azure');
+            await providerSelect.selectOption('azure-queue');
             await component.getByText('Enable File Transfer').click();
             await expect(component.getByText('Blob Container Name')).toBeVisible();
             await expect(component.locator('input[placeholder="crossguard-files"]')).toBeVisible();
@@ -809,7 +811,7 @@ test.describe('ConnectionSettings', () => {
 
             // Switch to Azure
             const providerSelect = component.locator('select').first();
-            await providerSelect.selectOption('azure');
+            await providerSelect.selectOption('azure-queue');
             await expect(component.getByText('Files are stored in Azure Blob Storage.')).toBeVisible();
         });
     });
@@ -866,9 +868,10 @@ test.describe('ConnectionSettings', () => {
             const nameInput = component.locator('input[placeholder="my-connection"]');
             await nameInput.fill('new-azure');
             const providerSelect = component.locator('select').first();
-            await providerSelect.selectOption('azure');
-            const connStringInput = component.locator('input[type="password"]');
-            await connStringInput.fill('DefaultEndpointsProtocol=https;AccountName=test');
+            await providerSelect.selectOption('azure-queue');
+            await component.locator('input[placeholder="https://myaccount.queue.core.windows.net"]').fill('https://test.queue.core.windows.net');
+            await component.locator('input[placeholder="myaccount"]').fill('test');
+            await component.locator('input[placeholder="Paste key from Azure portal"]').fill('dGVzdA==');
             const queueInput = component.locator('input[placeholder="crossguard-messages"]');
             await queueInput.fill('my-queue');
             await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
@@ -877,8 +880,8 @@ test.describe('ConnectionSettings', () => {
             const parsed = JSON.parse(calls.onChange[0].value);
             expect(parsed).toHaveLength(1);
             expect(parsed[0].name).toBe('new-azure');
-            expect(parsed[0].provider).toBe('azure');
-            expect(parsed[0].azure.queue_name).toBe('my-queue');
+            expect(parsed[0].provider).toBe('azure-queue');
+            expect(parsed[0].azure_queue.queue_name).toBe('my-queue');
             expect(parsed[0].nats).toBeUndefined();
         });
 
@@ -1068,9 +1071,11 @@ test.describe('ConnectionSettings', () => {
             const nameInput = component.locator('input[placeholder="my-connection"]');
             await nameInput.fill('azure-blob');
             const providerSelect = component.locator('select').first();
-            await providerSelect.selectOption('azure');
-            const connStringInput = component.locator('input[type="password"]');
-            await connStringInput.fill('DefaultEndpointsProtocol=https;AccountName=test');
+            await providerSelect.selectOption('azure-queue');
+            await component.locator('input[placeholder="https://myaccount.queue.core.windows.net"]').fill('https://test.queue.core.windows.net');
+            await component.locator('input[placeholder="https://myaccount.blob.core.windows.net"]').fill('https://test.blob.core.windows.net');
+            await component.locator('input[placeholder="myaccount"]').fill('test');
+            await component.locator('input[placeholder="Paste key from Azure portal"]').fill('dGVzdA==');
             const queueInput = component.locator('input[placeholder="crossguard-messages"]');
             await queueInput.fill('test-queue');
 
@@ -1082,7 +1087,7 @@ test.describe('ConnectionSettings', () => {
             await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
             const calls = await getCalls(page);
             const saved = JSON.parse(calls.onChange[calls.onChange.length - 1].value);
-            expect(saved[0].azure.blob_container_name).toBe('my-blob-container');
+            expect(saved[0].azure_queue.blob_container_name).toBe('my-blob-container');
         });
 
         test('XML message format saved correctly in outbound JSON', async ({mount, page}) => {
@@ -1114,7 +1119,7 @@ test.describe('ConnectionSettings', () => {
             await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
             const calls = await getCalls(page);
             const saved = JSON.parse(calls.onChange[calls.onChange.length - 1].value);
-            expect(saved[0].azure).toBeUndefined();
+            expect(saved[0].azure_queue).toBeUndefined();
             expect(saved[0].nats).toBeDefined();
         });
 
@@ -1162,7 +1167,7 @@ test.describe('ConnectionSettings', () => {
             const nameInput = component.locator('input[placeholder="my-connection"]');
             await nameInput.fill('my-conn');
             const providerSelect = component.locator('select').first();
-            await providerSelect.selectOption('azure');
+            await providerSelect.selectOption('azure-queue');
             await expect(nameInput).toHaveValue('my-conn');
         });
 
@@ -1178,7 +1183,7 @@ test.describe('ConnectionSettings', () => {
 
             // Switch to Azure
             const providerSelect = component.locator('select').first();
-            await providerSelect.selectOption('azure');
+            await providerSelect.selectOption('azure-queue');
 
             // Switch back to NATS
             await providerSelect.selectOption('nats');
@@ -1415,15 +1420,15 @@ test.describe('Form validation - NATS', () => {
 // 3. Form Validation - Azure-Specific
 // ---------------------------------------------------------------------------
 test.describe('Form validation - Azure', () => {
-    test('empty connection_string shows required error', async ({mount}) => {
+    test('empty queue_service_url shows required error', async ({mount}) => {
         const component = await mount(<ConnectionSettingsStory {...props()}/>);
         await component.getByRole('button', {name: '+ Add Connection'}).click();
         const nameInput = component.locator('input[placeholder="my-connection"]');
         await nameInput.fill('test');
         const providerSelect = component.locator('select').first();
-        await providerSelect.selectOption('azure');
+        await providerSelect.selectOption('azure-queue');
         await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
-        await expect(component.getByText('Connection String is required.')).toBeVisible();
+        await expect(component.getByText('Queue Service URL is required.')).toBeVisible();
     });
 
     test('empty queue_name shows required error', async ({mount}) => {
@@ -1432,9 +1437,10 @@ test.describe('Form validation - Azure', () => {
         const nameInput = component.locator('input[placeholder="my-connection"]');
         await nameInput.fill('test');
         const providerSelect = component.locator('select').first();
-        await providerSelect.selectOption('azure');
-        const connStringInput = component.locator('input[type="password"]');
-        await connStringInput.fill('DefaultEndpointsProtocol=https;AccountName=test');
+        await providerSelect.selectOption('azure-queue');
+        await component.locator('input[placeholder="https://myaccount.queue.core.windows.net"]').fill('https://test.queue.core.windows.net');
+        await component.locator('input[placeholder="myaccount"]').fill('test');
+        await component.locator('input[placeholder="Paste key from Azure portal"]').fill('abc');
         await component.getByRole('button', {name: 'Add Connection', exact: true}).click();
         await expect(component.getByText('Queue Name is required.')).toBeVisible();
     });
@@ -1443,7 +1449,7 @@ test.describe('Form validation - Azure', () => {
         const component = await mount(<ConnectionSettingsStory {...props()}/>);
         await component.getByRole('button', {name: '+ Add Connection'}).click();
         const providerSelect = component.locator('select').first();
-        await providerSelect.selectOption('azure');
+        await providerSelect.selectOption('azure-queue');
         await expect(component.locator('input[placeholder="nats://localhost:4222"]')).not.toBeVisible();
         await expect(component.locator('input[placeholder="crossguard.my-connection"]')).not.toBeVisible();
     });
@@ -1458,7 +1464,7 @@ test.describe('Form validation - Azure', () => {
 
         // Switch to Azure: blob container appears
         const providerSelect = component.locator('select').first();
-        await providerSelect.selectOption('azure');
+        await providerSelect.selectOption('azure-queue');
         await expect(component.getByText('Blob Container Name')).toBeVisible();
     });
 });
@@ -1478,10 +1484,10 @@ test.describe('Provider switching', () => {
         const component = await mount(<ConnectionSettingsStory {...props()}/>);
         await component.getByRole('button', {name: '+ Add Connection'}).click();
         const providerSelect = component.locator('select').first();
-        await providerSelect.selectOption('azure');
+        await providerSelect.selectOption('azure-queue');
         await expect(component.locator('input[placeholder="nats://localhost:4222"]')).not.toBeVisible();
         await expect(component.locator('input[placeholder="crossguard.my-connection"]')).not.toBeVisible();
-        await expect(component.getByText('Connection String', {exact: true})).toBeVisible();
+        await expect(component.getByText('Queue Service URL', {exact: true})).toBeVisible();
         await expect(component.getByText('Queue Name', {exact: true})).toBeVisible();
     });
 
@@ -1489,11 +1495,11 @@ test.describe('Provider switching', () => {
         const component = await mount(<ConnectionSettingsStory {...props()}/>);
         await component.getByRole('button', {name: '+ Add Connection'}).click();
         const providerSelect = component.locator('select').first();
-        await providerSelect.selectOption('azure');
+        await providerSelect.selectOption('azure-queue');
         await providerSelect.selectOption('nats');
         await expect(component.locator('input[placeholder="nats://localhost:4222"]')).toBeVisible();
         await expect(component.locator('input[placeholder="crossguard.my-connection"]')).toBeVisible();
-        await expect(component.getByText('Connection String', {exact: true})).not.toBeVisible();
+        await expect(component.getByText('Queue Service URL', {exact: true})).not.toBeVisible();
     });
 
     test('name field value preserved across provider switch', async ({mount}) => {
@@ -1502,7 +1508,7 @@ test.describe('Provider switching', () => {
         const nameInput = component.locator('input[placeholder="my-connection"]');
         await nameInput.fill('keep-this');
         const providerSelect = component.locator('select').first();
-        await providerSelect.selectOption('azure');
+        await providerSelect.selectOption('azure-queue');
         await expect(nameInput).toHaveValue('keep-this');
         await providerSelect.selectOption('nats');
         await expect(nameInput).toHaveValue('keep-this');
@@ -1515,7 +1521,7 @@ test.describe('Provider switching', () => {
         const fileCheckbox = component.locator('input[type="checkbox"]').last();
         await expect(fileCheckbox).toBeChecked();
         const providerSelect = component.locator('select').first();
-        await providerSelect.selectOption('azure');
+        await providerSelect.selectOption('azure-queue');
 
         // The file transfer checkbox remains. It is always the checkbox whose label
         // text is "Enable File Transfer", and we already clicked it.

@@ -362,9 +362,31 @@ func TestHandleInboundPost(t *testing.T) {
 		MessageText: "hello from remote",
 	}
 
-	p.handleInboundPost("high", &postMsg)
+	p.handleInboundPost("high", &postMsg, true)
 
 	assert.Equal(t, "local-post-id", kvs.postMappings["high-remote-post-id"])
+	api.AssertExpectations(t)
+}
+
+func TestHandleInboundPost_ResolveFailed(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	notFoundErr := &mmModel.AppError{Message: "team not found"}
+	api.On("GetTeamByName", "missing-team").Return(nil, notFoundErr)
+	api.On("LogWarn", "Inbound post: resolve failed",
+		"conn", "high", "error", mock.Anything).Return()
+
+	postMsg := model.PostMessage{
+		PostID:      "remote-post-id",
+		ChannelName: "town-square",
+		TeamName:    "missing-team",
+		Username:    "alice",
+		MessageText: "hello",
+	}
+
+	missing := p.handleInboundPost("high", &postMsg, false)
+	assert.False(t, missing)
 	api.AssertExpectations(t)
 }
 
@@ -528,7 +550,7 @@ func TestHandleInboundPost_WithThread(t *testing.T) {
 		MessageText: "reply",
 	}
 
-	p.handleInboundPost("high", &postMsg)
+	p.handleInboundPost("high", &postMsg, true)
 
 	assert.Equal(t, "local-reply-id", kvs.postMappings["high-remote-reply-id"])
 	api.AssertExpectations(t)
@@ -585,7 +607,7 @@ func TestHandleInboundPost_DuplicatePost(t *testing.T) {
 		MessageText: "hello from remote",
 	}
 
-	p.handleInboundPost("high", &postMsg)
+	p.handleInboundPost("high", &postMsg, true)
 
 	api.AssertNotCalled(t, "CreatePost", mock.Anything)
 }
@@ -631,7 +653,7 @@ func TestHandleInboundPost_SetPostMappingFailure(t *testing.T) {
 		MessageText: "hello from remote",
 	}
 
-	p.handleInboundPost("high", &postMsg)
+	p.handleInboundPost("high", &postMsg, true)
 
 	api.AssertCalled(t, "CreatePost", mock.AnythingOfType("*model.Post"))
 	api.AssertExpectations(t)
@@ -665,7 +687,7 @@ func TestHandleInboundPost_CreatePostFailure(t *testing.T) {
 		MessageText: "hello from remote",
 	}
 
-	p.handleInboundPost("high", &postMsg)
+	p.handleInboundPost("high", &postMsg, true)
 
 	// SetPostMapping should not be called because CreatePost failed.
 	_, exists := kvs.postMappings["high-remote-post-id"]
@@ -723,16 +745,14 @@ func TestHandleInboundDelete_NoMapping(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogWarn", "Inbound delete: no post mapping found",
-		"conn", "high", "remote_id", "nonexistent-id").Return()
-
 	deleteMsg := model.DeleteMessage{
 		PostID:      "nonexistent-id",
 		ChannelName: "town-square",
 		TeamName:    "test-a",
 	}
 
-	p.handleInboundDelete("high", &deleteMsg)
+	// Missing mapping returns missing=true so the caller can enqueue for retry.
+	assert.True(t, p.handleInboundDelete("high", &deleteMsg))
 
 	api.AssertNotCalled(t, "DeletePost", mock.Anything)
 	api.AssertExpectations(t)
@@ -798,9 +818,6 @@ func TestHandleInboundReaction_NoMapping(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogWarn", "Inbound reaction: no post mapping found",
-		"conn", "high", "remote_id", "nonexistent-id").Return()
-
 	reactionMsg := model.ReactionMessage{
 		PostID:      "nonexistent-id",
 		ChannelName: "town-square",
@@ -809,7 +826,8 @@ func TestHandleInboundReaction_NoMapping(t *testing.T) {
 		EmojiName:   "thumbsup",
 	}
 
-	p.handleInboundReaction("high", &reactionMsg, true)
+	// Missing mapping returns missing=true so the caller can enqueue for retry.
+	assert.True(t, p.handleInboundReaction("high", &reactionMsg, true))
 
 	api.AssertNotCalled(t, "AddReaction", mock.Anything)
 	api.AssertNotCalled(t, "RemoveReaction", mock.Anything)
@@ -1268,7 +1286,7 @@ func TestHandleInboundPost_WithRootID_MappingExists(t *testing.T) {
 		MessageText: "threaded reply",
 	}
 
-	p.handleInboundPost("high", &postMsg)
+	p.handleInboundPost("high", &postMsg, true)
 
 	assert.Equal(t, "local-reply-id", kvs.postMappings["high-remote-reply-id"])
 	api.AssertExpectations(t)
@@ -1294,6 +1312,8 @@ func TestHandleInboundPost_WithRootID_MappingMissing(t *testing.T) {
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
 	api.On("LogWarn", "Inbound post: failed to look up root mapping",
 		"conn", "high", "remote_root_id", "nonexistent-root", "error", mock.Anything).Maybe()
+	api.On("LogWarn", "Inbound post: root not found after retries, creating standalone",
+		"conn", "high", "remote_root_id", "nonexistent-root").Return()
 	api.On("CreatePost", mock.MatchedBy(func(post *mmModel.Post) bool {
 		return post.RootId == "" && post.Message == "orphaned reply"
 	})).Return(&mmModel.Post{Id: "local-post-id"}, nil)
@@ -1307,7 +1327,7 @@ func TestHandleInboundPost_WithRootID_MappingMissing(t *testing.T) {
 		MessageText: "orphaned reply",
 	}
 
-	p.handleInboundPost("high", &postMsg)
+	p.handleInboundPost("high", &postMsg, true)
 
 	assert.Equal(t, "local-post-id", kvs.postMappings["high-remote-post-id"])
 }
@@ -1991,5 +2011,28 @@ func TestConnectInbound_Additional(t *testing.T) {
 		p.inboundMu.RLock()
 		assert.Empty(t, p.inboundConns, "no inbound connections should be established when subscribe fails")
 		p.inboundMu.RUnlock()
+	})
+
+	t.Run("happy path with file transfer enabled starts watcher", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+
+		addr := startEmbeddedNATS(t)
+
+		p, _ := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			InboundConnections: `[{"name":"good","provider":"nats","file_transfer_enabled":true,"nats":{"address":"` + addr + `","subject":"crossguard.good"}}]`,
+		}
+
+		p.connectInbound()
+
+		p.inboundMu.RLock()
+		require.Len(t, p.inboundConns, 1)
+		assert.Equal(t, "good", p.inboundConns[0].name)
+		assert.True(t, p.inboundConns[0].fileTransferEnabled)
+		p.inboundMu.RUnlock()
+
+		// Tear down cleanly: cancel context and wait for watcher goroutine.
+		p.closeInbound()
 	})
 }

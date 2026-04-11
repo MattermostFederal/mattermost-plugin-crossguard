@@ -57,12 +57,12 @@
                 <span class="permission-tag permission-sysadmin">System Admin</span>
             </div>
             <div class="endpoint-card-body">
-                <p>Test a connection configuration before saving. Supports both NATS and Azure providers.</p>
+                <p>Test a connection configuration before saving. Supports NATS, Azure Queue, and Azure Blob providers.</p>
 
                 <h4>Query Parameters</h4>
                 <table class="field-table">
                     <tbody>
-                        <tr><td><code>direction</code></td><td>Optional. <code>inbound</code> or <code>outbound</code> (defaults to <code>outbound</code>). NATS-specific; ignored for Azure connections.</td></tr>
+                        <tr><td><code>direction</code></td><td>Optional. <code>inbound</code> or <code>outbound</code> (defaults to <code>outbound</code>). NATS-specific; ignored for Azure Queue and Azure Blob connections.</td></tr>
                     </tbody>
                 </table>
 
@@ -79,13 +79,27 @@
   }
 }</code></pre>
 
-                <h4>Request Body (Azure)</h4>
+                <h4>Request Body (Azure Queue)</h4>
 <pre><code>{
   "name": "azure-relay",
-  "provider": "azure",
-  "azure": {
-    "connection_string": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
+  "provider": "azure-queue",
+  "azure_queue": {
+    "queue_service_url": "https://mystorageaccount.queue.core.windows.net",
+    "account_name": "mystorageaccount",
+    "account_key": "base64-account-key",
     "queue_name": "crossguard-relay"
+  }
+}</code></pre>
+
+                <h4>Request Body (Azure Blob)</h4>
+<pre><code>{
+  "name": "azure-blob-relay",
+  "provider": "azure-blob",
+  "azure_blob": {
+    "service_url": "https://mystorageaccount.blob.core.windows.net",
+    "account_name": "mystorageaccount",
+    "account_key": "base64-account-key",
+    "blob_container_name": "crossguard-wal"
   }
 }</code></pre>
 
@@ -98,10 +112,19 @@
                     <li><code>nats.token</code> required if auth_type is <code>token</code></li>
                     <li><code>nats.username</code> + <code>nats.password</code> required if auth_type is <code>credentials</code></li>
                 </ul>
-                <h5>Azure</h5>
+                <h5>Azure Queue</h5>
                 <ul>
-                    <li><code>azure.connection_string</code> required</li>
-                    <li><code>azure.queue_name</code> required</li>
+                    <li><code>azure_queue.queue_service_url</code> required</li>
+                    <li><code>azure_queue.account_name</code> required</li>
+                    <li><code>azure_queue.account_key</code> required</li>
+                    <li><code>azure_queue.queue_name</code> required</li>
+                </ul>
+                <h5>Azure Blob</h5>
+                <ul>
+                    <li><code>azure_blob.service_url</code> required</li>
+                    <li><code>azure_blob.account_name</code> required</li>
+                    <li><code>azure_blob.account_key</code> required</li>
+                    <li><code>azure_blob.blob_container_name</code> required</li>
                 </ul>
 
                 <h4>Success Response (outbound) - 200</h4>
@@ -110,8 +133,11 @@
                 <h4>Success Response (inbound) - 200</h4>
 <pre><code>{"status": "ok", "message": "Connected and subscribed to subject successfully"}</code></pre>
 
-                <h4>Success Response (Azure) - 200</h4>
+                <h4>Success Response (Azure Queue) - 200</h4>
 <pre><code>{"status": "ok", "message": "Azure Queue Storage connection test successful"}</code></pre>
+
+                <h4>Success Response (Azure Blob) - 200</h4>
+<pre><code>{"status": "ok", "message": "Azure Blob Storage connection test successful"}</code></pre>
 
                 <h4>Error Responses</h4>
                 <table>
@@ -120,7 +146,7 @@
                         <tr><td><code>400</code></td><td>Validation error</td></tr>
                         <tr><td><code>401</code></td><td>Not authenticated</td></tr>
                         <tr><td><code>403</code></td><td>Not system admin</td></tr>
-                        <tr><td><code>502</code></td><td>Transport connection failed (NATS unreachable or Azure connection string invalid)</td></tr>
+                        <tr><td><code>502</code></td><td>Transport connection failed (NATS unreachable, or Azure credentials/service URL invalid)</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -323,8 +349,16 @@
     {
       "name": "azure-relay",
       "direction": "outbound",
-      "provider": "azure",
+      "provider": "azure-queue",
       "queue_name": "crossguard-relay",
+      "file_transfer_enabled": false,
+      "message_format": "json"
+    },
+    {
+      "name": "azure-blob-relay",
+      "direction": "outbound",
+      "provider": "azure-blob",
+      "blob_container_name": "crossguard-wal",
       "file_transfer_enabled": false,
       "message_format": "json"
     }

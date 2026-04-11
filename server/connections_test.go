@@ -720,19 +720,49 @@ func TestCreateProvider_MissingNATSConfig(t *testing.T) {
 	assert.ErrorIs(t, err, errMissingNATSConfig)
 }
 
-func TestCreateProvider_MissingAzureConfig(t *testing.T) {
+func TestCreateProvider_MissingAzureQueueConfig(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	cfg := ConnectionConfig{
+		Name:       "test-conn",
+		Provider:   "azure-queue",
+		AzureQueue: nil,
+	}
+	_, err := p.createProvider(cfg, "Outbound")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errMissingAzureQueueConfig)
+}
+
+func TestCreateProvider_MissingAzureBlobConfig(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	cfg := ConnectionConfig{
+		Name:      "test-conn",
+		Provider:  "azure-blob",
+		AzureBlob: nil,
+	}
+	_, err := p.createProvider(cfg, "Outbound")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errMissingAzureBlobConfig)
+}
+
+func TestCreateProvider_DefaultToNATS(t *testing.T) {
 	api := &plugintest.API{}
 	addLogMocks(api)
 	p, _ := setupTestPluginWithRouter(api)
 
 	cfg := ConnectionConfig{
 		Name:     "test-conn",
-		Provider: "azure",
-		Azure:    nil,
+		Provider: "", // empty provider defaults to NATS branch
+		NATS:     nil,
 	}
 	_, err := p.createProvider(cfg, "Outbound")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, errMissingAzureConfig)
+	assert.ErrorIs(t, err, errMissingNATSConfig)
 }
 
 func TestUploadPostFiles_NoFileEnabledConns(t *testing.T) {
@@ -888,7 +918,7 @@ func TestUpdateOutboundHealth_SetsHealthy(t *testing.T) {
 		{name: "conn-0", healthy: false, lastCheckTime: time.Now().Add(-time.Minute)},
 	}
 
-	p.updateOutboundHealth(0, true)
+	p.updateOutboundHealth("conn-0", true)
 
 	assert.True(t, p.outboundConns[0].healthy)
 	assert.WithinDuration(t, time.Now(), p.outboundConns[0].lastCheckTime, 2*time.Second)
@@ -900,21 +930,21 @@ func TestUpdateOutboundHealth_SetsUnhealthy(t *testing.T) {
 		{name: "conn-0", healthy: true, lastCheckTime: time.Now().Add(-time.Minute)},
 	}
 
-	p.updateOutboundHealth(0, false)
+	p.updateOutboundHealth("conn-0", false)
 
 	assert.False(t, p.outboundConns[0].healthy)
 	assert.WithinDuration(t, time.Now(), p.outboundConns[0].lastCheckTime, 2*time.Second)
 }
 
-func TestUpdateOutboundHealth_IndexOutOfRange(t *testing.T) {
+func TestUpdateOutboundHealth_UnknownName(t *testing.T) {
 	p := &Plugin{}
 	p.outboundConns = []outboundConn{
 		{name: "conn-0", healthy: true},
 	}
 
-	// Should not panic when index is beyond the slice length.
+	// Should not panic or mutate when the name does not match any entry.
 	assert.NotPanics(t, func() {
-		p.updateOutboundHealth(5, false)
+		p.updateOutboundHealth("missing", false)
 	})
 
 	// Original entry should be unchanged.

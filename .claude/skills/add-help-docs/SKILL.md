@@ -1,6 +1,6 @@
 ---
 name: add-help-docs
-description: Use when Crossguard plugin code changes need to be reflected in user-facing documentation. Updates the HTML help pages under public/help, the OpenAPI schema at schema/crossguard-api.yaml, and regenerates all PDFs via scripts/generate-pdfs.js. Trigger after adding or modifying REST endpoints, admin settings, slash commands, transport providers, or before cutting a release.
+description: Use when Crossguard plugin code changes need to be reflected in user-facing documentation. Always surveys changes and writes a confirmed plan before editing. Updates the HTML help pages under public/help, the OpenAPI schema at schema/crossguard-api.yaml, and regenerates all PDFs via scripts/generate-pdfs.js. Trigger after adding or modifying REST endpoints, admin settings, slash commands, transport providers, or before cutting a release.
 ---
 
 # Add Help Docs
@@ -23,14 +23,14 @@ Keep Crossguard's user-facing documentation in sync with the code. This skill co
 
 ## Workflow
 
-Run these steps in order. Do not skip the PDF regeneration step, the PDFs are checked into the repo and must match the HTML.
+Run these steps in order. Survey first, then write and confirm a plan with the user, and only then edit any file. Do not skip the PDF regeneration step, the PDFs are checked into the repo and must match the HTML.
 
 ### Task tracking
 
 This workflow is driven by the harness task list. Do not work without a task.
 
 1. Start by calling `TaskList` to check for pre-existing tasks from a prior run. Reuse or delete stale tasks instead of duplicating.
-2. After completing Step 1 (Survey), use `TaskCreate` to create one task per artifact that actually needs changes. Typical tasks:
+2. After completing Step 1 (Survey) and Step 2 (Write and confirm plan), use `TaskCreate` to create one task per artifact identified in the approved plan. Do not invent tasks that were not in the plan. Typical tasks:
    - `Update HTML help pages for <change>` (subject), `activeForm: Updating HTML help pages`
    - `Update OpenAPI schema for <change>`, `activeForm: Updating OpenAPI schema`
    - `Regenerate help PDFs`, `activeForm: Regenerating help PDFs`
@@ -39,7 +39,7 @@ This workflow is driven by the harness task list. Do not work without a task.
 3. Walk the task list top-to-bottom. For each task: call `TaskUpdate` with `status: "in_progress"` **before** editing any file, do the work, then call `TaskUpdate` with `status: "completed"` only after the step's checks pass.
 4. Never hold more than one task in `in_progress` at a time.
 5. If blocked, leave the task `in_progress`, create a new task via `TaskCreate` describing the blocker, and move on. Do not silently skip.
-6. After Step 6 (Report), call `TaskList` one more time and confirm zero `pending` or `in_progress` tasks remain. Delete any stale ones via `TaskUpdate` with `status: "deleted"` before finishing.
+6. After Step 7 (Report), call `TaskList` one more time and confirm zero `pending` or `in_progress` tasks remain. Delete any stale ones via `TaskUpdate` with `status: "deleted"` before finishing.
 
 ### 1. Survey what changed
 
@@ -56,7 +56,20 @@ Focus on:
 - New slash commands or changed command arguments
 - New provider options or behavioral changes in existing providers
 
-### 2. Update HTML help pages
+Step 1 is read-only. Do not edit any file yet.
+
+### 2. Write and confirm plan
+
+Before touching HTML, YAML, or PDFs, produce a short written plan and get user confirmation. The plan must cover:
+
+- **HTML changes**: which files in `public/help/` will change, which sections or anchors are affected, what is being added/changed/removed
+- **OpenAPI changes**: which paths, operations, request/response schemas, and security entries in `schema/crossguard-api.yaml` will change
+- **PDF regeneration**: whether `scripts/generate-pdfs.js` will be run (it almost always will) and which PDFs are expected to change
+- **Intentionally skipped**: anything that looked in-scope during Survey but will be left alone, with a one-line reason
+
+Present the plan to the user and wait for confirmation before proceeding. If the user requests changes, revise the plan and re-confirm. The task list in the Task tracking subsection is created from this approved plan, not invented after the fact.
+
+### 3. Update HTML help pages
 
 All HTML sources live in `public/help/`. Match the existing tone, heading structure, and class names from `styles.css`. Never use em dashes.
 
@@ -72,7 +85,7 @@ All HTML sources live in `public/help/`. Match the existing tone, heading struct
 
 Only edit the pages whose scope actually changed. Preserve existing anchors so cross-links do not break.
 
-### 3. Update the OpenAPI schema
+### 4. Update the OpenAPI schema
 
 Edit `schema/crossguard-api.yaml` so that it matches the handlers in `server/api.go` exactly:
 
@@ -84,7 +97,7 @@ Edit `schema/crossguard-api.yaml` so that it matches the handlers in `server/api
 
 Use `server/api.go` as the source of truth. If the schema and the code disagree, fix the schema.
 
-### 4. Regenerate PDFs
+### 5. Regenerate PDFs
 
 From the repo root:
 
@@ -101,14 +114,14 @@ This uses Playwright + `pdf-lib` and writes:
 
 If the script fails because Playwright browsers are missing, run `npx playwright install chromium` once, then retry.
 
-### 5. Verify
+### 6. Verify
 
 - `ls -la public/help/*.pdf` shows fresh timestamps on all four PDFs
 - `git status` shows changes under `public/help/`, `schema/crossguard-api.yaml`, and any touched HTML
 - `git diff schema/crossguard-api.yaml` matches the code changes from step 1
 - Spot-check one regenerated PDF opens and renders without the sidebar (the script hides it)
 
-### 6. Report
+### 7. Report
 
 Summarize in one short block:
 - Which HTML files changed and why

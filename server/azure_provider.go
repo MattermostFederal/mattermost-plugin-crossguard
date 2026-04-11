@@ -19,7 +19,6 @@ const (
 	// azureMaxMessageSize is the safe message size limit before Base64 encoding to 64KB.
 	azureMaxMessageSize = 48000
 
-	azureQueuePollInterval = 5 * time.Second
 	azureVisibilityTimeout = 5 * time.Minute
 	azureDequeueBatchSize  = int32(32)
 
@@ -28,8 +27,14 @@ const (
 	blobMetadataHeadersKey         = "crossguard_headers"
 )
 
-// azureBlobPollInterval is the blob poll interval for azureProvider. Declared
-// as var so tests can shrink it.
+// azureQueuePollInterval is the default queue poll interval for azureProvider.
+// Declared as var so tests can shrink it; per-connection overrides flow
+// through AzureQueueProviderConfig.PollIntervalSeconds.
+var azureQueuePollInterval = 5 * time.Second
+
+// azureBlobPollInterval is the default blob poll interval for azureProvider.
+// Declared as var so tests can shrink it; per-connection overrides flow
+// through AzureQueueProviderConfig.BlobPollIntervalSeconds.
 var azureBlobPollInterval = 15 * time.Second
 
 // azureQueuer abstracts Azure Queue operations for testability.
@@ -45,6 +50,8 @@ type azureProvider struct {
 	containerClient azureBlobOps
 	api             plugin.API
 	cfg             AzureQueueProviderConfig
+	queuePoll       time.Duration
+	blobPoll        time.Duration
 	cancel          context.CancelFunc
 	handler         func(data []byte) error
 	pollDone        chan struct{}
@@ -102,11 +109,22 @@ func newAzureProvider(cfg AzureQueueProviderConfig, api plugin.API) (QueueProvid
 		}
 	}
 
+	queuePoll := azureQueuePollInterval
+	if cfg.PollIntervalSeconds > 0 {
+		queuePoll = time.Duration(cfg.PollIntervalSeconds) * time.Second
+	}
+	blobPoll := azureBlobPollInterval
+	if cfg.BlobPollIntervalSeconds > 0 {
+		blobPoll = time.Duration(cfg.BlobPollIntervalSeconds) * time.Second
+	}
+
 	return &azureProvider{
 		queueClient:     queueClient,
 		containerClient: blobOps,
 		api:             api,
 		cfg:             cfg,
+		queuePoll:       queuePoll,
+		blobPoll:        blobPoll,
 	}, nil
 }
 
@@ -154,7 +172,7 @@ func (a *azureProvider) pollQueue(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(azureQueuePollInterval):
+			case <-time.After(a.queuePoll):
 			}
 			continue
 		}
@@ -163,7 +181,7 @@ func (a *azureProvider) pollQueue(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(azureQueuePollInterval):
+			case <-time.After(a.queuePoll):
 			}
 			continue
 		}
@@ -230,7 +248,7 @@ func (a *azureProvider) WatchFiles(ctx context.Context, handler func(key string,
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(azureBlobPollInterval):
+		case <-time.After(a.blobPoll):
 		}
 
 		blobs, err := a.containerClient.ListBlobs(ctx, "", true)

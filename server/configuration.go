@@ -76,22 +76,25 @@ type NATSProviderConfig struct {
 
 // AzureQueueProviderConfig holds Azure Queue Storage and Blob Storage connection settings.
 type AzureQueueProviderConfig struct {
-	QueueServiceURL   string `json:"queue_service_url"`
-	BlobServiceURL    string `json:"blob_service_url"`
-	AccountName       string `json:"account_name"`
-	AccountKey        string `json:"account_key"`
-	QueueName         string `json:"queue_name"`
-	BlobContainerName string `json:"blob_container_name"`
+	QueueServiceURL         string `json:"queue_service_url"`
+	BlobServiceURL          string `json:"blob_service_url"`
+	AccountName             string `json:"account_name"`
+	AccountKey              string `json:"account_key"`
+	QueueName               string `json:"queue_name"`
+	BlobContainerName       string `json:"blob_container_name"`
+	PollIntervalSeconds     int    `json:"poll_interval_seconds,omitempty"`      // default 5
+	BlobPollIntervalSeconds int    `json:"blob_poll_interval_seconds,omitempty"` // default 15
 }
 
 // AzureBlobProviderConfig holds Azure Blob Storage provider settings for batch message relay.
 type AzureBlobProviderConfig struct {
-	ServiceURL            string `json:"service_url"`
-	AccountName           string `json:"account_name"`
-	AccountKey            string `json:"account_key"`
-	BlobContainerName     string `json:"blob_container_name"`
-	FlushIntervalSeconds  int    `json:"flush_interval_seconds,omitempty"`    // default 60
-	BlobLockMaxAgeSeconds int    `json:"blob_lock_max_age_seconds,omitempty"` // default 300 (5 min)
+	ServiceURL               string `json:"service_url"`
+	AccountName              string `json:"account_name"`
+	AccountKey               string `json:"account_key"`
+	BlobContainerName        string `json:"blob_container_name"`
+	FlushIntervalSeconds     int    `json:"flush_interval_seconds,omitempty"`      // default 60
+	BlobLockMaxAgeSeconds    int    `json:"blob_lock_max_age_seconds,omitempty"`   // default 300 (5 min)
+	BatchPollIntervalSeconds int    `json:"batch_poll_interval_seconds,omitempty"` // default 30
 }
 
 func isFileAllowed(filename, filterMode, filterTypes string) bool {

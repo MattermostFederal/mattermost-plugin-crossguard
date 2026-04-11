@@ -236,6 +236,7 @@ type azureBlobProvider struct {
 	nodeID          string
 	connName        string
 	flushInterval   time.Duration
+	batchPoll       time.Duration
 	getFile         getFileFunc
 	isOutbound      bool
 
@@ -382,6 +383,11 @@ func newAzureBlobProviderFromOps(ctx context.Context, cfg AzureBlobProviderConfi
 		flushSec = defaultAzureBlobFlushIntervalSec
 	}
 
+	batchPoll := azureBlobBatchPollInterval
+	if cfg.BatchPollIntervalSeconds > 0 {
+		batchPoll = time.Duration(cfg.BatchPollIntervalSeconds) * time.Second
+	}
+
 	// Scope the WAL directory by (nodeID, connName) so multiple azure-blob
 	// connections on the same node do not collide on filenames or recovery.
 	walDir := filepath.Join(os.TempDir(), walDirRoot, nodeID, connName)
@@ -400,6 +406,7 @@ func newAzureBlobProviderFromOps(ctx context.Context, cfg AzureBlobProviderConfi
 		nodeID:          nodeID,
 		connName:        connName,
 		flushInterval:   time.Duration(flushSec) * time.Second,
+		batchPoll:       batchPoll,
 		getFile:         getFile,
 		walDir:          walDir,
 		isOutbound:      isOutbound,
@@ -775,7 +782,7 @@ func (a *azureBlobProvider) pollBlobs(ctx context.Context) {
 	prefix := blobMessagePrefix + a.connName + "/"
 	backoff := time.Duration(0)
 	for {
-		wait := azureBlobBatchPollInterval
+		wait := a.batchPoll
 		if backoff > 0 {
 			wait = backoff
 		}
@@ -791,7 +798,7 @@ func (a *azureBlobProvider) pollBlobs(ctx context.Context) {
 				return
 			}
 			a.api.LogError("Azure Blob: list failed", "container", a.cfg.BlobContainerName, "error", err.Error())
-			backoff = nextListBackoff(backoff)
+			backoff = nextListBackoff(backoff, a.batchPoll)
 			continue
 		}
 		backoff = 0
@@ -805,10 +812,10 @@ func (a *azureBlobProvider) pollBlobs(ctx context.Context) {
 }
 
 // nextListBackoff doubles the current backoff, clamped to listBlobsBackoffMax.
-// A zero backoff starts at azureBlobBatchPollInterval.
-func nextListBackoff(current time.Duration) time.Duration {
+// A zero backoff starts at base (the provider's batch poll interval).
+func nextListBackoff(current, base time.Duration) time.Duration {
 	if current <= 0 {
-		return azureBlobBatchPollInterval
+		return base
 	}
 	return min(current*2, listBlobsBackoffMax)
 }
@@ -1238,7 +1245,7 @@ func (a *azureBlobProvider) WatchFiles(ctx context.Context, handler func(key str
 
 	backoff := time.Duration(0)
 	for {
-		wait := azureBlobBatchPollInterval
+		wait := a.batchPoll
 		if backoff > 0 {
 			wait = backoff
 		}
@@ -1254,7 +1261,7 @@ func (a *azureBlobProvider) WatchFiles(ctx context.Context, handler func(key str
 				return nil
 			}
 			a.api.LogError("Azure Blob: file list failed", "container", a.cfg.BlobContainerName, "error", err.Error())
-			backoff = nextListBackoff(backoff)
+			backoff = nextListBackoff(backoff, a.batchPoll)
 			continue
 		}
 		backoff = 0

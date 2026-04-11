@@ -1019,3 +1019,26 @@ func TestParseConnections_DefaultProviderNATS(t *testing.T) {
 	require.NotNil(t, conns[0].NATS)
 	assert.Equal(t, "default-conn", conns[0].NATS.Name, "nested name should be populated from parent")
 }
+
+func TestValidatePollInterval(t *testing.T) {
+	t.Run("zero returns nil (disabled)", func(t *testing.T) {
+		assert.Nil(t, validatePollInterval(0, "conn[0]", "poll_interval_seconds"))
+	})
+
+	t.Run("negative is rejected", func(t *testing.T) {
+		errs := validatePollInterval(-1, "conn[0]", "poll_interval_seconds")
+		require.Len(t, errs, 1)
+		assert.Contains(t, errs[0], "must be at least 1")
+	})
+
+	t.Run("valid values accepted", func(t *testing.T) {
+		assert.Nil(t, validatePollInterval(1, "conn[0]", "poll_interval_seconds"))
+		assert.Nil(t, validatePollInterval(pollIntervalMaxSeconds, "conn[0]", "poll_interval_seconds"))
+	})
+
+	t.Run("above max is rejected", func(t *testing.T) {
+		errs := validatePollInterval(pollIntervalMaxSeconds+1, "conn[0]", "poll_interval_seconds")
+		require.Len(t, errs, 1)
+		assert.Contains(t, errs[0], "must be at most")
+	})
+}

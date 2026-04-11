@@ -8,7 +8,9 @@ description: Comprehensive code review via specialized agents + multi-LLM review
 Comprehensive code review using **specialized agents** AND **multi-LLM review**. Catches bugs, security issues, and pattern violations.
 
 Works on:
-- **Local changes** (uncommitted work) - default
+- **Branch changes since `main`** (all commits on current branch + uncommitted) - default
+- **Uncommitted only** (with `--uncommitted` flag)
+- **Specific path** (positional arg)
 - **GitHub PRs** (with `--pr` flag)
 
 > **Taxonomy**:
@@ -36,7 +38,8 @@ This skill combines:
 ## Usage
 
 ```
-/review-code                              # Local uncommitted changes (default)
+/review-code                              # All branch changes since main (default)
+/review-code --uncommitted                # Only uncommitted working-tree changes
 /review-code <file-or-directory>          # Review specific path
 /review-code --pr 123                     # Review GitHub PR #123
 /review-code --pr 123 --quick             # Quick PR review (Tier 1 only)
@@ -59,7 +62,11 @@ See `.claude/docs/multi-llm-review.md` for model selection, CLI commands, quota 
          ▼
 ┌─────────────────────────────────────────┐
 │  Step 1: IDENTIFY CHANGES               │
-│  - Local: git diff (uncommitted)        │
+│  - Default: git diff $(git merge-base   │
+│      HEAD main)...HEAD + uncommitted    │
+│      (fallback to origin/main if main   │
+│      is missing)                        │
+│  - --uncommitted: git diff only         │
 │  - PR mode: gh pr diff <number>         │
 │  - Detect languages (Go, TS, etc.)      │
 │  - Identify domains (API, store, UI)    │
@@ -335,6 +342,7 @@ If the user chooses to fix, apply the changes directly to the affected files usi
 | Flag | Effect |
 |------|--------|
 | `--pr <number>` | Review GitHub PR instead of local changes |
+| `--uncommitted` | Review only uncommitted working-tree changes (previous default) |
 | `--quick` | Tier 1 agents only, no multi-LLM (fastest) |
 | `--security` | Focus on Tier 2 security agents + LLM security review |
 | `--full` | All tiers + multi-LLM (most thorough) |
@@ -344,8 +352,11 @@ If the user chooses to fix, apply the changes directly to the affected files usi
 ## Examples
 
 ```bash
-# Full review of local changes (agents + multi-LLM) - RECOMMENDED
+# Full review of branch changes since main (agents + multi-LLM), RECOMMENDED
 /review-code
+
+# Review only uncommitted working-tree changes
+/review-code --uncommitted
 
 # Review specific file
 /review-code server/app/item_core.go
@@ -384,7 +395,8 @@ See `.claude/docs/multi-llm-review.md` for CLI commands and quota fallback logic
 | Scenario | Command | Skip review |
 |----------|---------|-------------|
 | After `/create-code` | `/review-code` | |
-| Before committing | `/review-code` | |
+| Before committing WIP | `/review-code --uncommitted` | |
+| Before opening a PR | `/review-code` | |
 | Reviewing a PR | `/review-code --pr 123` | |
 | Security-sensitive code | `/review-code --security` | |
 | Quick PR check | `/review-code --pr 123 --quick` | |

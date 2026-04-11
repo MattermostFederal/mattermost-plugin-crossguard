@@ -57,6 +57,84 @@ type kvClient interface {
 	Delete(key string) error
 }
 
+// blobListing is a minimal view of a blob returned by list operations.
+type blobListing struct {
+	Name     string
+	Metadata map[string]*string
+}
+
+// azureBlobOps abstracts the Azure Blob container operations used by
+// azureBlobProvider so tests can inject a fake implementation without
+// hitting the Azure SDK.
+type azureBlobOps interface {
+	CreateContainer(ctx context.Context) error
+	UploadBlob(ctx context.Context, name string, data []byte, metadata map[string]*string) error
+	DownloadBlob(ctx context.Context, name string) ([]byte, error)
+	DeleteBlob(ctx context.Context, name string) error
+	ListBlobs(ctx context.Context, prefix string, includeMetadata bool) ([]blobListing, error)
+}
+
+// containerClientAdapter wraps *container.Client to implement azureBlobOps.
+type containerClientAdapter struct {
+	client *container.Client
+}
+
+func (c *containerClientAdapter) CreateContainer(ctx context.Context) error {
+	_, err := c.client.Create(ctx, nil)
+	return err
+}
+
+func (c *containerClientAdapter) UploadBlob(ctx context.Context, name string, data []byte, metadata map[string]*string) error {
+	bc := c.client.NewBlockBlobClient(name)
+	var opts *blockblob.UploadOptions
+	if metadata != nil {
+		opts = &blockblob.UploadOptions{Metadata: metadata}
+	}
+	_, err := bc.Upload(ctx, newNopCloser(data), opts)
+	return err
+}
+
+func (c *containerClientAdapter) DownloadBlob(ctx context.Context, name string) ([]byte, error) {
+	bc := c.client.NewBlockBlobClient(name)
+	resp, err := bc.DownloadStream(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return io.ReadAll(resp.Body)
+}
+
+func (c *containerClientAdapter) DeleteBlob(ctx context.Context, name string) error {
+	bc := c.client.NewBlockBlobClient(name)
+	_, err := bc.Delete(ctx, nil)
+	return err
+}
+
+func (c *containerClientAdapter) ListBlobs(ctx context.Context, prefix string, includeMetadata bool) ([]blobListing, error) {
+	opts := &container.ListBlobsFlatOptions{}
+	if prefix != "" {
+		opts.Prefix = &prefix
+	}
+	if includeMetadata {
+		opts.Include = container.ListBlobsInclude{Metadata: true}
+	}
+	pager := c.client.NewListBlobsFlatPager(opts)
+	var result []blobListing
+	for pager.More() {
+		resp, err := pager.NextPage(ctx)
+		if err != nil {
+			return result, err
+		}
+		for _, b := range resp.Segment.BlobItems {
+			if b.Name == nil {
+				continue
+			}
+			result = append(result, blobListing{Name: *b.Name, Metadata: b.Metadata})
+		}
+	}
+	return result, nil
+}
+
 // blobLock is the JSON value stored under a blob lock key.
 type blobLock struct {
 	Node     string `json:"node"`
@@ -78,7 +156,7 @@ type getFileFunc func(fileID string) ([]byte, error)
 // azureBlobProvider implements QueueProvider using Azure Blob Storage for
 // batched message relay via .jsonl files.
 type azureBlobProvider struct {
-	containerClient *container.Client
+	containerClient azureBlobOps
 	api             plugin.API
 	kv              kvClient
 	cfg             AzureBlobProviderConfig
@@ -130,16 +208,25 @@ func newAzureBlobProvider(ctx context.Context, cfg AzureBlobProviderConfig, api 
 		return nil, fmt.Errorf("failed to create Azure Blob container client: %w", err)
 	}
 
+	ops := &containerClientAdapter{client: containerClient}
+
 	// Ensure container exists (idempotent). Treat any non-"already exists"
 	// error as a hard failure so misconfiguration surfaces at startup.
 	createCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, createErr := containerClient.Create(createCtx, nil); createErr != nil {
+	if createErr := ops.CreateContainer(createCtx); createErr != nil {
 		if !strings.Contains(createErr.Error(), azureErrContainerAlreadyExists) {
 			return nil, fmt.Errorf("failed to create/access Azure Blob container %q: %w", cfg.BlobContainerName, createErr)
 		}
 	}
 
+	return newAzureBlobProviderFromOps(ctx, cfg, api, kv, nodeID, connName, getFile, isOutbound, ops)
+}
+
+// newAzureBlobProviderFromOps constructs a provider from a pre-built
+// azureBlobOps. Used by both the public constructor (after wrapping the SDK
+// client in an adapter) and tests, which can pass a fake ops implementation.
+func newAzureBlobProviderFromOps(ctx context.Context, cfg AzureBlobProviderConfig, api plugin.API, kv kvClient, nodeID, connName string, getFile getFileFunc, isOutbound bool, ops azureBlobOps) (*azureBlobProvider, error) {
 	flushSec := cfg.FlushIntervalSeconds
 	if flushSec <= 0 {
 		flushSec = defaultAzureBlobFlushIntervalSec
@@ -156,7 +243,7 @@ func newAzureBlobProvider(ctx context.Context, cfg AzureBlobProviderConfig, api 
 		"wal_dir", walDir)
 
 	a := &azureBlobProvider{
-		containerClient: containerClient,
+		containerClient: ops,
 		api:             api,
 		kv:              kv,
 		cfg:             cfg,
@@ -374,8 +461,7 @@ func (a *azureBlobProvider) uploadWALFile(ctx context.Context, path string) erro
 	base := filepath.Base(path)
 	blobName := blobMessagePrefix + a.connName + "/" + base
 
-	blobClient := a.containerClient.NewBlockBlobClient(blobName)
-	if _, err := blobClient.Upload(ctx, newNopCloser(data), nil); err != nil {
+	if err := a.containerClient.UploadBlob(ctx, blobName, data, nil); err != nil {
 		return fmt.Errorf("upload blob %q: %w", blobName, err)
 	}
 	return nil
@@ -438,25 +524,16 @@ func (a *azureBlobProvider) pollBlobs(ctx context.Context) {
 		case <-time.After(azureBlobBatchPollInterval):
 		}
 
-		pager := a.containerClient.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{
-			Prefix: &prefix,
-		})
-
-		for pager.More() {
-			resp, err := pager.NextPage(ctx)
-			if err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				a.api.LogError("Azure Blob: list failed", "container", a.cfg.BlobContainerName, "error", err.Error())
-				break
+		blobs, err := a.containerClient.ListBlobs(ctx, prefix, false)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
 			}
-			for _, blob := range resp.Segment.BlobItems {
-				if blob.Name == nil {
-					continue
-				}
-				a.processBlob(ctx, *blob.Name)
-			}
+			a.api.LogError("Azure Blob: list failed", "container", a.cfg.BlobContainerName, "error", err.Error())
+			continue
+		}
+		for _, b := range blobs {
+			a.processBlob(ctx, b.Name)
 		}
 	}
 }
@@ -476,16 +553,9 @@ func (a *azureBlobProvider) processBlob(ctx context.Context, blobName string) {
 		}
 	}()
 
-	blobClient := a.containerClient.NewBlockBlobClient(blobName)
-	downloadResp, err := blobClient.DownloadStream(ctx, nil)
+	data, err := a.containerClient.DownloadBlob(ctx, blobName)
 	if err != nil {
 		a.api.LogWarn("Azure Blob: download failed", "blob", blobName, "error", err.Error())
-		return
-	}
-	defer func() { _ = downloadResp.Body.Close() }()
-	data, err := io.ReadAll(downloadResp.Body)
-	if err != nil {
-		a.api.LogWarn("Azure Blob: read failed", "blob", blobName, "error", err.Error())
 		return
 	}
 
@@ -500,7 +570,7 @@ func (a *azureBlobProvider) processBlob(ctx context.Context, blobName string) {
 		}
 	}
 
-	if _, err := blobClient.Delete(ctx, nil); err != nil {
+	if err := a.containerClient.DeleteBlob(ctx, blobName); err != nil {
 		a.api.LogWarn("Azure Blob: delete failed", "blob", blobName, "error", err.Error())
 		return
 	}
@@ -666,7 +736,6 @@ func (a *azureBlobProvider) recoverCompanionFiles(ctx context.Context, path stri
 // UploadFile uploads a file blob with metadata headers.
 func (a *azureBlobProvider) UploadFile(ctx context.Context, key string, data []byte, headers map[string]string) error {
 	blobName := blobFilesPrefix + key
-	blobClient := a.containerClient.NewBlockBlobClient(blobName)
 
 	meta := azureBlobMetadata{Headers: headers}
 	metaJSON, _ := json.Marshal(meta)
@@ -675,9 +744,7 @@ func (a *azureBlobProvider) UploadFile(ctx context.Context, key string, data []b
 		blobMetadataHeadersKey: &encoded,
 	}
 
-	if _, err := blobClient.Upload(ctx, newNopCloser(data), &blockblob.UploadOptions{
-		Metadata: blobMeta,
-	}); err != nil {
+	if err := a.containerClient.UploadBlob(ctx, blobName, data, blobMeta); err != nil {
 		return fmt.Errorf("failed to upload blob %q: %w", blobName, err)
 	}
 	return nil
@@ -685,7 +752,6 @@ func (a *azureBlobProvider) UploadFile(ctx context.Context, key string, data []b
 
 // WatchFiles watches the files/ prefix for new file blobs.
 func (a *azureBlobProvider) WatchFiles(ctx context.Context, handler func(key string, data []byte, headers map[string]string) error) error {
-	prefix := blobFilesPrefix
 	for {
 		select {
 		case <-ctx.Done():
@@ -693,65 +759,48 @@ func (a *azureBlobProvider) WatchFiles(ctx context.Context, handler func(key str
 		case <-time.After(azureBlobBatchPollInterval):
 		}
 
-		pager := a.containerClient.NewListBlobsFlatPager(&container.ListBlobsFlatOptions{
-			Prefix:  &prefix,
-			Include: container.ListBlobsInclude{Metadata: true},
-		})
+		blobs, err := a.containerClient.ListBlobs(ctx, blobFilesPrefix, true)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			a.api.LogError("Azure Blob: file list failed", "container", a.cfg.BlobContainerName, "error", err.Error())
+			continue
+		}
 
-		for pager.More() {
-			resp, err := pager.NextPage(ctx)
-			if err != nil {
-				if ctx.Err() != nil {
-					return nil
-				}
-				a.api.LogError("Azure Blob: file list failed", "container", a.cfg.BlobContainerName, "error", err.Error())
-				break
+		for _, blob := range blobs {
+			// HA: use blob lock to avoid duplicate file processing.
+			if !a.tryAcquireBlobLock(blob.Name) {
+				continue
 			}
 
-			for _, blob := range resp.Segment.BlobItems {
-				if blob.Name == nil {
-					continue
-				}
-				// HA: use blob lock to avoid duplicate file processing.
-				if !a.tryAcquireBlobLock(*blob.Name) {
-					continue
-				}
-
-				success := false
-				func() {
-					defer func() {
-						if !success {
-							a.releaseBlobLock(*blob.Name)
-						}
-					}()
-
-					blobClient := a.containerClient.NewBlockBlobClient(*blob.Name)
-					headers := extractBlobHeaders(blob.Metadata)
-					downloadResp, err := blobClient.DownloadStream(ctx, nil)
-					if err != nil {
-						a.api.LogWarn("Azure Blob: file download failed", "blob", *blob.Name, "error", err.Error())
-						return
+			success := false
+			func() {
+				defer func() {
+					if !success {
+						a.releaseBlobLock(blob.Name)
 					}
-					defer func() { _ = downloadResp.Body.Close() }()
-					data, err := io.ReadAll(downloadResp.Body)
-					if err != nil {
-						a.api.LogWarn("Azure Blob: file read failed", "blob", *blob.Name, "error", err.Error())
-						return
-					}
-					// Strip the files/ prefix when passing key to handler to match azureProvider behaviour.
-					key := strings.TrimPrefix(*blob.Name, blobFilesPrefix)
-					if err := handler(key, data, headers); err != nil {
-						a.api.LogWarn("Azure Blob: file handler error", "blob", *blob.Name, "error", err.Error())
-						return
-					}
-					if _, err := blobClient.Delete(ctx, nil); err != nil {
-						a.api.LogWarn("Azure Blob: file delete failed", "blob", *blob.Name, "error", err.Error())
-						return
-					}
-					success = true
-					a.releaseBlobLock(*blob.Name)
 				}()
-			}
+
+				headers := extractBlobHeaders(blob.Metadata)
+				data, err := a.containerClient.DownloadBlob(ctx, blob.Name)
+				if err != nil {
+					a.api.LogWarn("Azure Blob: file download failed", "blob", blob.Name, "error", err.Error())
+					return
+				}
+				// Strip the files/ prefix when passing key to handler to match azureProvider behaviour.
+				key := strings.TrimPrefix(blob.Name, blobFilesPrefix)
+				if err := handler(key, data, headers); err != nil {
+					a.api.LogWarn("Azure Blob: file handler error", "blob", blob.Name, "error", err.Error())
+					return
+				}
+				if err := a.containerClient.DeleteBlob(ctx, blob.Name); err != nil {
+					a.api.LogWarn("Azure Blob: file delete failed", "blob", blob.Name, "error", err.Error())
+					return
+				}
+				success = true
+				a.releaseBlobLock(blob.Name)
+			}()
 		}
 	}
 }
@@ -804,19 +853,23 @@ func testAzureBlobConnection(cfg AzureBlobProviderConfig) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	return testAzureBlobConnectionOps(ctx, &containerClientAdapter{client: containerClient})
+}
 
-	if _, createErr := containerClient.Create(ctx, nil); createErr != nil {
+// testAzureBlobConnectionOps contains the provider-agnostic core of the
+// connection test. Extracted so tests can inject a fake azureBlobOps.
+func testAzureBlobConnectionOps(ctx context.Context, ops azureBlobOps) error {
+	if createErr := ops.CreateContainer(ctx); createErr != nil {
 		if !strings.Contains(createErr.Error(), azureErrContainerAlreadyExists) {
 			return fmt.Errorf("failed to create container: %w", createErr)
 		}
 	}
 
 	key := fmt.Sprintf("crossguard-test-%d", time.Now().UnixMilli())
-	blobClient := containerClient.NewBlockBlobClient(key)
-	if _, err := blobClient.Upload(ctx, newNopCloser([]byte("ok")), nil); err != nil {
+	if err := ops.UploadBlob(ctx, key, []byte("ok"), nil); err != nil {
 		return fmt.Errorf("failed to upload test blob: %w", err)
 	}
-	if _, err := blobClient.Delete(ctx, nil); err != nil {
+	if err := ops.DeleteBlob(ctx, key); err != nil {
 		return fmt.Errorf("failed to delete test blob: %w", err)
 	}
 	return nil

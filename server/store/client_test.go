@@ -840,3 +840,189 @@ func TestClient_CASConnectionList_SetError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to CAS connection list")
 }
+
+// ---------------------------------------------------------------------------
+// Delete error branches (raise Delete* from 66.7% to 100%)
+// ---------------------------------------------------------------------------
+
+func TestClient_DeleteChannelConnections_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", "test-plugin-channelinit-ch1", []byte(nil), kvSetOpts()).
+		Return(false, &model.AppError{Message: "del fail"})
+	kv := newTestClient(api)
+
+	err := kv.DeleteChannelConnections("ch1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to delete channel connections")
+}
+
+func TestClient_DeletePostMapping_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", "pm-conn1-remote1", []byte(nil), kvSetOpts()).
+		Return(false, &model.AppError{Message: "del fail"})
+	kv := newTestClient(api)
+
+	err := kv.DeletePostMapping("conn1", "remote1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to delete post mapping")
+}
+
+func TestClient_ClearDeletingFlag_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", "crossguard-deleting-post1", []byte(nil), kvSetOpts()).
+		Return(false, &model.AppError{Message: "del fail"})
+	kv := newTestClient(api)
+
+	err := kv.ClearDeletingFlag("post1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to clear deleting flag")
+}
+
+func TestClient_DeleteConnectionPrompt_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", "test-plugin-connprompt-team1-conn1", []byte(nil), kvSetOpts()).
+		Return(false, &model.AppError{Message: "del fail"})
+	kv := newTestClient(api)
+
+	err := kv.DeleteConnectionPrompt("team1", "conn1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to delete connection prompt")
+}
+
+func TestClient_DeleteChannelConnectionPrompt_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", "test-plugin-chanprompt-ch1-conn1", []byte(nil), kvSetOpts()).
+		Return(false, &model.AppError{Message: "del fail"})
+	kv := newTestClient(api)
+
+	err := kv.DeleteChannelConnectionPrompt("ch1", "conn1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to delete channel connection prompt")
+}
+
+func TestClient_DeleteTeamRewriteIndex_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", "test-plugin-rwi-conn1::remoteTeam", []byte(nil), kvSetOpts()).
+		Return(false, &model.AppError{Message: "del fail"})
+	kv := newTestClient(api)
+
+	err := kv.DeleteTeamRewriteIndex("conn1", "remoteTeam")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to delete rewrite index")
+}
+
+// ---------------------------------------------------------------------------
+// Set error branches (raise Set* from 75% to 100%)
+// ---------------------------------------------------------------------------
+
+func TestClient_SetChannelConnections_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", mock.Anything, mock.Anything, mock.Anything).
+		Return(false, &model.AppError{Message: "write fail"})
+	kv := newTestClient(api)
+
+	err := kv.SetChannelConnections("ch1", []TeamConnection{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to set channel connections")
+}
+
+func TestClient_SetPostMapping_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", mock.Anything, mock.Anything, mock.Anything).
+		Return(false, &model.AppError{Message: "write fail"})
+	kv := newTestClient(api)
+
+	err := kv.SetPostMapping("conn1", "remote1", "local1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to set post mapping")
+}
+
+func TestClient_SetDeletingFlag_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", mock.Anything, mock.Anything, mock.Anything).
+		Return(false, &model.AppError{Message: "write fail"})
+	kv := newTestClient(api)
+
+	err := kv.SetDeletingFlag("post1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to set deleting flag")
+}
+
+func TestClient_SetConnectionPrompt_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", mock.Anything, mock.Anything, mock.Anything).
+		Return(false, &model.AppError{Message: "write fail"})
+	kv := newTestClient(api)
+
+	err := kv.SetConnectionPrompt("team1", "conn1", &ConnectionPrompt{State: "pending"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to set connection prompt")
+}
+
+func TestClient_SetChannelConnectionPrompt_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", mock.Anything, mock.Anything, mock.Anything).
+		Return(false, &model.AppError{Message: "write fail"})
+	kv := newTestClient(api)
+
+	err := kv.SetChannelConnectionPrompt("ch1", "conn1", &ConnectionPrompt{State: "pending"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to set channel connection prompt")
+}
+
+func TestClient_CreateConnectionPrompt_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", mock.Anything, mock.Anything, mock.Anything).
+		Return(false, &model.AppError{Message: "write fail"})
+	kv := newTestClient(api)
+
+	_, err := kv.CreateConnectionPrompt("team1", "conn1", &ConnectionPrompt{State: "pending"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create connection prompt")
+}
+
+func TestClient_CreateChannelConnectionPrompt_Error(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVSetWithOptions", mock.Anything, mock.Anything, mock.Anything).
+		Return(false, &model.AppError{Message: "write fail"})
+	kv := newTestClient(api)
+
+	_, err := kv.CreateChannelConnectionPrompt("ch1", "conn1", &ConnectionPrompt{State: "pending"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create channel connection prompt")
+}
+
+func TestClient_SetTeamRewriteIndex_SetError(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVGet", "test-plugin-rwi-conn1::remoteTeam").Return(nil, nil)
+	api.On("KVSetWithOptions", "test-plugin-rwi-conn1::remoteTeam", mock.Anything, kvSetOpts()).
+		Return(false, &model.AppError{Message: "write fail"})
+	kv := newTestClient(api)
+
+	err := kv.SetTeamRewriteIndex("conn1", "remoteTeam", "localTeam1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to set rewrite index")
+}
+
+func TestClient_SetTeamRewriteIndex_GetError(t *testing.T) {
+	api := &plugintest.API{}
+	api.On("KVGet", "test-plugin-rwi-conn1::remoteTeam").
+		Return(nil, &model.AppError{Message: "read fail"})
+	kv := newTestClient(api)
+
+	err := kv.SetTeamRewriteIndex("conn1", "remoteTeam", "localTeam1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to get rewrite index")
+}
+
+func TestClient_SetTeamConnections_AlreadyOtherTeam(t *testing.T) {
+	// SetTeamRewriteIndex refuses to overwrite a mapping that points to a different team.
+	api := &plugintest.API{}
+	api.On("KVGet", "test-plugin-rwi-conn1::remoteTeam").
+		Return(marshalJSON(t, "otherTeam"), nil)
+	kv := newTestClient(api)
+
+	err := kv.SetTeamRewriteIndex("conn1", "remoteTeam", "localTeam1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already mapped to team otherTeam")
+}

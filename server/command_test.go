@@ -1671,3 +1671,47 @@ func TestExecuteCommand_DispatchAllSubcommands(t *testing.T) {
 		assert.Contains(t, resp.Text, "Cross Guard Status")
 	})
 }
+
+func TestProviderDetails(t *testing.T) {
+	tests := []struct {
+		name string
+		conn RedactedConnection
+		want string
+	}{
+		{
+			name: "azure-queue with blob",
+			conn: RedactedConnection{Provider: "azure-queue", QueueName: "q1", BlobContainerName: "c1"},
+			want: "queue: q1, blob: c1",
+		},
+		{
+			name: "azure-queue without blob",
+			conn: RedactedConnection{Provider: "azure-queue", QueueName: "q1"},
+			want: "queue: q1",
+		},
+		{
+			name: "azure-blob",
+			conn: RedactedConnection{Provider: "azure-blob", BlobContainerName: "c1"},
+			want: "blob: c1",
+		},
+		{
+			name: "nats with all fields",
+			conn: RedactedConnection{Provider: "nats", Address: "nats://localhost:4222", Subject: "sub", AuthType: "token"},
+			want: "nats://localhost:4222, subject: sub, auth: token",
+		},
+		{
+			name: "empty provider treated as nats",
+			conn: RedactedConnection{Provider: "", Address: "nats://x", Subject: "s"},
+			want: "nats://x, subject: s",
+		},
+		{
+			name: "unknown provider returns raw name",
+			conn: RedactedConnection{Provider: "custom-thing"},
+			want: "custom-thing",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, providerDetails(tt.conn))
+		})
+	}
+}

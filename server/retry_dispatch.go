@@ -116,5 +116,6 @@ func (p *Plugin) handleRetryDropped(entry *retryEntry, reason string) {
 
 const defaultAzureBlobFlushIntervalSec = 60
 
-// azureBlobBatchPollInterval is the constant poll interval for the azure-blob batch provider.
-const azureBlobBatchPollInterval = 30 * time.Second
+// azureBlobBatchPollInterval is the poll interval for the azure-blob batch provider.
+// Declared as var so tests can shrink it.
+var azureBlobBatchPollInterval = 30 * time.Second

@@ -10,9 +10,11 @@ const (
 	retryQueueMaxSize       = 1000
 	retryQueueMaxRetries    = 3
 	retryQueueDefaultMaxAge = 2 * time.Minute
-	retryQueueTickRate      = 5 * time.Second
 	retryQueueRetryDelay    = 20 * time.Second
 )
+
+// retryQueueTickRate is a variable (not const) so tests can shrink it.
+var retryQueueTickRate = 5 * time.Second
 
 type retryEntry struct {
 	connName   string

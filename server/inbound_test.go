@@ -368,6 +368,28 @@ func TestHandleInboundPost(t *testing.T) {
 	api.AssertExpectations(t)
 }
 
+func TestHandleInboundPost_ResolveFailed(t *testing.T) {
+	api := &plugintest.API{}
+	p, _ := setupTestPlugin(api)
+
+	notFoundErr := &mmModel.AppError{Message: "team not found"}
+	api.On("GetTeamByName", "missing-team").Return(nil, notFoundErr)
+	api.On("LogWarn", "Inbound post: resolve failed",
+		"conn", "high", "error", mock.Anything).Return()
+
+	postMsg := model.PostMessage{
+		PostID:      "remote-post-id",
+		ChannelName: "town-square",
+		TeamName:    "missing-team",
+		Username:    "alice",
+		MessageText: "hello",
+	}
+
+	missing := p.handleInboundPost("high", &postMsg, false)
+	assert.False(t, missing)
+	api.AssertExpectations(t)
+}
+
 func TestHandleInboundUpdate(t *testing.T) {
 	api := &plugintest.API{}
 	p, kvs := setupTestPlugin(api)
@@ -1989,5 +2011,28 @@ func TestConnectInbound_Additional(t *testing.T) {
 		p.inboundMu.RLock()
 		assert.Empty(t, p.inboundConns, "no inbound connections should be established when subscribe fails")
 		p.inboundMu.RUnlock()
+	})
+
+	t.Run("happy path with file transfer enabled starts watcher", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+
+		addr := startEmbeddedNATS(t)
+
+		p, _ := setupTestPluginWithRouter(api)
+		p.configuration = &configuration{
+			InboundConnections: `[{"name":"good","provider":"nats","file_transfer_enabled":true,"nats":{"address":"` + addr + `","subject":"crossguard.good"}}]`,
+		}
+
+		p.connectInbound()
+
+		p.inboundMu.RLock()
+		require.Len(t, p.inboundConns, 1)
+		assert.Equal(t, "good", p.inboundConns[0].name)
+		assert.True(t, p.inboundConns[0].fileTransferEnabled)
+		p.inboundMu.RUnlock()
+
+		// Tear down cleanly: cancel context and wait for watcher goroutine.
+		p.closeInbound()
 	})
 }

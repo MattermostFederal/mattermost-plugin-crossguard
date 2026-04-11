@@ -1100,3 +1100,61 @@ func TestInvalidate_PublishFailure(t *testing.T) {
 		"key", "team1",
 		"error", "cluster event publish failed")
 }
+
+// ---------------------------------------------------------------------------
+// Caching write error branches (raise Delete*/Set*/Remove* from 75% to 100%)
+// ---------------------------------------------------------------------------
+
+func TestCaching_DeleteTeamConnections_InnerError(t *testing.T) {
+	inner := &mockKVStore{
+		deleteTeamConnectionsFn: func(string) error { return fmt.Errorf("inner fail") },
+	}
+	c, _ := newTestCaching(inner)
+	err := c.DeleteTeamConnections("team1")
+	require.Error(t, err)
+}
+
+func TestCaching_RemoveTeamConnection_InnerError(t *testing.T) {
+	inner := &mockKVStore{
+		removeTeamConnectionFn: func(string, TeamConnection) error { return fmt.Errorf("inner fail") },
+	}
+	c, _ := newTestCaching(inner)
+	err := c.RemoveTeamConnection("team1", TeamConnection{Direction: "outbound", Connection: "a"})
+	require.Error(t, err)
+}
+
+func TestCaching_RemoveInitializedTeamID_InnerError(t *testing.T) {
+	inner := &mockKVStore{
+		removeInitializedTeamIDFn: func(string) error { return fmt.Errorf("inner fail") },
+	}
+	c, _ := newTestCaching(inner)
+	err := c.RemoveInitializedTeamID("team1")
+	require.Error(t, err)
+}
+
+func TestCaching_SetChannelConnections_InnerError(t *testing.T) {
+	inner := &mockKVStore{
+		setChannelConnectionsFn: func(string, []TeamConnection) error { return fmt.Errorf("inner fail") },
+	}
+	c, _ := newTestCaching(inner)
+	err := c.SetChannelConnections("ch1", nil)
+	require.Error(t, err)
+}
+
+func TestCaching_DeleteChannelConnections_InnerError(t *testing.T) {
+	inner := &mockKVStore{
+		deleteChannelConnectionsFn: func(string) error { return fmt.Errorf("inner fail") },
+	}
+	c, _ := newTestCaching(inner)
+	err := c.DeleteChannelConnections("ch1")
+	require.Error(t, err)
+}
+
+func TestCaching_RemoveChannelConnection_InnerError(t *testing.T) {
+	inner := &mockKVStore{
+		removeChannelConnectionFn: func(string, TeamConnection) error { return fmt.Errorf("inner fail") },
+	}
+	c, _ := newTestCaching(inner)
+	err := c.RemoveChannelConnection("ch1", TeamConnection{Direction: "inbound", Connection: "a"})
+	require.Error(t, err)
+}

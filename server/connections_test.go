@@ -735,6 +735,36 @@ func TestCreateProvider_MissingAzureQueueConfig(t *testing.T) {
 	assert.ErrorIs(t, err, errMissingAzureQueueConfig)
 }
 
+func TestCreateProvider_MissingAzureBlobConfig(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	cfg := ConnectionConfig{
+		Name:      "test-conn",
+		Provider:  "azure-blob",
+		AzureBlob: nil,
+	}
+	_, err := p.createProvider(cfg, "Outbound")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errMissingAzureBlobConfig)
+}
+
+func TestCreateProvider_DefaultToNATS(t *testing.T) {
+	api := &plugintest.API{}
+	addLogMocks(api)
+	p, _ := setupTestPluginWithRouter(api)
+
+	cfg := ConnectionConfig{
+		Name:     "test-conn",
+		Provider: "", // empty provider defaults to NATS branch
+		NATS:     nil,
+	}
+	_, err := p.createProvider(cfg, "Outbound")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errMissingNATSConfig)
+}
+
 func TestUploadPostFiles_NoFileEnabledConns(t *testing.T) {
 	api := &plugintest.API{}
 	addLogMocks(api)

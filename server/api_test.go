@@ -1267,6 +1267,86 @@ func TestHandleTestNATSOutbound(t *testing.T) {
 	})
 }
 
+// TestHandleTestNATSConnection_EndToEnd drives handleTestNATSConnection via the
+// public route with embedded NATS to exercise the direction switch and the
+// happy-path connection logic that's otherwise uncovered.
+func TestHandleTestNATSConnection_EndToEnd(t *testing.T) {
+	adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+
+	t.Run("inbound direction happy path", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		addr := startEmbeddedNATS(t)
+		body := map[string]any{
+			"provider": "nats",
+			"nats":     map[string]any{"address": addr, "subject": "crossguard.test"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection?direction=inbound", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("outbound direction happy path", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		addr := startEmbeddedNATS(t)
+		body := map[string]any{
+			"provider": "nats",
+			"nats":     map[string]any{"address": addr, "subject": "crossguard.test"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection?direction=outbound", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("invalid direction returns 400", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		addr := startEmbeddedNATS(t)
+		body := map[string]any{
+			"provider": "nats",
+			"nats":     map[string]any{"address": addr, "subject": "crossguard.test"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection?direction=sideways", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "direction")
+	})
+
+	t.Run("connect error returns 502", func(t *testing.T) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+
+		body := map[string]any{
+			"provider": "nats",
+			"nats":     map[string]any{"address": "nats://127.0.0.1:1", "subject": "crossguard.test"},
+		}
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+
+		require.Equal(t, http.StatusBadGateway, w.Code)
+	})
+}
+
 func TestHandleTestNATSInbound(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		api := &plugintest.API{}
@@ -1917,5 +1997,202 @@ func TestHandleTeardownTeam_Additional(t *testing.T) {
 		require.Equal(t, http.StatusNotFound, w.Code)
 		resp := decodeJSONResponse(t, w)
 		assert.Equal(t, "team not found", resp["error"])
+	})
+}
+
+func TestHandleTestAzureQueueConnection(t *testing.T) {
+	adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+
+	validBody := func() map[string]any {
+		return map[string]any{
+			"provider": "azure-queue",
+			"azure_queue": map[string]any{
+				"queue_service_url": "https://example.queue.core.windows.net",
+				"account_name":      "acct",
+				"account_key":       "a2V5", // base64 "key"
+				"queue_name":        "q1",
+			},
+		}
+	}
+
+	setup := func() (*plugintest.API, *Plugin) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+		return api, p
+	}
+
+	sendReq := func(p *Plugin, body map[string]any) *httptest.ResponseRecorder {
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+		return w
+	}
+
+	t.Run("missing azure_queue block returns 400", func(t *testing.T) {
+		_, p := setup()
+		w := sendReq(p, map[string]any{"provider": "azure-queue"})
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		resp := decodeJSONResponse(t, w)
+		assert.Contains(t, resp["error"], "azure_queue config block")
+	})
+
+	t.Run("missing queue_service_url returns 400", func(t *testing.T) {
+		_, p := setup()
+		body := validBody()
+		body["azure_queue"].(map[string]any)["queue_service_url"] = ""
+		w := sendReq(p, body)
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, decodeJSONResponse(t, w)["error"], "queue_service_url")
+	})
+
+	t.Run("missing account_name returns 400", func(t *testing.T) {
+		_, p := setup()
+		body := validBody()
+		body["azure_queue"].(map[string]any)["account_name"] = ""
+		w := sendReq(p, body)
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, decodeJSONResponse(t, w)["error"], "account_name")
+	})
+
+	t.Run("missing account_key returns 400", func(t *testing.T) {
+		_, p := setup()
+		body := validBody()
+		body["azure_queue"].(map[string]any)["account_key"] = ""
+		w := sendReq(p, body)
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, decodeJSONResponse(t, w)["error"], "account_key")
+	})
+
+	t.Run("missing queue_name returns 400", func(t *testing.T) {
+		_, p := setup()
+		body := validBody()
+		body["azure_queue"].(map[string]any)["queue_name"] = ""
+		w := sendReq(p, body)
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, decodeJSONResponse(t, w)["error"], "queue_name")
+	})
+
+	t.Run("backend error returns 502", func(t *testing.T) {
+		orig := testAzureQueueConnectionFn
+		testAzureQueueConnectionFn = func(cfg AzureQueueProviderConfig) error {
+			return assert.AnError
+		}
+		t.Cleanup(func() { testAzureQueueConnectionFn = orig })
+
+		_, p := setup()
+		w := sendReq(p, validBody())
+		require.Equal(t, http.StatusBadGateway, w.Code)
+		assert.Contains(t, decodeJSONResponse(t, w)["error"], "Azure Queue connection test failed")
+	})
+
+	t.Run("happy path returns 200", func(t *testing.T) {
+		orig := testAzureQueueConnectionFn
+		testAzureQueueConnectionFn = func(cfg AzureQueueProviderConfig) error { return nil }
+		t.Cleanup(func() { testAzureQueueConnectionFn = orig })
+
+		_, p := setup()
+		w := sendReq(p, validBody())
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "ok", decodeJSONResponse(t, w)["status"])
+	})
+}
+
+func TestHandleTestAzureBlobConnection(t *testing.T) {
+	adminUser := &mmModel.User{Id: "admin-id", Roles: mmModel.SystemAdminRoleId}
+
+	validBody := func() map[string]any {
+		return map[string]any{
+			"provider": "azure-blob",
+			"azure_blob": map[string]any{
+				"service_url":         "https://example.blob.core.windows.net",
+				"account_name":        "acct",
+				"account_key":         "a2V5",
+				"blob_container_name": "c1",
+			},
+		}
+	}
+
+	setup := func() (*plugintest.API, *Plugin) {
+		api := &plugintest.API{}
+		mockLog(api)
+		api.On("GetUser", "admin-id").Return(adminUser, nil)
+		p, _ := setupTestPluginWithRouter(api)
+		return api, p
+	}
+
+	sendReq := func(p *Plugin, body map[string]any) *httptest.ResponseRecorder {
+		r := makeAuthRequest(t, http.MethodPost, "/api/v1/test-connection", body, "admin-id")
+		w := httptest.NewRecorder()
+		p.ServeHTTP(nil, w, r)
+		return w
+	}
+
+	t.Run("missing azure_blob block returns 400", func(t *testing.T) {
+		_, p := setup()
+		w := sendReq(p, map[string]any{"provider": "azure-blob"})
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, decodeJSONResponse(t, w)["error"], "azure_blob config block")
+	})
+
+	t.Run("missing service_url returns 400", func(t *testing.T) {
+		_, p := setup()
+		body := validBody()
+		body["azure_blob"].(map[string]any)["service_url"] = ""
+		w := sendReq(p, body)
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, decodeJSONResponse(t, w)["error"], "service_url")
+	})
+
+	t.Run("missing account_name returns 400", func(t *testing.T) {
+		_, p := setup()
+		body := validBody()
+		body["azure_blob"].(map[string]any)["account_name"] = ""
+		w := sendReq(p, body)
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, decodeJSONResponse(t, w)["error"], "account_name")
+	})
+
+	t.Run("missing account_key returns 400", func(t *testing.T) {
+		_, p := setup()
+		body := validBody()
+		body["azure_blob"].(map[string]any)["account_key"] = ""
+		w := sendReq(p, body)
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, decodeJSONResponse(t, w)["error"], "account_key")
+	})
+
+	t.Run("missing blob_container_name returns 400", func(t *testing.T) {
+		_, p := setup()
+		body := validBody()
+		body["azure_blob"].(map[string]any)["blob_container_name"] = ""
+		w := sendReq(p, body)
+		require.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Contains(t, decodeJSONResponse(t, w)["error"], "blob_container_name")
+	})
+
+	t.Run("backend error returns 502", func(t *testing.T) {
+		orig := testAzureBlobConnectionFn
+		testAzureBlobConnectionFn = func(cfg AzureBlobProviderConfig) error {
+			return assert.AnError
+		}
+		t.Cleanup(func() { testAzureBlobConnectionFn = orig })
+
+		_, p := setup()
+		w := sendReq(p, validBody())
+		require.Equal(t, http.StatusBadGateway, w.Code)
+		assert.Contains(t, decodeJSONResponse(t, w)["error"], "Azure Blob connection test failed")
+	})
+
+	t.Run("happy path returns 200", func(t *testing.T) {
+		orig := testAzureBlobConnectionFn
+		testAzureBlobConnectionFn = func(cfg AzureBlobProviderConfig) error { return nil }
+		t.Cleanup(func() { testAzureBlobConnectionFn = orig })
+
+		_, p := setup()
+		w := sendReq(p, validBody())
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "ok", decodeJSONResponse(t, w)["status"])
 	})
 }

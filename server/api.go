@@ -17,6 +17,12 @@ import (
 
 const maxRequestBodySize = 5 << 20 // 5 MB
 
+// Test seams so handler-level tests can exercise every branch without hitting Azure.
+var (
+	testAzureQueueConnectionFn = testAzureQueueConnection
+	testAzureBlobConnectionFn  = testAzureBlobConnection
+)
+
 func (p *Plugin) initAPI() {
 	router := mux.NewRouter()
 	router.HandleFunc("/api/v1/test-connection", p.handleTestConnection).Methods(http.MethodPost)
@@ -230,7 +236,7 @@ func (p *Plugin) handleTestAzureQueueConnection(w http.ResponseWriter, conn Conn
 		return
 	}
 
-	if err := testAzureQueueConnection(*conn.AzureQueue); err != nil {
+	if err := testAzureQueueConnectionFn(*conn.AzureQueue); err != nil {
 		p.API.LogError("Azure Queue connection test failed", "error", err.Error())
 		writeJSONError(w, "Azure Queue connection test failed: "+err.Error(), http.StatusBadGateway)
 		return
@@ -270,7 +276,7 @@ func (p *Plugin) handleTestAzureBlobConnection(w http.ResponseWriter, conn Conne
 		return
 	}
 
-	if err := testAzureBlobConnection(*conn.AzureBlob); err != nil {
+	if err := testAzureBlobConnectionFn(*conn.AzureBlob); err != nil {
 		p.API.LogError("Azure Blob connection test failed", "error", err.Error())
 		writeJSONError(w, "Azure Blob connection test failed: "+err.Error(), http.StatusBadGateway)
 		return

@@ -21,6 +21,43 @@ func TestAzureCloseWithoutSubscribe(t *testing.T) {
 	assert.NoError(t, p.Close())
 }
 
+func TestBuildQueueURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		serviceURL string
+		queueName  string
+		want       string
+	}{
+		{"no trailing slash", "https://acct.queue.core.windows.net", "q1", "https://acct.queue.core.windows.net/q1"},
+		{"with trailing slash", "https://acct.queue.core.windows.net/", "q1", "https://acct.queue.core.windows.net/q1"},
+		{"with multiple trailing slashes", "https://acct.queue.core.windows.net///", "q1", "https://acct.queue.core.windows.net/q1"},
+		{"empty service URL", "", "q1", "/q1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, buildQueueURL(tt.serviceURL, tt.queueName))
+		})
+	}
+}
+
+func TestBuildBlobContainerURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		serviceURL string
+		container  string
+		want       string
+	}{
+		{"no trailing slash", "https://acct.blob.core.windows.net", "c1", "https://acct.blob.core.windows.net/c1"},
+		{"with trailing slash", "https://acct.blob.core.windows.net/", "c1", "https://acct.blob.core.windows.net/c1"},
+		{"empty service URL", "", "c1", "/c1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, buildBlobContainerURL(tt.serviceURL, tt.container))
+		})
+	}
+}
+
 func TestAzureUploadFileWithoutBlobClient(t *testing.T) {
 	p := &azureProvider{containerClient: nil}
 	err := p.UploadFile(context.TODO(), "key", []byte("data"), nil)
@@ -599,4 +636,209 @@ func TestAzureClose_CancelsContext(t *testing.T) {
 	default:
 		t.Fatal("underlying context was not cancelled")
 	}
+}
+
+// --- Tests for azureProvider.UploadFile and WatchFiles via fakeBlobOps ---
+
+func TestAzureProvider_UploadFile_WithOps(t *testing.T) {
+	t.Run("happy path encodes metadata", func(t *testing.T) {
+		ops := &fakeBlobOps{}
+		api := &plugintest.API{}
+		stubLogs(api)
+		p := &azureProvider{
+			containerClient: ops,
+			api:             api,
+			cfg:             AzureQueueProviderConfig{BlobContainerName: "c1"},
+		}
+		headers := map[string]string{headerPostID: "p1"}
+		require.NoError(t, p.UploadFile(context.Background(), "k", []byte("data"), headers))
+		require.Len(t, ops.uploads, 1)
+		assert.Equal(t, "k", ops.uploads[0].name)
+		assert.NotNil(t, ops.uploads[0].metadata[blobMetadataHeadersKey])
+	})
+
+	t.Run("upload error wrapped", func(t *testing.T) {
+		ops := &fakeBlobOps{
+			uploadFn: func(ctx context.Context, name string, data []byte, metadata map[string]*string) error {
+				return fmt.Errorf("boom")
+			},
+		}
+		api := &plugintest.API{}
+		stubLogs(api)
+		p := &azureProvider{containerClient: ops, api: api}
+		err := p.UploadFile(context.Background(), "k", []byte("d"), nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to upload blob")
+	})
+}
+
+func TestAzureProvider_WatchFiles_WithOps(t *testing.T) {
+	prev := azureBlobPollInterval
+	azureBlobPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { azureBlobPollInterval = prev })
+
+	newProvider := func(ops azureBlobOps) *azureProvider {
+		api := &plugintest.API{}
+		stubLogs(api)
+		return &azureProvider{containerClient: ops, api: api, cfg: AzureQueueProviderConfig{BlobContainerName: "c1"}}
+	}
+
+	t.Run("ctx cancel before first tick returns nil", func(t *testing.T) {
+		p := newProvider(&fakeBlobOps{})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		assert.NoError(t, p.WatchFiles(ctx, func(k string, d []byte, h map[string]string) error { return nil }))
+	})
+
+	t.Run("list error continues until cancel", func(t *testing.T) {
+		var calls atomic.Int32
+		ops := &fakeBlobOps{
+			listFn: func(ctx context.Context, prefix string, includeMetadata bool) ([]blobListing, error) {
+				calls.Add(1)
+				return nil, fmt.Errorf("list boom")
+			},
+		}
+		p := newProvider(ops)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			done <- p.WatchFiles(ctx, func(k string, d []byte, h map[string]string) error { return nil })
+		}()
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+		<-done
+		assert.GreaterOrEqual(t, calls.Load(), int32(1))
+	})
+
+	t.Run("happy path downloads and deletes", func(t *testing.T) {
+		var served atomic.Bool
+		ops := &fakeBlobOps{
+			listFn: func(ctx context.Context, prefix string, includeMetadata bool) ([]blobListing, error) {
+				if served.CompareAndSwap(false, true) {
+					return []blobListing{{Name: "a.bin"}}, nil
+				}
+				return nil, nil
+			},
+			downloadFn: func(ctx context.Context, name string) ([]byte, error) {
+				return []byte("filedata"), nil
+			},
+		}
+		p := newProvider(ops)
+		gotKey := make(chan string, 1)
+		handler := func(key string, data []byte, headers map[string]string) error {
+			select {
+			case gotKey <- key:
+			default:
+			}
+			return nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- p.WatchFiles(ctx, handler) }()
+		select {
+		case k := <-gotKey:
+			assert.Equal(t, "a.bin", k)
+		case <-time.After(time.Second):
+			t.Fatal("handler not called")
+		}
+		cancel()
+		<-done
+		ops.mu.Lock()
+		assert.Contains(t, ops.deletes, "a.bin")
+		ops.mu.Unlock()
+	})
+
+	t.Run("download error skips handler", func(t *testing.T) {
+		ops := &fakeBlobOps{
+			listFn: func(ctx context.Context, prefix string, includeMetadata bool) ([]blobListing, error) {
+				return []blobListing{{Name: "a.bin"}}, nil
+			},
+			downloadFn: func(ctx context.Context, name string) ([]byte, error) {
+				return nil, fmt.Errorf("bad")
+			},
+		}
+		p := newProvider(ops)
+		handlerCalled := make(chan struct{}, 1)
+		handler := func(key string, data []byte, headers map[string]string) error {
+			handlerCalled <- struct{}{}
+			return nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- p.WatchFiles(ctx, handler) }()
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+		<-done
+		select {
+		case <-handlerCalled:
+			t.Fatal("handler should not have been called")
+		default:
+		}
+	})
+
+	t.Run("handler error skips delete", func(t *testing.T) {
+		ops := &fakeBlobOps{
+			listFn: func(ctx context.Context, prefix string, includeMetadata bool) ([]blobListing, error) {
+				return []blobListing{{Name: "a.bin"}}, nil
+			},
+			downloadFn: func(ctx context.Context, name string) ([]byte, error) { return []byte("d"), nil },
+		}
+		p := newProvider(ops)
+		handler := func(key string, data []byte, headers map[string]string) error {
+			return fmt.Errorf("h")
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- p.WatchFiles(ctx, handler) }()
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+		<-done
+		ops.mu.Lock()
+		assert.Empty(t, ops.deletes)
+		ops.mu.Unlock()
+	})
+
+	t.Run("delete error logged and continues", func(t *testing.T) {
+		ops := &fakeBlobOps{
+			listFn: func(ctx context.Context, prefix string, includeMetadata bool) ([]blobListing, error) {
+				return []blobListing{{Name: "a.bin"}}, nil
+			},
+			downloadFn: func(ctx context.Context, name string) ([]byte, error) { return []byte("d"), nil },
+			deleteFn:   func(ctx context.Context, name string) error { return fmt.Errorf("del") },
+		}
+		p := newProvider(ops)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			done <- p.WatchFiles(ctx, func(k string, d []byte, h map[string]string) error { return nil })
+		}()
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+		<-done
+	})
+}
+
+func TestNewAzureProvider_InvalidCredential(t *testing.T) {
+	api := &plugintest.API{}
+	cfg := AzureQueueProviderConfig{
+		AccountName:     "acct",
+		AccountKey:      "not-base64-!!!",
+		QueueServiceURL: "https://acct.queue.core.windows.net",
+		QueueName:       "q1",
+	}
+	_, err := newAzureProvider(cfg, api)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "shared key credential")
+}
+
+func TestTestAzureQueueConnection_InvalidCredential(t *testing.T) {
+	cfg := AzureQueueProviderConfig{
+		AccountName:     "acct",
+		AccountKey:      "not-base64-!!!",
+		QueueServiceURL: "https://acct.queue.core.windows.net",
+		QueueName:       "q1",
+	}
+	err := testAzureQueueConnection(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "shared key credential")
 }

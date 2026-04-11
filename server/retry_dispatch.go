@@ -3,6 +3,7 @@ package main
 import (
 	"time"
 
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 )
 
@@ -93,11 +94,13 @@ func (p *Plugin) retryInboundMessage(entry *retryEntry, lastAttempt bool) bool {
 
 	if !missing {
 		p.API.LogWarn("Missing message: retry succeeded",
+			"error_code", errcode.RetryDispatchSucceeded,
 			"conn", entry.connName, "type", env.Type, "remote_post_id", entry.remoteID, "attempt", entry.retries+1)
 		return true
 	}
 
 	p.API.LogWarn("Missing message: still missing after retry",
+		"error_code", errcode.RetryDispatchStillMissing,
 		"conn", entry.connName, "type", env.Type, "remote_post_id", entry.remoteID, "attempt", entry.retries+1,
 		"next_retry_in", retryQueueRetryDelay)
 	return false
@@ -116,13 +119,16 @@ func (p *Plugin) handleRetryDropped(entry *retryEntry, reason string) {
 	switch reason {
 	case retryDropReasonMaxAge:
 		p.API.LogError("Missing message: dropped, exceeded max age",
+			"error_code", errcode.RetryDispatchDropMaxAge,
 			"conn", entry.connName, "type", entry.msgType, "remote_post_id", entry.remoteID,
 			"age", time.Since(entry.enqueuedAt).String())
 	case retryDropReasonUnmarshalFailed:
 		p.API.LogError("Missing message: dropped, payload unmarshal failed on retry",
+			"error_code", errcode.RetryDispatchDropUnmarshal,
 			"conn", entry.connName, "type", entry.msgType, "remote_post_id", entry.remoteID)
 	default:
 		p.API.LogError("Missing message: dropped after max retries",
+			"error_code", errcode.RetryDispatchDropMaxRetries,
 			"conn", entry.connName, "type", entry.msgType, "remote_post_id", entry.remoteID,
 			"attempts", entry.retries)
 	}

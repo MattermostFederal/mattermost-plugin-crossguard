@@ -11,6 +11,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/nats-io/nats.go"
 
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 	cgModel "github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
@@ -134,7 +135,9 @@ func (p *Plugin) handleTestNATSConnection(w http.ResponseWriter, conn Connection
 
 	nc, err := newNATSProviderForTest(*natsCfg)
 	if err != nil {
-		p.API.LogError("NATS connection test failed", "address", natsCfg.Address, "error", err.Error())
+		p.API.LogError("NATS connection test failed",
+			"error_code", errcode.APINATSTestConnectFailed,
+			"address", natsCfg.Address, "error", err.Error())
 		writeJSONError(w, "failed to connect to NATS server", http.StatusBadGateway)
 		return
 	}
@@ -157,24 +160,32 @@ func (p *Plugin) handleTestNATSOutbound(w http.ResponseWriter, nc *nats.Conn, co
 	}
 	data, msgID, err := buildTestMessage(format)
 	if err != nil {
-		p.API.LogError("Failed to build test message", "error", err.Error())
+		p.API.LogError("Failed to build test message",
+			"error_code", errcode.APIBuildTestMessageFailed,
+			"error", err.Error())
 		writeJSONError(w, "failed to build test message", http.StatusInternalServerError)
 		return
 	}
 
 	if err := nc.Publish(conn.NATS.Subject, data); err != nil {
-		p.API.LogError("Failed to publish test message", "subject", conn.NATS.Subject, "error", err.Error())
+		p.API.LogError("Failed to publish test message",
+			"error_code", errcode.APIPublishTestMessageFailed,
+			"subject", conn.NATS.Subject, "error", err.Error())
 		writeJSONError(w, "failed to publish test message", http.StatusBadGateway)
 		return
 	}
 
 	if err := nc.Flush(); err != nil {
-		p.API.LogError("Failed to flush test message", "subject", conn.NATS.Subject, "error", err.Error())
+		p.API.LogError("Failed to flush test message",
+			"error_code", errcode.APIFlushTestMessageFailed,
+			"subject", conn.NATS.Subject, "error", err.Error())
 		writeJSONError(w, "failed to confirm test message delivery", http.StatusBadGateway)
 		return
 	}
 
-	p.API.LogInfo("Test message sent", "subject", conn.NATS.Subject, "msg_id", msgID)
+	p.API.LogInfo("Test message sent",
+		"error_code", errcode.APITestMessageSent,
+		"subject", conn.NATS.Subject, "msg_id", msgID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -188,19 +199,25 @@ func (p *Plugin) handleTestNATSOutbound(w http.ResponseWriter, nc *nats.Conn, co
 func (p *Plugin) handleTestNATSInbound(w http.ResponseWriter, nc *nats.Conn, conn ConnectionConfig) {
 	sub, err := nc.SubscribeSync(conn.NATS.Subject)
 	if err != nil {
-		p.API.LogError("Failed to subscribe for inbound test", "subject", conn.NATS.Subject, "error", err.Error())
+		p.API.LogError("Failed to subscribe for inbound test",
+			"error_code", errcode.APISubscribeInboundTestFailed,
+			"subject", conn.NATS.Subject, "error", err.Error())
 		writeJSONError(w, "failed to subscribe to subject", http.StatusBadGateway)
 		return
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 
 	if err := nc.Flush(); err != nil {
-		p.API.LogError("Failed to flush NATS connection", "error", err.Error())
+		p.API.LogError("Failed to flush NATS connection",
+			"error_code", errcode.APIFlushNATSConnFailed,
+			"error", err.Error())
 		writeJSONError(w, "failed to flush NATS connection", http.StatusBadGateway)
 		return
 	}
 
-	p.API.LogInfo("Inbound test subscription successful", "subject", conn.NATS.Subject)
+	p.API.LogInfo("Inbound test subscription successful",
+		"error_code", errcode.APIInboundTestSubscribeOK,
+		"subject", conn.NATS.Subject)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -237,7 +254,9 @@ func (p *Plugin) handleTestAzureQueueConnection(w http.ResponseWriter, conn Conn
 	}
 
 	if err := testAzureQueueConnectionFn(*conn.AzureQueue); err != nil {
-		p.API.LogError("Azure Queue connection test failed", "error", err.Error())
+		p.API.LogError("Azure Queue connection test failed",
+			"error_code", errcode.APIAzureQueueTestFailed,
+			"error", err.Error())
 		writeJSONError(w, "Azure Queue connection test failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -285,7 +304,9 @@ func (p *Plugin) handleTestAzureBlobConnection(w http.ResponseWriter, conn Conne
 	}
 
 	if err := testAzureBlobConnectionFn(*conn.AzureBlob); err != nil {
-		p.API.LogError("Azure Blob connection test failed", "error", err.Error())
+		p.API.LogError("Azure Blob connection test failed",
+			"error_code", errcode.APIAzureBlobTestFailed,
+			"error", err.Error())
 		writeJSONError(w, "Azure Blob connection test failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -323,7 +344,9 @@ func (p *Plugin) getAuthenticatedUser(w http.ResponseWriter, r *http.Request) *m
 
 	user, appErr := p.API.GetUser(userID)
 	if appErr != nil {
-		p.API.LogError("Failed to get user", "user_id", userID, "error", appErr.Error())
+		p.API.LogError("Failed to get user",
+			"error_code", errcode.APIGetUserFailed,
+			"user_id", userID, "error", appErr.Error())
 		writeJSONError(w, "failed to get user", http.StatusInternalServerError)
 		return nil
 	}
@@ -396,7 +419,9 @@ func (p *Plugin) handleInitChannel(w http.ResponseWriter, r *http.Request) {
 
 	teamConns, err := p.kvstore.GetTeamConnections(channel.TeamId)
 	if err != nil {
-		p.API.LogError("Failed to get team connections", "team_id", channel.TeamId, "error", err.Error())
+		p.API.LogError("Failed to get team connections",
+			"error_code", errcode.APIInitChannelGetTeamConns,
+			"team_id", channel.TeamId, "error", err.Error())
 		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
 		return
 	}
@@ -449,7 +474,9 @@ func (p *Plugin) handleTeardownChannel(w http.ResponseWriter, r *http.Request) {
 
 	chanConns, err := p.kvstore.GetChannelConnections(channelID)
 	if err != nil {
-		p.API.LogError("Failed to get channel connections", "channel_id", channelID, "error", err.Error())
+		p.API.LogError("Failed to get channel connections",
+			"error_code", errcode.APITeardownChannelGetChanConns,
+			"channel_id", channelID, "error", err.Error())
 		writeJSONError(w, "failed to check channel connections", http.StatusInternalServerError)
 		return
 	}
@@ -496,7 +523,9 @@ func (p *Plugin) handleTeardownTeam(w http.ResponseWriter, r *http.Request) {
 
 	teamConns, err := p.kvstore.GetTeamConnections(teamID)
 	if err != nil {
-		p.API.LogError("Failed to get team connections", "team_id", teamID, "error", err.Error())
+		p.API.LogError("Failed to get team connections",
+			"error_code", errcode.APITeardownTeamGetTeamConns,
+			"team_id", teamID, "error", err.Error())
 		writeJSONError(w, "failed to check team connections", http.StatusInternalServerError)
 		return
 	}
@@ -750,7 +779,9 @@ func (p *Plugin) handleBulkChannelConnections(w http.ResponseWriter, r *http.Req
 
 		conns, err := p.kvstore.GetChannelConnections(id)
 		if err != nil {
-			p.API.LogWarn("Failed to get channel connections for bulk lookup", "channel_id", id, "error", err.Error())
+			p.API.LogWarn("Failed to get channel connections for bulk lookup",
+				"error_code", errcode.APIBulkChannelConnectionsFailed,
+				"channel_id", id, "error", err.Error())
 			continue
 		}
 
@@ -827,7 +858,9 @@ func (p *Plugin) handleSetTeamRewrite(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "failed to update team connections", http.StatusInternalServerError)
 		return
 	}
-	p.API.LogInfo("Team rewrite set", "team_id", teamID, "connection", req.Connection, "remote_team_name", req.RemoteTeamName, "user", user.Username)
+	p.API.LogInfo("Team rewrite set",
+		"error_code", errcode.APITeamRewriteSet,
+		"team_id", teamID, "connection", req.Connection, "remote_team_name", req.RemoteTeamName, "user", user.Username)
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":           "ok",
 		"team_id":          teamID,
@@ -880,7 +913,9 @@ func (p *Plugin) handleDeleteTeamRewrite(w http.ResponseWriter, r *http.Request)
 	if oldRemote != "" {
 		_ = p.kvstore.DeleteTeamRewriteIndex(connParam, oldRemote)
 	}
-	p.API.LogInfo("Team rewrite cleared", "team_id", teamID, "connection", connParam, "user", user.Username)
+	p.API.LogInfo("Team rewrite cleared",
+		"error_code", errcode.APITeamRewriteCleared,
+		"team_id", teamID, "connection", connParam, "user", user.Username)
 	writeJSON(w, http.StatusOK, map[string]string{
 		"status":     "ok",
 		"team_id":    teamID,

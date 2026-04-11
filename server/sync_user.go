@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	mmModel "github.com/mattermost/mattermost/server/public/model"
+
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 )
 
 const (
@@ -22,7 +24,9 @@ func (p *Plugin) ensureSyncUser(username, connName, teamID, channelID string) (s
 			return "", fmt.Errorf("connection name too long to create sync username")
 		}
 		munged = username[:maxUser] + "." + connName
-		p.API.LogWarn("Truncated sync username to fit limit", "original", username, "munged", munged)
+		p.API.LogWarn("Truncated sync username to fit limit",
+			"error_code", errcode.SyncUserTruncatedUsername,
+			"original", username, "munged", munged)
 	}
 
 	user, appErr := p.API.GetUserByUsername(munged)
@@ -75,6 +79,7 @@ func (p *Plugin) resolveInboundUser(username, connName, teamID, channelID string
 		user, appErr := p.API.GetUserByUsername(username)
 		if appErr != nil {
 			p.API.LogDebug("Username lookup did not find local user, falling back to sync user",
+				"error_code", errcode.SyncUserLookupFallback,
 				"username", username, "conn", connName)
 		} else if user.Position != syncUserPosition {
 			p.ensureMembership(user.Id, teamID, channelID)
@@ -88,12 +93,16 @@ func (p *Plugin) resolveInboundUser(username, connName, teamID, channelID string
 func (p *Plugin) ensureMembership(userID, teamID, channelID string) {
 	if _, appErr := p.API.CreateTeamMember(teamID, userID); appErr != nil {
 		if !strings.Contains(appErr.Error(), "already") {
-			p.API.LogWarn("Failed to add sync user to team", "user_id", userID, "team_id", teamID, "error", appErr.Error())
+			p.API.LogWarn("Failed to add sync user to team",
+				"error_code", errcode.SyncUserAddToTeamFailed,
+				"user_id", userID, "team_id", teamID, "error", appErr.Error())
 		}
 	}
 	if _, appErr := p.API.AddChannelMember(channelID, userID); appErr != nil {
 		if !strings.Contains(appErr.Error(), "already") {
-			p.API.LogWarn("Failed to add sync user to channel", "user_id", userID, "channel_id", channelID, "error", appErr.Error())
+			p.API.LogWarn("Failed to add sync user to channel",
+				"error_code", errcode.SyncUserAddToChannelFailed,
+				"user_id", userID, "channel_id", channelID, "error", appErr.Error())
 		}
 	}
 }

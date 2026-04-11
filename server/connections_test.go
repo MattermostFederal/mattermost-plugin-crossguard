@@ -130,10 +130,7 @@ func TestSplitMessage(t *testing.T) {
 
 // addLogMocks registers permissive log expectations on the mock API.
 func addLogMocks(api *plugintest.API) {
-	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogInfo", "LogWarn", "LogError", "LogDebug")
 }
 
 func TestBuildPostEnvelope(t *testing.T) {

@@ -13,6 +13,7 @@ Keep Crossguard's user-facing documentation in sync with the code. This skill co
 - After changing admin settings in `server/configuration.go` or `plugin.json`
 - After adding or changing a slash command
 - After changing transport provider behavior (NATS, Azure Queue, Azure Blob)
+- After adding, renaming, or removing any error code constant in `server/errcode/codes.go`
 - Before cutting a release
 
 ## When NOT to Use
@@ -46,7 +47,7 @@ This workflow is driven by the harness task list. Do not work without a task.
 Look at the current branch's diff against `main` and identify user-visible changes:
 
 ```bash
-git --git-dir=.bare diff main...HEAD -- server/api.go server/configuration.go plugin.json
+git --git-dir=.bare diff main...HEAD -- server/api.go server/configuration.go plugin.json server/errcode/codes.go
 git --git-dir=.bare log main..HEAD --oneline
 ```
 
@@ -55,6 +56,16 @@ Focus on:
 - New or renamed config settings, defaults, validation rules
 - New slash commands or changed command arguments
 - New provider options or behavioral changes in existing providers
+- New, renamed, or removed constants in `server/errcode/codes.go`
+
+Also reconcile the full set of error codes against the docs. Every constant declared in `server/errcode/codes.go` must appear as a row in `public/help/error-codes.html`, and vice versa:
+
+```bash
+grep -cE '^\s+[A-Z][A-Za-z0-9]+\s*=\s*[0-9]+$' server/errcode/codes.go
+grep -cE '<td><code>[0-9]+</code>' public/help/error-codes.html
+```
+
+The two counts must match. If they differ, diff the constant names against the HTML rows and flag the drift in the plan (Step 2). Look for both directions: codes added to `codes.go` without a matching row, and rows in the HTML whose constant no longer exists in `codes.go`.
 
 Step 1 is read-only. Do not edit any file yet.
 
@@ -82,8 +93,19 @@ All HTML sources live in `public/help/`. Match the existing tone, heading struct
 | `transport-interface.html` | Transport providers (NATS, Azure Queue, Azure Blob) |
 | `whitepaper.html` | High-level architecture and design |
 | `threatmodel.html` | Security and threat model |
+| `error-codes.html` | Reference for every numeric `error_code` emitted by `p.API.Log*` calls |
 
 Only edit the pages whose scope actually changed. Preserve existing anchors so cross-links do not break.
+
+#### Error code rows (`error-codes.html`)
+
+When `server/errcode/codes.go` changes, update `public/help/error-codes.html` to match exactly:
+
+- **New constant**: add a row in the section for its source file. The section's anchor ID matches the file stem (e.g., `#inbound`, `#azure-blob-provider`). Keep rows sorted by numeric code. Columns are `Code | Name / Level | Log message and context | Troubleshooting`. Read the actual call site in the referenced `server/<file>.go` to capture the verbatim log message string, the log level (DEBUG/INFO/WARN/ERROR), and the KV context fields. Do not invent descriptions.
+- **Renamed constant**: the integer code is the stable contract and must not change. Update the constant name cell only.
+- **Removed constant**: delete the corresponding row and update the section count in the "Range Quick Reference" table at the top.
+- **New source-file block** (new 1000-range in `codes.go`): add a new `<section>` with a new anchor, add a new row to the Range Quick Reference table, and add a sidebar link if the file warrants it.
+- Always update the Range Quick Reference counts when rows are added or removed so the totals stay in sync with `codes.go`.
 
 ### 4. Update the OpenAPI schema
 
@@ -120,6 +142,11 @@ If the script fails because Playwright browsers are missing, run `npx playwright
 - `git status` shows changes under `public/help/`, `schema/crossguard-api.yaml`, and any touched HTML
 - `git diff schema/crossguard-api.yaml` matches the code changes from step 1
 - Spot-check one regenerated PDF opens and renders without the sidebar (the script hides it)
+- Error code parity: re-run the two counts from Step 1 and confirm they still match.
+  ```bash
+  grep -cE '^\s+[A-Z][A-Za-z0-9]+\s*=\s*[0-9]+$' server/errcode/codes.go
+  grep -cE '<td><code>[0-9]+</code>' public/help/error-codes.html
+  ```
 
 ### 7. Report
 
@@ -146,3 +173,6 @@ Summarize in one short block:
 - Using em dashes. The repo convention forbids them in docs and code.
 - Breaking existing anchors in HTML, which silently breaks cross-links from other pages.
 - Running `generate-pdfs.js` from a subdirectory. Run it from the repo root so `HELP_DIR` resolves correctly.
+- Adding a new constant to `server/errcode/codes.go` without adding a matching row in `public/help/error-codes.html`. Operators grep the code in logs and expect a reference entry.
+- Guessing an error code description. Read the actual `p.API.Log*` call site so the log message string, level, and KV fields match reality.
+- Renumbering or reusing an existing error code. The integer is a stable contract; only the Go identifier may be renamed.

@@ -18,12 +18,23 @@ import (
 )
 
 // defaultLogMocks registers Maybe() log mocks on the API so that tests do not
-// fail when the production code logs at any level.
+// fail when the production code logs at any level. Because testify mocks match
+// by exact positional arity, we register each Log method at a range of argument
+// counts so calls with any number of key/value pairs are accepted.
 func defaultLogMocks(api *plugintest.API) {
-	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogDebug", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogInfo", "LogWarn", "LogError", "LogDebug")
+}
+
+func registerLogMocks(api *plugintest.API, methods ...string) {
+	for _, m := range methods {
+		for n := 1; n <= 16; n++ {
+			args := make([]any, n)
+			for i := range args {
+				args[i] = mock.Anything
+			}
+			api.On(m, args...).Maybe()
+		}
+	}
 }
 
 // postActionRequest builds a PostActionIntegrationRequest body as a JSON reader.
@@ -78,7 +89,7 @@ func TestHandleUnlinkedInbound(t *testing.T) {
 		team := &mmModel.Team{Id: "team-id", Name: "test-a", DisplayName: "Test A"}
 		p.handleUnlinkedInbound(team, "high")
 
-		api.AssertCalled(t, "LogError", "Failed to get connection prompt", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		api.AssertCalled(t, "LogError", "Failed to get connection prompt", "error_code", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		api.AssertNotCalled(t, "CreatePost", mock.Anything)
 	})
 
@@ -97,7 +108,7 @@ func TestHandleUnlinkedInbound(t *testing.T) {
 		team := &mmModel.Team{Id: "team-id", Name: "test-a", DisplayName: "Test A"}
 		p.handleUnlinkedInbound(team, "high")
 
-		api.AssertCalled(t, "LogError", "Failed to get town-square for prompt", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		api.AssertCalled(t, "LogError", "Failed to get town-square for prompt", "error_code", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		api.AssertNotCalled(t, "CreatePost", mock.Anything)
 	})
 
@@ -156,7 +167,7 @@ func TestHandleUnlinkedInbound(t *testing.T) {
 		team := &mmModel.Team{Id: "team-id", Name: "test-a", DisplayName: "Test A"}
 		p.handleUnlinkedInbound(team, "high")
 
-		api.AssertCalled(t, "LogError", "Failed to create connection prompt post", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		api.AssertCalled(t, "LogError", "Failed to create connection prompt post", "error_code", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("race condition deletes duplicate post", func(t *testing.T) {
@@ -205,7 +216,7 @@ func TestHandleUnlinkedInbound(t *testing.T) {
 		team := &mmModel.Team{Id: "team-id", Name: "test-a", DisplayName: "Test A"}
 		p.handleUnlinkedInbound(team, "high")
 
-		api.AssertCalled(t, "LogError", "Failed to save connection prompt", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		api.AssertCalled(t, "LogError", "Failed to save connection prompt", "error_code", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		api.AssertCalled(t, "DeletePost", "cleanup-post-id")
 	})
 }
@@ -743,7 +754,7 @@ func TestHandleUnlinkedInboundChannel(t *testing.T) {
 		channel := &mmModel.Channel{Id: "chan-id", DisplayName: "General", TeamId: "team-id"}
 		p.handleUnlinkedInboundChannel(team, channel, "high")
 
-		api.AssertCalled(t, "LogError", "Failed to get channel connection prompt", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		api.AssertCalled(t, "LogError", "Failed to get channel connection prompt", "error_code", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		api.AssertNotCalled(t, "CreatePost", mock.Anything)
 	})
 
@@ -800,7 +811,7 @@ func TestHandleUnlinkedInboundChannel(t *testing.T) {
 		channel := &mmModel.Channel{Id: "chan-id", DisplayName: "General", TeamId: "team-id"}
 		p.handleUnlinkedInboundChannel(team, channel, "high")
 
-		api.AssertCalled(t, "LogError", "Failed to create channel connection prompt post", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		api.AssertCalled(t, "LogError", "Failed to create channel connection prompt post", "error_code", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 
 	t.Run("race condition deletes duplicate post", func(t *testing.T) {
@@ -846,7 +857,7 @@ func TestHandleUnlinkedInboundChannel(t *testing.T) {
 		channel := &mmModel.Channel{Id: "chan-id", DisplayName: "General", TeamId: "team-id"}
 		p.handleUnlinkedInboundChannel(team, channel, "high")
 
-		api.AssertCalled(t, "LogError", "Failed to save channel connection prompt", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		api.AssertCalled(t, "LogError", "Failed to save channel connection prompt", "error_code", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		api.AssertCalled(t, "DeletePost", "cleanup-chan-post-id")
 	})
 }
@@ -1367,7 +1378,7 @@ func TestUpdatePromptPost(t *testing.T) {
 
 		updatePromptPost(p, "missing-post-id", "new message")
 
-		api.AssertCalled(t, "LogError", "Failed to get prompt post for update", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		api.AssertCalled(t, "LogError", "Failed to get prompt post for update", "error_code", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 		api.AssertNotCalled(t, "UpdatePost", mock.Anything)
 	})
 
@@ -1406,7 +1417,7 @@ func TestUpdatePromptPost(t *testing.T) {
 
 		updatePromptPost(p, "post-id", "new message")
 
-		api.AssertCalled(t, "LogError", "Failed to update prompt post", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+		api.AssertCalled(t, "LogError", "Failed to update prompt post", "error_code", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	})
 }
 

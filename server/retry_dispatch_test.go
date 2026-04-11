@@ -17,15 +17,7 @@ import (
 // stubLogs registers loose matchers that silently accept any LogWarn/LogError/LogDebug/LogInfo call.
 // Use in tests that don't care about log contents.
 func stubLogs(api *plugintest.API) {
-	for _, m := range []string{"LogWarn", "LogError", "LogDebug", "LogInfo"} {
-		api.On(m, mock.Anything, mock.Anything).Return().Maybe()
-		api.On(m, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
-		api.On(m, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
-		api.On(m, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
-		api.On(m, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
-		api.On(m, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
-		api.On(m, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return().Maybe()
-	}
+	registerLogMocks(api, "LogWarn", "LogError", "LogDebug", "LogInfo")
 }
 
 func mustMarshalEnv(t *testing.T, env *model.Envelope) []byte {

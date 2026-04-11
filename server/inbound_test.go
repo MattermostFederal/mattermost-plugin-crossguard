@@ -200,7 +200,7 @@ func TestResolveTeamAndChannel(t *testing.T) {
 		api.On("GetTeamByName", "test-a").Return(team, nil)
 		api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 		api.On("CreatePost", mock.AnythingOfType("*model.Post")).Return(&mmModel.Post{Id: "prompt-post-id"}, nil)
-		api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+		registerLogMocks(api, "LogError")
 
 		_, _, err := p.resolveTeamAndChannel("high", "test-a", "town-square")
 		require.Error(t, err)
@@ -342,7 +342,7 @@ func TestHandleInboundPost(t *testing.T) {
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
-	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user", "error_code", mock.Anything,
 		"username", "alice", "conn", "high").Return()
 	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
@@ -374,7 +374,7 @@ func TestHandleInboundPost_ResolveFailed(t *testing.T) {
 
 	notFoundErr := &mmModel.AppError{Message: "team not found"}
 	api.On("GetTeamByName", "missing-team").Return(nil, notFoundErr)
-	api.On("LogWarn", "Inbound post: resolve failed",
+	api.On("LogWarn", "Inbound post: resolve failed", "error_code", mock.Anything,
 		"conn", "high", "error", mock.Anything).Return()
 
 	postMsg := model.PostMessage{
@@ -420,7 +420,7 @@ func TestHandleInboundUpdate_NoMapping(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogWarn", "Inbound update: no post mapping found", "conn", "high", "remote_id", "unknown-id").Return()
+	api.On("LogWarn", "Inbound update: no post mapping found", "error_code", mock.Anything, "conn", "high", "remote_id", "unknown-id").Return()
 
 	postMsg := model.PostMessage{PostID: "unknown-id", MessageText: "edited"}
 
@@ -464,7 +464,7 @@ func TestHandleInboundReaction_Add(t *testing.T) {
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
-	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user", "error_code", mock.Anything,
 		"username", "alice", "conn", "high").Return()
 	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
@@ -498,7 +498,7 @@ func TestHandleInboundReaction_Remove(t *testing.T) {
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
-	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user", "error_code", mock.Anything,
 		"username", "alice", "conn", "high").Return()
 	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
@@ -532,7 +532,7 @@ func TestHandleInboundPost_WithThread(t *testing.T) {
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
-	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user", "error_code", mock.Anything,
 		"username", "alice", "conn", "high").Return()
 	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
@@ -636,13 +636,13 @@ func TestHandleInboundPost_SetPostMappingFailure(t *testing.T) {
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
-	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user", "error_code", mock.Anything,
 		"username", "alice", "conn", "high").Return()
 	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
 	api.On("CreatePost", mock.AnythingOfType("*model.Post")).Return(&mmModel.Post{Id: "local-post-id"}, nil)
-	api.On("LogError", "Inbound post: failed to store post mapping",
+	api.On("LogError", "Inbound post: failed to store post mapping", "error_code", mock.Anything,
 		"conn", "high", "remote_id", "remote-post-id", "local_id", "local-post-id", "error", "kv write failed").Return()
 
 	postMsg := model.PostMessage{
@@ -671,13 +671,13 @@ func TestHandleInboundPost_CreatePostFailure(t *testing.T) {
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
-	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user", "error_code", mock.Anything,
 		"username", "alice", "conn", "high").Return()
 	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
 	api.On("CreatePost", mock.AnythingOfType("*model.Post")).Return(nil, &mmModel.AppError{Message: "create failed"})
-	api.On("LogError", "Inbound post: create failed", "conn", "high", "error", "create failed").Return()
+	api.On("LogError", "Inbound post: create failed", "error_code", mock.Anything, "conn", "high", "error", "create failed").Return()
 
 	postMsg := model.PostMessage{
 		PostID:      "remote-post-id",
@@ -711,7 +711,7 @@ func TestHandleInboundUpdate_GetPostMappingError(t *testing.T) {
 	}
 	p.kvstore = kvs
 
-	api.On("LogError", "Inbound update: failed to look up post mapping",
+	api.On("LogError", "Inbound update: failed to look up post mapping", "error_code", mock.Anything,
 		"conn", "high", "remote_id", "remote-post-id", "error", "kv read failed").Return()
 
 	postMsg := model.PostMessage{PostID: "remote-post-id", MessageText: "edited"}
@@ -730,7 +730,7 @@ func TestHandleInboundUpdate_GetPostFailure(t *testing.T) {
 	kvs.postMappings["high-remote-post-id"] = "local-post-id"
 
 	api.On("GetPost", "local-post-id").Return(nil, &mmModel.AppError{Message: "post not found"})
-	api.On("LogError", "Inbound update: failed to get local post",
+	api.On("LogError", "Inbound update: failed to get local post", "error_code", mock.Anything,
 		"conn", "high", "local_id", "local-post-id", "error", "post not found").Return()
 
 	postMsg := model.PostMessage{PostID: "remote-post-id", MessageText: "edited"}
@@ -775,7 +775,7 @@ func TestHandleInboundDelete_SetDeletingFlagFailure(t *testing.T) {
 	kvs.postMappings["high-remote-post-id"] = "local-post-id"
 	p.kvstore = kvs
 
-	api.On("LogError", "Inbound delete: failed to set delete flag",
+	api.On("LogError", "Inbound delete: failed to set delete flag", "error_code", mock.Anything,
 		"conn", "high", "local_id", "local-post-id", "error", "flag write failed").Return()
 	api.On("DeletePost", "local-post-id").Return(nil)
 
@@ -798,7 +798,7 @@ func TestHandleInboundDelete_DeletePostFailure(t *testing.T) {
 	kvs.postMappings["high-remote-post-id"] = "local-post-id"
 
 	api.On("DeletePost", "local-post-id").Return(&mmModel.AppError{Message: "delete failed"})
-	api.On("LogError", "Inbound delete: failed to delete post",
+	api.On("LogError", "Inbound delete: failed to delete post", "error_code", mock.Anything,
 		"conn", "high", "local_id", "local-post-id", "error", "delete failed").Return()
 
 	deleteMsg := model.DeleteMessage{
@@ -838,7 +838,7 @@ func TestHandleInboundMessage_UnknownType(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogWarn", "Unknown inbound message type", "conn", "high", "type", "unknown_type").Return()
+	api.On("LogWarn", "Unknown inbound message type", "error_code", mock.Anything, "conn", "high", "type", "unknown_type").Return()
 
 	env := &model.Envelope{Type: "unknown_type"}
 	data, err := model.Marshal(env, model.FormatJSON)
@@ -864,7 +864,7 @@ func TestHandleInboundMessage_SemaphoreFull(t *testing.T) {
 	p.relaySem = make(chan struct{}, 1)
 	p.relaySem <- struct{}{}
 
-	api.On("LogWarn", "Relay semaphore full, dropping inbound message", "conn", "high").Return()
+	api.On("LogWarn", "Relay semaphore full, dropping inbound message", "error_code", mock.Anything, "conn", "high").Return()
 
 	env := &model.Envelope{Type: model.MessageTypeTest}
 	data, err := model.Marshal(env, model.FormatJSON)
@@ -881,7 +881,7 @@ func TestHandleInboundMessage_TestMessageType(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogInfo", "Received inbound test message", "conn", "high", "id", "test-123").Return()
+	api.On("LogInfo", "Received inbound test message", "error_code", mock.Anything, "conn", "high", "id", "test-123").Return()
 
 	env := &model.Envelope{
 		Type:        model.MessageTypeTest,
@@ -937,7 +937,7 @@ func TestHandleInboundMessage_PostMissingPayload(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogError", "Inbound post: missing payload", "conn", "high").Return()
+	api.On("LogError", "Inbound post: missing payload", "error_code", mock.Anything, "conn", "high").Return()
 
 	env := &model.Envelope{Type: model.MessageTypePost}
 	data, err := model.Marshal(env, model.FormatJSON)
@@ -1020,7 +1020,7 @@ func TestHandleInboundFile_MissingHeaders(t *testing.T) {
 	p, _ := setupTestPlugin(api)
 	p.fileSem = make(chan struct{}, 32)
 
-	api.On("LogWarn", "Inbound file: missing required headers, skipping",
+	api.On("LogWarn", "Inbound file: missing required headers, skipping", "error_code", mock.Anything,
 		"key", "some-key", headerConnName, "", headerPostID, "", headerFilename, "").Return()
 
 	err := p.handleInboundFile(p.ctx, "high", "some-key", []byte("data"), map[string]string{})
@@ -1059,7 +1059,7 @@ func TestHandleInboundFile_ConnectionNotActive(t *testing.T) {
 		headerFilename: "file.txt",
 	}
 
-	api.On("LogWarn", "Inbound file: connection no longer active, skipping",
+	api.On("LogWarn", "Inbound file: connection no longer active, skipping", "error_code", mock.Anything,
 		"conn", "high", "filename", "file.txt").Return()
 
 	err := p.handleInboundFile(p.ctx, "high", "some-key", []byte("data"), headers)
@@ -1268,7 +1268,7 @@ func TestHandleInboundPost_WithRootID_MappingExists(t *testing.T) {
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
-	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user", "error_code", mock.Anything,
 		"username", "alice", "conn", "high").Return()
 	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
@@ -1305,14 +1305,14 @@ func TestHandleInboundPost_WithRootID_MappingMissing(t *testing.T) {
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
-	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user", "error_code", mock.Anything,
 		"username", "alice", "conn", "high").Return()
 	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-uid").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-uid").Return(&mmModel.ChannelMember{}, nil)
-	api.On("LogWarn", "Inbound post: failed to look up root mapping",
+	api.On("LogWarn", "Inbound post: failed to look up root mapping", "error_code", mock.Anything,
 		"conn", "high", "remote_root_id", "nonexistent-root", "error", mock.Anything).Maybe()
-	api.On("LogWarn", "Inbound post: root not found after retries, creating standalone",
+	api.On("LogWarn", "Inbound post: root not found after retries, creating standalone", "error_code", mock.Anything,
 		"conn", "high", "remote_root_id", "nonexistent-root").Return()
 	api.On("CreatePost", mock.MatchedBy(func(post *mmModel.Post) bool {
 		return post.RootId == "" && post.Message == "orphaned reply"
@@ -1341,7 +1341,7 @@ func TestHandleInboundUpdate_UpdatePostFails(t *testing.T) {
 	existingPost := &mmModel.Post{Id: "local-post-id", Message: "original"}
 	api.On("GetPost", "local-post-id").Return(existingPost, nil)
 	api.On("UpdatePost", mock.AnythingOfType("*model.Post")).Return(nil, &mmModel.AppError{Message: "update failed"})
-	api.On("LogError", "Inbound update: failed to update post",
+	api.On("LogError", "Inbound update: failed to update post", "error_code", mock.Anything,
 		"conn", "high", "local_id", "local-post-id", "error", "update failed").Return()
 
 	postMsg := model.PostMessage{PostID: "remote-post-id", MessageText: "edited"}
@@ -1402,9 +1402,10 @@ func TestHandleInboundDelete_ClearFlagFails(t *testing.T) {
 	p.kvstore = kvs
 
 	api.On("DeletePost", "local-post-id").Return(nil)
-	api.On("LogWarn", "Inbound delete: failed to remove delete flag",
+	api.On("LogWarn", "Inbound delete: failed to remove delete flag", "error_code", mock.Anything,
+		"error_code", mock.Anything,
 		"conn", "high", "local_id", "local-post-id", "error", "clear flag failed").Return()
-	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogWarn")
 
 	deleteMsg := model.DeleteMessage{
 		PostID:      "remote-post-id",
@@ -1627,8 +1628,7 @@ func TestResolveTeamAndChannel_RewriteIndex(t *testing.T) {
 
 func TestWatchFiles_Success(t *testing.T) {
 	api := &plugintest.API{}
-	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogInfo")
 	p, _ := setupTestPlugin(api)
 
 	provider := &mockQueueProvider{
@@ -1644,10 +1644,7 @@ func TestWatchFiles_Success(t *testing.T) {
 
 func TestWatchFiles_Error(t *testing.T) {
 	api := &plugintest.API{}
-	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogInfo", "LogError")
 	p, _ := setupTestPlugin(api)
 
 	provider := &mockQueueProvider{
@@ -1657,7 +1654,9 @@ func TestWatchFiles_Error(t *testing.T) {
 	}
 
 	p.watchFiles(p.ctx, "high", provider)
-	api.AssertCalled(t, "LogError", "File watcher exited with error", "conn", "high", "error", "watcher failed")
+	api.AssertCalled(t, "LogError", "File watcher exited with error",
+		"error_code", mock.Anything,
+		"conn", "high", "error", "watcher failed")
 }
 
 // ---------------------------------------------------------------------------
@@ -1668,7 +1667,7 @@ func TestHandleInboundMessage_UpdateMissingPayload(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogError", "Inbound update: missing payload", "conn", "high").Return()
+	api.On("LogError", "Inbound update: missing payload", "error_code", mock.Anything, "conn", "high").Return()
 
 	env := &model.Envelope{Type: model.MessageTypeUpdate}
 	data, err := model.Marshal(env, model.FormatJSON)
@@ -1686,7 +1685,7 @@ func TestHandleInboundMessage_DeleteMissingPayload(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogError", "Inbound delete: missing payload", "conn", "high").Return()
+	api.On("LogError", "Inbound delete: missing payload", "error_code", mock.Anything, "conn", "high").Return()
 
 	env := &model.Envelope{Type: model.MessageTypeDelete}
 	data, err := model.Marshal(env, model.FormatJSON)
@@ -1704,7 +1703,7 @@ func TestHandleInboundMessage_ReactionAddMissingPayload(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogError", "Inbound reaction add: missing payload", "conn", "high").Return()
+	api.On("LogError", "Inbound reaction add: missing payload", "error_code", mock.Anything, "conn", "high").Return()
 
 	env := &model.Envelope{Type: model.MessageTypeReactionAdd}
 	data, err := model.Marshal(env, model.FormatJSON)
@@ -1722,7 +1721,7 @@ func TestHandleInboundMessage_ReactionRemoveMissingPayload(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogError", "Inbound reaction remove: missing payload", "conn", "high").Return()
+	api.On("LogError", "Inbound reaction remove: missing payload", "error_code", mock.Anything, "conn", "high").Return()
 
 	env := &model.Envelope{Type: model.MessageTypeReactionRemove}
 	data, err := model.Marshal(env, model.FormatJSON)
@@ -1784,7 +1783,7 @@ func TestHandleInboundMessage_TestMessageWithoutID(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogInfo", "Received inbound test message", "conn", "high").Return()
+	api.On("LogInfo", "Received inbound test message", "error_code", mock.Anything, "conn", "high").Return()
 
 	env := &model.Envelope{Type: model.MessageTypeTest}
 	data, err := model.Marshal(env, model.FormatJSON)
@@ -1806,7 +1805,7 @@ func TestHandleInboundMessage_UnmarshalError(t *testing.T) {
 	api := &plugintest.API{}
 	p, _ := setupTestPlugin(api)
 
-	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogError")
 
 	handler := p.handleInboundMessage("high")
 	err := handler([]byte("not valid json or xml"))
@@ -1832,14 +1831,14 @@ func TestHandleInboundReaction_AddFails(t *testing.T) {
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
-	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user", "error_code", mock.Anything,
 		"username", "alice", "conn", "high").Return()
 	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-user-id").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-user-id").Return(&mmModel.ChannelMember{}, nil)
 
 	api.On("AddReaction", mock.AnythingOfType("*model.Reaction")).Return(nil, &mmModel.AppError{Message: "add failed"})
-	api.On("LogError", "Inbound reaction: add failed", "conn", "high", "post_id", "local-post-1", "error", "add failed").Return()
+	api.On("LogError", "Inbound reaction: add failed", "error_code", mock.Anything, "conn", "high", "post_id", "local-post-1", "error", "add failed").Return()
 
 	reactionMsg := &model.ReactionMessage{
 		PostID:      "remote-post-1",
@@ -1866,14 +1865,14 @@ func TestHandleInboundReaction_RemoveFails(t *testing.T) {
 	api.On("GetTeamByName", "test-a").Return(team, nil)
 	api.On("GetChannelByName", "team-id", "town-square", false).Return(channel, nil)
 	api.On("GetUserByUsername", "alice").Return(nil, notFoundErr)
-	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user", "error_code", mock.Anything,
 		"username", "alice", "conn", "high").Return()
 	api.On("GetUserByUsername", "alice.high").Return(syncUser, nil)
 	api.On("CreateTeamMember", "team-id", "sync-user-id").Return(&mmModel.TeamMember{}, nil)
 	api.On("AddChannelMember", "chan-id", "sync-user-id").Return(&mmModel.ChannelMember{}, nil)
 
 	api.On("RemoveReaction", mock.AnythingOfType("*model.Reaction")).Return(&mmModel.AppError{Message: "remove failed"})
-	api.On("LogError", "Inbound reaction: remove failed", "conn", "high", "post_id", "local-post-1", "error", "remove failed").Return()
+	api.On("LogError", "Inbound reaction: remove failed", "error_code", mock.Anything, "conn", "high", "post_id", "local-post-1", "error", "remove failed").Return()
 
 	reactionMsg := &model.ReactionMessage{
 		PostID:      "remote-post-1",
@@ -1903,11 +1902,11 @@ func TestHandleInboundReaction_ResolveUserFails(t *testing.T) {
 
 	// Both username lookup and sync user creation fail.
 	api.On("GetUserByUsername", "alice").Return(nil, &mmModel.AppError{Message: "not found"})
-	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user",
+	api.On("LogDebug", "Username lookup did not find local user, falling back to sync user", "error_code", mock.Anything,
 		"username", "alice", "conn", "high").Return()
 	api.On("GetUserByUsername", "alice.high").Return(nil, &mmModel.AppError{Message: "user not found"})
 	api.On("CreateUser", mock.AnythingOfType("*model.User")).Return(nil, &mmModel.AppError{Message: "create user failed"})
-	api.On("LogError", "Inbound reaction: resolve user failed",
+	api.On("LogError", "Inbound reaction: resolve user failed", "error_code", mock.Anything,
 		"conn", "high", "username", "alice", "error", mock.Anything).Return()
 
 	reactionMsg := &model.ReactionMessage{
@@ -1942,7 +1941,7 @@ func TestHandleInboundReaction_GetMappingError(t *testing.T) {
 	}
 	p.kvstore = kvs
 
-	api.On("LogError", "Inbound reaction: failed to look up post mapping",
+	api.On("LogError", "Inbound reaction: failed to look up post mapping", "error_code", mock.Anything,
 		"conn", "high", "remote_id", "remote-post-1", "error", "store error").Return()
 
 	reactionMsg := &model.ReactionMessage{

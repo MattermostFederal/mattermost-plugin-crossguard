@@ -7,6 +7,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
 
@@ -861,7 +862,9 @@ func (p *Plugin) openConnectionDialog(triggerID, targetID string, connections []
 	}
 
 	if appErr := p.API.OpenInteractiveDialog(dialog); appErr != nil {
-		p.API.LogError("Failed to open connection dialog", "error", appErr.Error())
+		p.API.LogError("Failed to open connection dialog",
+			"error_code", errcode.CommandOpenConnDialogFailed,
+			"error", appErr.Error())
 	}
 }
 

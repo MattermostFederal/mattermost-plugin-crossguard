@@ -203,3 +203,23 @@ After setup:
 ## Go Files
 
 After editing Go files, run `make check-style` to fix import formatting.
+
+## Log Error Codes
+
+Every `p.API.Log*` call (`LogDebug`, `LogInfo`, `LogWarn`, `LogError`) in non-test code must include a unique numeric error code as the first key-value pair, sourced from `server/errcode/codes.go`.
+
+```go
+p.API.LogError("Failed to check channel connections",
+    "error_code", errcode.HooksChannelConnCheckFailed,
+    "channel_id", channelID, "error", err.Error())
+```
+
+When adding a new log call:
+
+1. Open `server/errcode/codes.go` and find the block for the file you are editing (each file owns a 1000-range, e.g. `hooks.go` uses 10000-10999, `inbound.go` uses 15000-15999).
+2. Append a new constant at the next unused integer in that block. Name it `<FilePrefix><CamelCaseSummary>` describing the event, not the log level.
+3. Append the new constant to the `AllCodes` slice at the bottom of the file. `TestCodesUnique` enforces uniqueness.
+4. Reference it from the log call as `"error_code", errcode.YourConstant` as the first K/V pair.
+5. Never reuse or renumber existing codes. The integer value is the stable contract for log grep; the identifier can be renamed, but the number must not change once assigned.
+
+Test-file log calls do not need error codes. Permissive test mocks should use the `registerLogMocks(api, "LogInfo", "LogWarn", ...)` helper in `server/prompt_test.go`, which registers `.Maybe()` expectations at arities 1-16.

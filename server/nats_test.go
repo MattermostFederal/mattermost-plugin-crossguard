@@ -18,7 +18,6 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
@@ -404,8 +403,7 @@ func TestNATSMaxMessageSize(t *testing.T) {
 func TestNewNATSProvider_Success(t *testing.T) {
 	addr := startEmbeddedNATS(t)
 	api := &plugintest.API{}
-	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogInfo", "LogWarn")
 
 	cfg := NATSProviderConfig{
 		Name:    "test-conn",
@@ -494,8 +492,7 @@ func TestConnectNATSOneShot_WithAuth(t *testing.T) {
 func TestConnectNATSPersistent_Success(t *testing.T) {
 	addr := startEmbeddedNATS(t)
 	api := &plugintest.API{}
-	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogInfo", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogInfo", "LogWarn")
 
 	cfg := NATSProviderConfig{
 		Name:    "test-conn",
@@ -589,8 +586,7 @@ func TestNATSWatchFiles_ReceivesUpload(t *testing.T) {
 	defer watcherNC.Close()
 
 	api := &plugintest.API{}
-	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogError", "LogWarn")
 
 	watcher := &natsProvider{nc: watcherNC, subject: "test.watch", api: api}
 	uploader := &natsProvider{nc: uploaderNC, subject: "test.watch"}
@@ -646,8 +642,7 @@ func TestNATSWatchFiles_ContextCancelled(t *testing.T) {
 	defer nc.Close()
 
 	api := &plugintest.API{}
-	api.On("LogError", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogError", "LogWarn")
 
 	provider := &natsProvider{nc: nc, subject: "test.watch.cancel", api: api}
 

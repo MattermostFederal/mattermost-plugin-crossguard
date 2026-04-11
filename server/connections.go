@@ -7,6 +7,7 @@ import (
 
 	mmModel "github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
@@ -38,7 +39,9 @@ func (p *Plugin) connectOutbound() {
 	cfg := p.getConfiguration()
 	conns, err := cfg.GetOutboundConnections()
 	if err != nil {
-		p.API.LogError("Failed to parse outbound connections for relay", "error", err.Error())
+		p.API.LogError("Failed to parse outbound connections for relay",
+			"error_code", errcode.ConnectionsParseOutboundFailed,
+			"error", err.Error())
 		return
 	}
 
@@ -47,6 +50,7 @@ func (p *Plugin) connectOutbound() {
 		provider, err := p.createProvider(conn, "Outbound")
 		if err != nil {
 			p.API.LogError("Failed to connect outbound for relay",
+				"error_code", errcode.ConnectionsConnectOutboundFailed,
 				"name", conn.Name, "provider", conn.Provider, "error", err.Error())
 			continue
 		}
@@ -60,7 +64,9 @@ func (p *Plugin) connectOutbound() {
 			healthy:             true,
 			lastCheckTime:       time.Now(),
 		})
-		p.API.LogInfo("Outbound connection established for relay", "name", conn.Name, "provider", conn.Provider)
+		p.API.LogInfo("Outbound connection established for relay",
+			"error_code", errcode.ConnectionsOutboundEstablished,
+			"name", conn.Name, "provider", conn.Provider)
 	}
 
 	p.outboundMu.Lock()
@@ -166,6 +172,7 @@ func (p *Plugin) publishToOutbound(ctx context.Context, env *model.Envelope, con
 		data, err := model.Marshal(env, format)
 		if err != nil {
 			p.API.LogError("Failed to serialize outbound message",
+				"error_code", errcode.ConnectionsSerializeFailed,
 				"name", oc.name, "format", string(format), "error", err.Error())
 			continue
 		}
@@ -177,6 +184,7 @@ func (p *Plugin) publishToOutbound(ctx context.Context, env *model.Envelope, con
 
 			if len(parts) > 1 {
 				p.API.LogInfo("Message split into parts for provider size limit",
+					"error_code", errcode.ConnectionsMessageSplit,
 					"connection", oc.name, "parts", len(parts), "originalSize", len(data))
 			}
 
@@ -201,6 +209,7 @@ func (p *Plugin) publishToOutbound(ctx context.Context, env *model.Envelope, con
 				partData, marshalErr := model.Marshal(&partEnv, format)
 				if marshalErr != nil {
 					p.API.LogError("Failed to serialize message part",
+						"error_code", errcode.ConnectionsSerializePartFailed,
 						"name", oc.name, "part", partIdx+1, "error", marshalErr.Error())
 					partFailed = true
 					break
@@ -208,6 +217,7 @@ func (p *Plugin) publishToOutbound(ctx context.Context, env *model.Envelope, con
 
 				if pubErr := oc.provider.Publish(ctx, partData); pubErr != nil {
 					p.API.LogError("Failed to publish message part",
+						"error_code", errcode.ConnectionsPublishPartFailed,
 						"name", oc.name, "part", partIdx+1, "error", pubErr.Error())
 					partFailed = true
 					break
@@ -220,6 +230,7 @@ func (p *Plugin) publishToOutbound(ctx context.Context, env *model.Envelope, con
 
 		if err := oc.provider.Publish(ctx, data); err != nil {
 			p.API.LogError("Failed to publish to outbound after retries",
+				"error_code", errcode.ConnectionsPublishAfterRetriesFail,
 				"name", oc.name, "error", err.Error())
 			p.updateOutboundHealth(oc.name, false)
 		} else {
@@ -277,11 +288,13 @@ func (p *Plugin) uploadPostFiles(post *mmModel.Post, conns []store.TeamConnectio
 		fi, appErr := p.API.GetFileInfo(fileID)
 		if appErr != nil {
 			p.API.LogError("Failed to get file info for relay",
+				"error_code", errcode.ConnectionsGetFileInfoFailed,
 				"file_id", fileID, "post_id", post.Id, "error", appErr.Error())
 			continue
 		}
 		if fi.Size > maxFileSize {
 			p.API.LogWarn("Skipping oversized file for relay",
+				"error_code", errcode.ConnectionsSkipOversizedFile,
 				"file", fi.Name, "size", fi.Size, "max", maxFileSize)
 			continue
 		}
@@ -307,6 +320,7 @@ func (p *Plugin) uploadPostFiles(post *mmModel.Post, conns []store.TeamConnectio
 		fileData, appErr := p.API.GetFile(fi.Id)
 		if appErr != nil {
 			p.API.LogError("Failed to download file for relay",
+				"error_code", errcode.ConnectionsDownloadFileFailed,
 				"file_id", fi.Id, "file", fi.Name, "error", appErr.Error())
 			continue
 		}
@@ -317,6 +331,7 @@ func (p *Plugin) uploadPostFiles(post *mmModel.Post, conns []store.TeamConnectio
 			}
 			if !isFileAllowed(fi.Name, oc.fileFilterMode, oc.fileFilterTypes) {
 				p.API.LogInfo("Outbound file filtered by policy",
+					"error_code", errcode.ConnectionsOutboundFileFiltered,
 					"file", fi.Name, "conn", oc.name)
 				continue
 			}
@@ -330,6 +345,7 @@ func (p *Plugin) uploadPostFiles(post *mmModel.Post, conns []store.TeamConnectio
 					defer func() { <-p.fileSem }()
 				default:
 					p.API.LogWarn("File semaphore full, skipping file upload",
+						"error_code", errcode.ConnectionsFileSemaphoreFull,
 						"file", fi.Name, "conn", oc.name)
 					return
 				}
@@ -343,6 +359,7 @@ func (p *Plugin) uploadPostFiles(post *mmModel.Post, conns []store.TeamConnectio
 
 				if err := oc.provider.UploadFile(p.ctx, key, data, headers); err != nil {
 					p.API.LogError("Failed to upload file",
+						"error_code", errcode.ConnectionsUploadFileFailed,
 						"key", key, "conn", oc.name, "error", err.Error())
 				}
 			}(oc, fi, fileData)

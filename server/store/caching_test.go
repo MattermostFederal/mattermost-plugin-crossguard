@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 )
 
 type mockKVStore struct {
@@ -241,7 +243,13 @@ func (m *mockKVStore) DeleteTeamRewriteIndex(connName, remoteTeamName string) er
 func newTestCaching(inner *mockKVStore) (*CachingKVStore, *plugintest.API) {
 	api := &plugintest.API{}
 	api.On("PublishPluginClusterEvent", mock.Anything, mock.Anything).Return(nil)
-	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	for n := 1; n <= 16; n++ {
+		args := make([]any, n)
+		for i := range args {
+			args[i] = mock.Anything
+		}
+		api.On("LogWarn", args...).Maybe()
+	}
 	c := NewCachingKVStore(inner, api)
 	return c, api
 }
@@ -1086,6 +1094,7 @@ func TestInvalidate_PublishFailure(t *testing.T) {
 	api := &plugintest.API{}
 	api.On("PublishPluginClusterEvent", mock.Anything, mock.Anything).Return(fmt.Errorf("cluster event publish failed"))
 	api.On("LogWarn", "Failed to publish cache invalidation event",
+		"error_code", errcode.StoreCachePublishInvalidationFailed,
 		"event", ClusterEventInvalidateTeamInit,
 		"key", "team1",
 		"error", "cluster event publish failed").Return()
@@ -1096,6 +1105,7 @@ func TestInvalidate_PublishFailure(t *testing.T) {
 	require.NoError(t, err, "mutation should succeed even when publish fails")
 
 	api.AssertCalled(t, "LogWarn", "Failed to publish cache invalidation event",
+		"error_code", errcode.StoreCachePublishInvalidationFailed,
 		"event", ClusterEventInvalidateTeamInit,
 		"key", "team1",
 		"error", "cluster event publish failed")

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 )
 
@@ -894,7 +895,7 @@ func TestOnConfigurationChange_LoadError(t *testing.T) {
 func TestOnConfigurationChange_NoReconnectBeforeActivation(t *testing.T) {
 	api := &plugintest.API{}
 	api.On("LoadPluginConfiguration", mock.Anything).Return(nil)
-	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	registerLogMocks(api, "LogWarn")
 
 	p := &Plugin{}
 	p.SetAPI(api)
@@ -920,7 +921,8 @@ func TestSetConfiguration_SamePointerLogs(t *testing.T) {
 	// Setting same pointer should log warning and not change config.
 	p.setConfiguration(cfg)
 
-	api.AssertCalled(t, "LogWarn", "setConfiguration called with the existing configuration")
+	api.AssertCalled(t, "LogWarn", "setConfiguration called with the existing configuration",
+		"error_code", errcode.ConfigSameConfigPassed)
 }
 
 func TestSetConfiguration_ReplaceConfig(t *testing.T) {
@@ -1016,4 +1018,27 @@ func TestParseConnections_DefaultProviderNATS(t *testing.T) {
 	assert.Equal(t, ProviderNATS, conns[0].Provider, "empty provider should default to nats")
 	require.NotNil(t, conns[0].NATS)
 	assert.Equal(t, "default-conn", conns[0].NATS.Name, "nested name should be populated from parent")
+}
+
+func TestValidatePollInterval(t *testing.T) {
+	t.Run("zero returns nil (disabled)", func(t *testing.T) {
+		assert.Nil(t, validatePollInterval(0, "conn[0]", "poll_interval_seconds"))
+	})
+
+	t.Run("negative is rejected", func(t *testing.T) {
+		errs := validatePollInterval(-1, "conn[0]", "poll_interval_seconds")
+		require.Len(t, errs, 1)
+		assert.Contains(t, errs[0], "must be at least 1")
+	})
+
+	t.Run("valid values accepted", func(t *testing.T) {
+		assert.Nil(t, validatePollInterval(1, "conn[0]", "poll_interval_seconds"))
+		assert.Nil(t, validatePollInterval(pollIntervalMaxSeconds, "conn[0]", "poll_interval_seconds"))
+	})
+
+	t.Run("above max is rejected", func(t *testing.T) {
+		errs := validatePollInterval(pollIntervalMaxSeconds+1, "conn[0]", "poll_interval_seconds")
+		require.Len(t, errs, 1)
+		assert.Contains(t, errs[0], "must be at most")
+	})
 }

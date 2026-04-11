@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin/plugintest"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/store"
 )
@@ -97,4 +102,130 @@ func TestOnDeactivate_WithConnections(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, outboundClosed, "outbound provider should be closed")
 	assert.True(t, inboundClosed, "inbound provider should be closed")
+}
+
+// TestOnActivate covers the error paths of Plugin.OnActivate. The happy path
+// runs connectOutbound/connectInbound which start goroutines and touch real
+// providers, so we only exercise the early-return branches.
+func TestOnActivate(t *testing.T) {
+	botMatcher := mock.MatchedBy(func(b *model.Bot) bool {
+		return b != nil && b.Username == "crossguard"
+	})
+
+	// mockEnsureBotSuccess wires the minimal set of calls that make
+	// pluginapi's EnsureBot return a bot id successfully.
+	mockEnsureBotSuccess := func(api *plugintest.API, botID string) {
+		api.On("GetServerVersion").Return("5.10.0")
+		// cluster.NewMutex.Lock -> KVSetWithOptions(atomic set). Unlock also
+		// calls KVSetWithOptions with nil value. Accept any arity with Maybe.
+		api.On("KVSetWithOptions", mock.Anything, mock.Anything, mock.Anything).
+			Return(true, (*model.AppError)(nil)).Maybe()
+		api.On("EnsureBotUser", botMatcher).Return(botID, nil)
+	}
+
+	t.Run("ensure_bot_fails", func(t *testing.T) {
+		api := &plugintest.API{}
+		defaultLogMocks(api)
+		// Force ensureServerVersion to fail inside pluginapi.EnsureBot. This
+		// causes an early return before the mutex or EnsureBotUser are called.
+		api.On("GetServerVersion").Return("5.9.0")
+		defer api.AssertExpectations(t)
+
+		p := &Plugin{}
+		p.SetAPI(api)
+
+		err := p.OnActivate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to ensure crossguard bot")
+	})
+
+	t.Run("get_bundle_path_fails", func(t *testing.T) {
+		api := &plugintest.API{}
+		defaultLogMocks(api)
+		mockEnsureBotSuccess(api, model.NewId())
+		api.On("GetBundlePath").Return("", errors.New("no bundle"))
+		defer api.AssertExpectations(t)
+
+		p := &Plugin{}
+		p.SetAPI(api)
+
+		err := p.OnActivate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to get bundle path")
+	})
+
+	t.Run("read_profile_image_fails", func(t *testing.T) {
+		api := &plugintest.API{}
+		defaultLogMocks(api)
+		mockEnsureBotSuccess(api, model.NewId())
+		// Bundle path exists but has no assets/crossguard.png, so os.ReadFile fails.
+		tmpDir := t.TempDir()
+		api.On("GetBundlePath").Return(tmpDir, nil)
+		defer api.AssertExpectations(t)
+
+		p := &Plugin{}
+		p.SetAPI(api)
+
+		err := p.OnActivate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to read bot profile image")
+	})
+
+	t.Run("register_command_fails", func(t *testing.T) {
+		api := &plugintest.API{}
+		defaultLogMocks(api)
+		botID := model.NewId()
+		mockEnsureBotSuccess(api, botID)
+
+		tmpDir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "assets"), 0o750))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(tmpDir, "assets", "crossguard.png"),
+			[]byte("fake-png-bytes"),
+			0o600,
+		))
+
+		api.On("GetBundlePath").Return(tmpDir, nil)
+		api.On("SetProfileImage", botID, mock.Anything).Return((*model.AppError)(nil))
+		// NewCachingKVStore calls RegisterPluginForClusterEvents.
+		api.On("RegisterPluginForClusterEvents").Return((*model.AppError)(nil)).Maybe()
+		// Force registerCommand to fail.
+		api.On("RegisterCommand", mock.Anything).Return(&model.AppError{Message: "cmd failed"})
+		defer api.AssertExpectations(t)
+
+		p := &Plugin{}
+		p.SetAPI(api)
+
+		err := p.OnActivate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cmd failed")
+		assert.Equal(t, botID, p.botUserID, "botUserID should be set before registerCommand runs")
+	})
+
+	t.Run("set_profile_image_fails", func(t *testing.T) {
+		api := &plugintest.API{}
+		defaultLogMocks(api)
+		botID := model.NewId()
+		mockEnsureBotSuccess(api, botID)
+
+		tmpDir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "assets"), 0o750))
+		require.NoError(t, os.WriteFile(
+			filepath.Join(tmpDir, "assets", "crossguard.png"),
+			[]byte("fake-png-bytes"),
+			0o600,
+		))
+
+		api.On("GetBundlePath").Return(tmpDir, nil)
+		api.On("SetProfileImage", botID, mock.Anything).
+			Return(&model.AppError{Message: "bad profile image"})
+		defer api.AssertExpectations(t)
+
+		p := &Plugin{}
+		p.SetAPI(api)
+
+		err := p.OnActivate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to set bot profile image")
+	})
 }

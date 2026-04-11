@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 )
 
@@ -76,22 +77,25 @@ type NATSProviderConfig struct {
 
 // AzureQueueProviderConfig holds Azure Queue Storage and Blob Storage connection settings.
 type AzureQueueProviderConfig struct {
-	QueueServiceURL   string `json:"queue_service_url"`
-	BlobServiceURL    string `json:"blob_service_url"`
-	AccountName       string `json:"account_name"`
-	AccountKey        string `json:"account_key"`
-	QueueName         string `json:"queue_name"`
-	BlobContainerName string `json:"blob_container_name"`
+	QueueServiceURL         string `json:"queue_service_url"`
+	BlobServiceURL          string `json:"blob_service_url"`
+	AccountName             string `json:"account_name"`
+	AccountKey              string `json:"account_key"`
+	QueueName               string `json:"queue_name"`
+	BlobContainerName       string `json:"blob_container_name"`
+	PollIntervalSeconds     int    `json:"poll_interval_seconds,omitempty"`      // default 5
+	BlobPollIntervalSeconds int    `json:"blob_poll_interval_seconds,omitempty"` // default 15
 }
 
 // AzureBlobProviderConfig holds Azure Blob Storage provider settings for batch message relay.
 type AzureBlobProviderConfig struct {
-	ServiceURL            string `json:"service_url"`
-	AccountName           string `json:"account_name"`
-	AccountKey            string `json:"account_key"`
-	BlobContainerName     string `json:"blob_container_name"`
-	FlushIntervalSeconds  int    `json:"flush_interval_seconds,omitempty"`    // default 60
-	BlobLockMaxAgeSeconds int    `json:"blob_lock_max_age_seconds,omitempty"` // default 300 (5 min)
+	ServiceURL               string `json:"service_url"`
+	AccountName              string `json:"account_name"`
+	AccountKey               string `json:"account_key"`
+	BlobContainerName        string `json:"blob_container_name"`
+	FlushIntervalSeconds     int    `json:"flush_interval_seconds,omitempty"`      // default 60
+	BlobLockMaxAgeSeconds    int    `json:"blob_lock_max_age_seconds,omitempty"`   // default 300 (5 min)
+	BatchPollIntervalSeconds int    `json:"batch_poll_interval_seconds,omitempty"` // default 30
 }
 
 func isFileAllowed(filename, filterMode, filterTypes string) bool {
@@ -347,6 +351,29 @@ func validateAzureQueueConnection(conn ConnectionConfig, prefix string) []string
 		errs = append(errs, fmt.Sprintf("%s: blob_container_name is required when file_transfer_enabled is true", prefix))
 	}
 
+	errs = append(errs, validatePollInterval(az.PollIntervalSeconds, prefix, "poll_interval_seconds")...)
+	errs = append(errs, validatePollInterval(az.BlobPollIntervalSeconds, prefix, "blob_poll_interval_seconds")...)
+
+	return errs
+}
+
+// pollIntervalMaxSeconds is the upper bound for configurable poll intervals.
+// Operators who want a longer interval should rethink their architecture;
+// this bound is defense against config typos that would silently stall a
+// connection.
+const pollIntervalMaxSeconds = 3600
+
+func validatePollInterval(value int, prefix, field string) []string {
+	if value == 0 {
+		return nil
+	}
+	var errs []string
+	if value < 1 {
+		errs = append(errs, fmt.Sprintf("%s: %s must be at least 1", prefix, field))
+	}
+	if value > pollIntervalMaxSeconds {
+		errs = append(errs, fmt.Sprintf("%s: %s must be at most %d", prefix, field, pollIntervalMaxSeconds))
+	}
 	return errs
 }
 
@@ -392,6 +419,8 @@ func validateAzureBlobConnection(conn ConnectionConfig, prefix string) []string 
 		}
 	}
 
+	errs = append(errs, validatePollInterval(ab.BatchPollIntervalSeconds, prefix, "batch_poll_interval_seconds")...)
+
 	return errs
 }
 
@@ -426,7 +455,8 @@ func (p *Plugin) setConfiguration(configuration *configuration) {
 
 	if configuration != nil && p.configuration == configuration {
 		if p.API != nil {
-			p.API.LogWarn("setConfiguration called with the existing configuration")
+			p.API.LogWarn("setConfiguration called with the existing configuration",
+				"error_code", errcode.ConfigSameConfigPassed)
 		}
 		return
 	}
@@ -442,7 +472,9 @@ func (p *Plugin) OnConfigurationChange() error {
 	}
 
 	if err := cfg.validate(); err != nil {
-		p.API.LogWarn("Plugin configuration has validation warnings", "error", err.Error())
+		p.API.LogWarn("Plugin configuration has validation warnings",
+			"error_code", errcode.ConfigValidationWarn,
+			"error", err.Error())
 	}
 
 	p.setConfiguration(cfg)

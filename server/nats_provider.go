@@ -12,6 +12,8 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 )
 
 const (
@@ -140,12 +142,14 @@ func (n *natsProvider) WatchFiles(ctx context.Context, handler func(key string, 
 			fileData, err := objectStore.GetBytes(ctx, info.Name)
 			if err != nil {
 				n.api.LogError("Failed to download file from object store",
+					"error_code", errcode.NATSDownloadFileFailed,
 					"key", info.Name, "error", err.Error())
 				continue
 			}
 
 			if err := handler(info.Name, fileData, headers); err != nil {
 				n.api.LogWarn("File handler returned error",
+					"error_code", errcode.NATSFileHandlerError,
 					"key", info.Name, "error", err.Error())
 			}
 		}
@@ -195,10 +199,14 @@ func connectNATSPersistent(cfg NATSProviderConfig, api plugin.API, direction str
 			if err != nil {
 				errMsg = err.Error()
 			}
-			api.LogWarn(direction+" NATS disconnected", "name", cfg.Name, "error", errMsg)
+			api.LogWarn(direction+" NATS disconnected",
+				"error_code", errcode.NATSDisconnected,
+				"name", cfg.Name, "error", errMsg)
 		}),
 		nats.ReconnectHandler(func(_ *nats.Conn) {
-			api.LogInfo(direction+" NATS reconnected", "name", cfg.Name)
+			api.LogInfo(direction+" NATS reconnected",
+				"error_code", errcode.NATSReconnected,
+				"name", cfg.Name)
 		}),
 	}
 	opts = appendNATSTLSOptions(opts, cfg)

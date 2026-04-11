@@ -7,6 +7,7 @@ import (
 
 	mmModel "github.com/mattermost/mattermost/server/public/model"
 
+	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/errcode"
 	"github.com/MattermostFederal/mattermost-plugin-crossguard/server/model"
 )
 
@@ -30,7 +31,9 @@ func (p *Plugin) connectInbound() {
 	cfg := p.getConfiguration()
 	conns, err := cfg.GetInboundConnections()
 	if err != nil {
-		p.API.LogError("Failed to parse inbound connections", "error", err.Error())
+		p.API.LogError("Failed to parse inbound connections",
+			"error_code", errcode.InboundParseConnsFailed,
+			"error", err.Error())
 		return
 	}
 
@@ -40,6 +43,7 @@ func (p *Plugin) connectInbound() {
 		provider, err := p.createProvider(conn, "Inbound")
 		if err != nil {
 			p.API.LogError("Failed to connect inbound",
+				"error_code", errcode.InboundConnectFailed,
 				"name", conn.Name, "provider", conn.Provider, "error", err.Error())
 			continue
 		}
@@ -47,6 +51,7 @@ func (p *Plugin) connectInbound() {
 		handler := p.handleInboundMessage(conn.Name)
 		if err := provider.Subscribe(ctx, handler); err != nil {
 			p.API.LogError("Failed to subscribe inbound",
+				"error_code", errcode.InboundSubscribeFailed,
 				"name", conn.Name, "error", err.Error())
 			_ = provider.Close()
 			continue
@@ -60,7 +65,9 @@ func (p *Plugin) connectInbound() {
 			fileFilterTypes:     conn.FileFilterTypes,
 		}
 		pool = append(pool, ic)
-		p.API.LogInfo("Inbound subscription established", "name", conn.Name, "provider", conn.Provider)
+		p.API.LogInfo("Inbound subscription established",
+			"error_code", errcode.InboundSubscriptionEstablished,
+			"name", conn.Name, "provider", conn.Provider)
 
 		if conn.FileTransferEnabled {
 			watchers = append(watchers, pendingWatcher{connName: conn.Name, provider: provider})
@@ -124,7 +131,9 @@ func (p *Plugin) handleInboundMessage(connName string) func(data []byte) error {
 		select {
 		case p.relaySem <- struct{}{}:
 		default:
-			p.API.LogWarn("Relay semaphore full, dropping inbound message", "conn", connName)
+			p.API.LogWarn("Relay semaphore full, dropping inbound message",
+				"error_code", errcode.InboundRelaySemaphoreFull,
+				"conn", connName)
 			return nil
 		}
 
@@ -140,7 +149,9 @@ func (p *Plugin) handleInboundMessage(connName string) func(data []byte) error {
 			format := model.DetectFormat(data)
 			env, err := model.Unmarshal(data, format)
 			if err != nil {
-				p.API.LogError("Failed to unmarshal inbound message", "conn", connName, "error", err.Error())
+				p.API.LogError("Failed to unmarshal inbound message",
+					"error_code", errcode.InboundUnmarshalFailed,
+					"conn", connName, "error", err.Error())
 				return
 			}
 
@@ -151,57 +162,75 @@ func (p *Plugin) handleInboundMessage(connName string) func(data []byte) error {
 			switch env.Type {
 			case model.MessageTypePost:
 				if env.PostMessage == nil {
-					p.API.LogError("Inbound post: missing payload", "conn", connName)
+					p.API.LogError("Inbound post: missing payload",
+						"error_code", errcode.InboundPostMissingPayload,
+						"conn", connName)
 					return
 				}
 				missing = p.handleInboundPost(connName, env.PostMessage, false)
 				remoteID = env.PostMessage.PostID
 			case model.MessageTypeUpdate:
 				if env.PostMessage == nil {
-					p.API.LogError("Inbound update: missing payload", "conn", connName)
+					p.API.LogError("Inbound update: missing payload",
+						"error_code", errcode.InboundUpdateMissingPayload,
+						"conn", connName)
 					return
 				}
 				missing = p.handleInboundUpdate(connName, env.PostMessage)
 				remoteID = env.PostMessage.PostID
 			case model.MessageTypeDelete:
 				if env.DeleteMessage == nil {
-					p.API.LogError("Inbound delete: missing payload", "conn", connName)
+					p.API.LogError("Inbound delete: missing payload",
+						"error_code", errcode.InboundDeleteMissingPayload,
+						"conn", connName)
 					return
 				}
 				missing = p.handleInboundDelete(connName, env.DeleteMessage)
 				remoteID = env.DeleteMessage.PostID
 			case model.MessageTypeReactionAdd:
 				if env.ReactionMessage == nil {
-					p.API.LogError("Inbound reaction add: missing payload", "conn", connName)
+					p.API.LogError("Inbound reaction add: missing payload",
+						"error_code", errcode.InboundReactionAddMissingPayload,
+						"conn", connName)
 					return
 				}
 				missing = p.handleInboundReaction(connName, env.ReactionMessage, true)
 				remoteID = env.ReactionMessage.PostID
 			case model.MessageTypeReactionRemove:
 				if env.ReactionMessage == nil {
-					p.API.LogError("Inbound reaction remove: missing payload", "conn", connName)
+					p.API.LogError("Inbound reaction remove: missing payload",
+						"error_code", errcode.InboundReactionRemoveMissingPayload,
+						"conn", connName)
 					return
 				}
 				missing = p.handleInboundReaction(connName, env.ReactionMessage, false)
 				remoteID = env.ReactionMessage.PostID
 			case model.MessageTypeTest:
 				if env.TestMessage != nil {
-					p.API.LogInfo("Received inbound test message", "conn", connName, "id", env.TestMessage.ID)
+					p.API.LogInfo("Received inbound test message",
+						"error_code", errcode.InboundTestMessageReceivedWithID,
+						"conn", connName, "id", env.TestMessage.ID)
 				} else {
-					p.API.LogInfo("Received inbound test message", "conn", connName)
+					p.API.LogInfo("Received inbound test message",
+						"error_code", errcode.InboundTestMessageReceived,
+						"conn", connName)
 				}
 			default:
-				p.API.LogWarn("Unknown inbound message type", "conn", connName, "type", env.Type)
+				p.API.LogWarn("Unknown inbound message type",
+					"error_code", errcode.InboundUnknownMessageType,
+					"conn", connName, "type", env.Type)
 				return
 			}
 
 			if missing && p.retryQueue != nil {
 				if !p.retryQueue.Enqueue(connName, data, remoteID, env.Type) {
 					p.API.LogError("Missing message: queue full, dropping message",
+						"error_code", errcode.InboundMissingMessageQueueFull,
 						"conn", connName, "type", env.Type, "remote_post_id", remoteID, "queue_size", retryQueueMaxSize)
 					return
 				}
 				p.API.LogWarn("Missing message: queuing for retry",
+					"error_code", errcode.InboundMissingMessageQueued,
 					"conn", connName, "type", env.Type, "remote_post_id", remoteID, "queue_size", p.retryQueue.Len())
 			}
 		})
@@ -287,7 +316,9 @@ func (p *Plugin) findTeamByRewrite(connName, remoteTeamName string) (*mmModel.Te
 func (p *Plugin) handleInboundPost(connName string, postMsg *model.PostMessage, lastAttempt bool) (missing bool) {
 	team, channel, err := p.resolveTeamAndChannel(connName, postMsg.TeamName, postMsg.ChannelName)
 	if err != nil {
-		p.API.LogWarn("Inbound post: resolve failed", "conn", connName, "error", err.Error())
+		p.API.LogWarn("Inbound post: resolve failed",
+			"error_code", errcode.InboundPostResolveFailed,
+			"conn", connName, "error", err.Error())
 		return false
 	}
 
@@ -295,6 +326,7 @@ func (p *Plugin) handleInboundPost(connName string, postMsg *model.PostMessage, 
 	existingLocalID, err := p.kvstore.GetPostMapping(connName, postMsg.PostID)
 	if err != nil {
 		p.API.LogWarn("Inbound post: idempotency lookup failed, processing anyway",
+			"error_code", errcode.InboundPostIdempotencyLookupFailed,
 			"conn", connName, "postID", postMsg.PostID, "error", err.Error())
 	}
 	if existingLocalID != "" {
@@ -303,7 +335,9 @@ func (p *Plugin) handleInboundPost(connName string, postMsg *model.PostMessage, 
 
 	userID, err := p.resolveInboundUser(postMsg.Username, connName, team.Id, channel.Id)
 	if err != nil {
-		p.API.LogError("Inbound post: resolve user failed", "conn", connName, "username", postMsg.Username, "error", err.Error())
+		p.API.LogError("Inbound post: resolve user failed",
+			"error_code", errcode.InboundPostResolveUserFailed,
+			"conn", connName, "username", postMsg.Username, "error", err.Error())
 		return false
 	}
 
@@ -317,7 +351,9 @@ func (p *Plugin) handleInboundPost(connName string, postMsg *model.PostMessage, 
 	if postMsg.RootID != "" {
 		localRootID, err := p.kvstore.GetPostMapping(connName, postMsg.RootID)
 		if err != nil {
-			p.API.LogWarn("Inbound post: failed to look up root mapping", "conn", connName, "remote_root_id", postMsg.RootID, "error", err.Error())
+			p.API.LogWarn("Inbound post: failed to look up root mapping",
+				"error_code", errcode.InboundPostRootMappingLookupFailed,
+				"conn", connName, "remote_root_id", postMsg.RootID, "error", err.Error())
 		}
 		switch {
 		case localRootID != "":
@@ -328,18 +364,23 @@ func (p *Plugin) handleInboundPost(connName string, postMsg *model.PostMessage, 
 		default:
 			// lastAttempt and still no root - create as standalone
 			p.API.LogWarn("Inbound post: root not found after retries, creating standalone",
+				"error_code", errcode.InboundPostRootNotFoundStandalone,
 				"conn", connName, "remote_root_id", postMsg.RootID)
 		}
 	}
 
 	created, appErr := p.API.CreatePost(post)
 	if appErr != nil {
-		p.API.LogError("Inbound post: create failed", "conn", connName, "error", appErr.Error())
+		p.API.LogError("Inbound post: create failed",
+			"error_code", errcode.InboundPostCreateFailed,
+			"conn", connName, "error", appErr.Error())
 		return false
 	}
 
 	if err := p.kvstore.SetPostMapping(connName, postMsg.PostID, created.Id); err != nil {
-		p.API.LogError("Inbound post: failed to store post mapping", "conn", connName, "remote_id", postMsg.PostID, "local_id", created.Id, "error", err.Error())
+		p.API.LogError("Inbound post: failed to store post mapping",
+			"error_code", errcode.InboundPostStoreMappingFailed,
+			"conn", connName, "remote_id", postMsg.PostID, "local_id", created.Id, "error", err.Error())
 	}
 	return false
 }
@@ -351,6 +392,7 @@ func (p *Plugin) handleInboundUpdate(connName string, postMsg *model.PostMessage
 	localPostID, err := p.kvstore.GetPostMapping(connName, postMsg.PostID)
 	if err != nil {
 		p.API.LogError("Inbound update: failed to look up post mapping",
+			"error_code", errcode.InboundUpdateMappingLookupFailed,
 			"conn", connName, "remote_id", postMsg.PostID, "error", err.Error())
 		return true
 	}
@@ -360,13 +402,17 @@ func (p *Plugin) handleInboundUpdate(connName string, postMsg *model.PostMessage
 
 	existing, appErr := p.API.GetPost(localPostID)
 	if appErr != nil {
-		p.API.LogError("Inbound update: failed to get local post", "conn", connName, "local_id", localPostID, "error", appErr.Error())
+		p.API.LogError("Inbound update: failed to get local post",
+			"error_code", errcode.InboundUpdateGetLocalPostFailed,
+			"conn", connName, "local_id", localPostID, "error", appErr.Error())
 		return false
 	}
 
 	existing.Message = postMsg.MessageText
 	if _, appErr := p.API.UpdatePost(existing); appErr != nil {
-		p.API.LogError("Inbound update: failed to update post", "conn", connName, "local_id", localPostID, "error", appErr.Error())
+		p.API.LogError("Inbound update: failed to update post",
+			"error_code", errcode.InboundUpdatePostFailed,
+			"conn", connName, "local_id", localPostID, "error", appErr.Error())
 	}
 	return false
 }
@@ -375,6 +421,7 @@ func (p *Plugin) handleInboundDelete(connName string, deleteMsg *model.DeleteMes
 	localPostID, err := p.kvstore.GetPostMapping(connName, deleteMsg.PostID)
 	if err != nil {
 		p.API.LogError("Inbound delete: failed to look up post mapping",
+			"error_code", errcode.InboundDeleteMappingLookupFailed,
 			"conn", connName, "remote_id", deleteMsg.PostID, "error", err.Error())
 		return true
 	}
@@ -383,19 +430,27 @@ func (p *Plugin) handleInboundDelete(connName string, deleteMsg *model.DeleteMes
 	}
 
 	if err := p.kvstore.SetDeletingFlag(localPostID); err != nil {
-		p.API.LogError("Inbound delete: failed to set delete flag", "conn", connName, "local_id", localPostID, "error", err.Error())
+		p.API.LogError("Inbound delete: failed to set delete flag",
+			"error_code", errcode.InboundDeleteSetFlagFailed,
+			"conn", connName, "local_id", localPostID, "error", err.Error())
 	}
 
 	if appErr := p.API.DeletePost(localPostID); appErr != nil {
-		p.API.LogError("Inbound delete: failed to delete post", "conn", connName, "local_id", localPostID, "error", appErr.Error())
+		p.API.LogError("Inbound delete: failed to delete post",
+			"error_code", errcode.InboundDeletePostFailed,
+			"conn", connName, "local_id", localPostID, "error", appErr.Error())
 	}
 
 	if err := p.kvstore.ClearDeletingFlag(localPostID); err != nil {
-		p.API.LogWarn("Inbound delete: failed to remove delete flag", "conn", connName, "local_id", localPostID, "error", err.Error())
+		p.API.LogWarn("Inbound delete: failed to remove delete flag",
+			"error_code", errcode.InboundDeleteRemoveFlagFailed,
+			"conn", connName, "local_id", localPostID, "error", err.Error())
 	}
 
 	if err := p.kvstore.DeletePostMapping(connName, deleteMsg.PostID); err != nil {
-		p.API.LogWarn("Inbound delete: failed to remove post mapping", "conn", connName, "remote_id", deleteMsg.PostID, "error", err.Error())
+		p.API.LogWarn("Inbound delete: failed to remove post mapping",
+			"error_code", errcode.InboundDeleteRemoveMappingFailed,
+			"conn", connName, "remote_id", deleteMsg.PostID, "error", err.Error())
 	}
 	return false
 }
@@ -404,6 +459,7 @@ func (p *Plugin) handleInboundReaction(connName string, reactionMsg *model.React
 	localPostID, err := p.kvstore.GetPostMapping(connName, reactionMsg.PostID)
 	if err != nil {
 		p.API.LogError("Inbound reaction: failed to look up post mapping",
+			"error_code", errcode.InboundReactionMappingLookupFailed,
 			"conn", connName, "remote_id", reactionMsg.PostID, "error", err.Error())
 		return true
 	}
@@ -413,13 +469,17 @@ func (p *Plugin) handleInboundReaction(connName string, reactionMsg *model.React
 
 	team, channel, err := p.resolveTeamAndChannel(connName, reactionMsg.TeamName, reactionMsg.ChannelName)
 	if err != nil {
-		p.API.LogWarn("Inbound reaction: resolve failed", "conn", connName, "error", err.Error())
+		p.API.LogWarn("Inbound reaction: resolve failed",
+			"error_code", errcode.InboundReactionResolveFailed,
+			"conn", connName, "error", err.Error())
 		return false
 	}
 
 	userID, err := p.resolveInboundUser(reactionMsg.Username, connName, team.Id, channel.Id)
 	if err != nil {
-		p.API.LogError("Inbound reaction: resolve user failed", "conn", connName, "username", reactionMsg.Username, "error", err.Error())
+		p.API.LogError("Inbound reaction: resolve user failed",
+			"error_code", errcode.InboundReactionResolveUserFailed,
+			"conn", connName, "username", reactionMsg.Username, "error", err.Error())
 		return false
 	}
 
@@ -431,11 +491,15 @@ func (p *Plugin) handleInboundReaction(connName string, reactionMsg *model.React
 
 	if add {
 		if _, appErr := p.API.AddReaction(reaction); appErr != nil {
-			p.API.LogError("Inbound reaction: add failed", "conn", connName, "post_id", localPostID, "error", appErr.Error())
+			p.API.LogError("Inbound reaction: add failed",
+				"error_code", errcode.InboundReactionAddFailed,
+				"conn", connName, "post_id", localPostID, "error", appErr.Error())
 		}
 	} else {
 		if appErr := p.API.RemoveReaction(reaction); appErr != nil {
-			p.API.LogError("Inbound reaction: remove failed", "conn", connName, "post_id", localPostID, "error", appErr.Error())
+			p.API.LogError("Inbound reaction: remove failed",
+				"error_code", errcode.InboundReactionRemoveFailed,
+				"conn", connName, "post_id", localPostID, "error", appErr.Error())
 		}
 	}
 	return false
@@ -443,13 +507,17 @@ func (p *Plugin) handleInboundReaction(connName string, reactionMsg *model.React
 
 // watchFiles uses the provider's WatchFiles to monitor for new file uploads.
 func (p *Plugin) watchFiles(ctx context.Context, connName string, provider QueueProvider) {
-	p.API.LogInfo("File watcher started", "conn", connName)
+	p.API.LogInfo("File watcher started",
+		"error_code", errcode.InboundFileWatcherStarted,
+		"conn", connName)
 
 	err := provider.WatchFiles(ctx, func(key string, data []byte, headers map[string]string) error {
 		return p.handleInboundFile(ctx, connName, key, data, headers)
 	})
 	if err != nil {
-		p.API.LogError("File watcher exited with error", "conn", connName, "error", err.Error())
+		p.API.LogError("File watcher exited with error",
+			"error_code", errcode.InboundFileWatcherExited,
+			"conn", connName, "error", err.Error())
 	}
 }
 
@@ -465,6 +533,7 @@ func (p *Plugin) handleInboundFile(ctx context.Context, connName, key string, da
 
 	if headerConn == "" || remotePostID == "" || filename == "" {
 		p.API.LogWarn("Inbound file: missing required headers, skipping",
+			"error_code", errcode.InboundFileMissingHeaders,
 			"key", key, headerConnName, headerConn, headerPostID, remotePostID, headerFilename, filename)
 		return nil
 	}
@@ -476,12 +545,14 @@ func (p *Plugin) handleInboundFile(ctx context.Context, connName, key string, da
 	ic := p.getInboundConn(connName)
 	if ic == nil {
 		p.API.LogWarn("Inbound file: connection no longer active, skipping",
+			"error_code", errcode.InboundFileConnInactive,
 			"conn", connName, "filename", filename)
 		return nil
 	}
 
 	if !isFileAllowed(filename, ic.fileFilterMode, ic.fileFilterTypes) {
 		p.API.LogInfo("Inbound file filtered by policy",
+			"error_code", errcode.InboundFileFilteredByPolicy,
 			"filename", filename, "conn", connName)
 		return nil
 	}
@@ -504,9 +575,11 @@ func (p *Plugin) handleInboundFile(ctx context.Context, connName, key string, da
 	if localPostID == "" {
 		if lookupErr != nil {
 			p.API.LogError("Inbound file: post mapping lookup failed after retries",
+				"error_code", errcode.InboundFileMappingLookupFailed,
 				"conn", connName, "remote_post_id", remotePostID, "error", lookupErr.Error())
 		} else {
 			p.API.LogWarn("Inbound file: no post mapping found after retries",
+				"error_code", errcode.InboundFileNoMappingFound,
 				"conn", connName, "remote_post_id", remotePostID)
 		}
 		return nil
@@ -523,6 +596,7 @@ func (p *Plugin) handleInboundFile(ctx context.Context, connName, key string, da
 	existing, appErr := p.API.GetPost(localPostID)
 	if appErr != nil {
 		p.API.LogError("Inbound file: failed to get local post",
+			"error_code", errcode.InboundFileGetLocalPostFailed,
 			"local_post_id", localPostID, "error", appErr.Error())
 		return nil
 	}
@@ -530,6 +604,7 @@ func (p *Plugin) handleInboundFile(ctx context.Context, connName, key string, da
 	fileInfo, appErr := p.API.UploadFile(data, existing.ChannelId, filename)
 	if appErr != nil {
 		p.API.LogError("Failed to upload file to Mattermost",
+			"error_code", errcode.InboundFileUploadFailed,
 			"filename", filename, "error", appErr.Error())
 		return nil
 	}
@@ -537,6 +612,7 @@ func (p *Plugin) handleInboundFile(ctx context.Context, connName, key string, da
 	existing.FileIds = append(existing.FileIds, fileInfo.Id)
 	if _, appErr := p.API.UpdatePost(existing); appErr != nil {
 		p.API.LogError("Failed to attach file to post",
+			"error_code", errcode.InboundFileAttachFailed,
 			"local_post_id", localPostID, "file_id", fileInfo.Id, "error", appErr.Error())
 	}
 

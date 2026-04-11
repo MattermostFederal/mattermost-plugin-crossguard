@@ -1,6 +1,7 @@
 import manifest from 'manifest';
-import {providerLabel} from '../provider_label';
 import React from 'react';
+
+import {providerLabel} from '../provider_label';
 
 interface ConnectionStatus {
     name: string;
@@ -363,9 +364,7 @@ const CrossguardChannelModal: React.FC = () => {
                     };
 
                     const provLabel = providerLabel(conn.provider);
-                    const badgeLabel = isInbound ?
-                        `${provLabel} \u2192 MATTERMOST` :
-                        `MATTERMOST \u2192 ${provLabel}`;
+                    const badgeLabel = isInbound ? `${provLabel} \u2192 MATTERMOST` : `MATTERMOST \u2192 ${provLabel}`;
 
                     return (
                         <div

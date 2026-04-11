@@ -31,9 +31,14 @@ This executes two commands:
 - `npm run test:coverage` - unit tests (`.spec.ts`) with C8, reports to `webapp/coverage/`
 - `npm run test:pw-ct-coverage` - component tests (`.pw.tsx`) with C8, reports to `webapp/coverage-ct/`
 
-**If overall coverage is 90% or above, stop here.** Report the coverage number, congratulate the user, and exit plan mode. No additional tests are needed. The codebase is well-tested.
+**Two-gate exit check.** Only stop if BOTH gates pass:
 
-If coverage is below 90%, parse the C8 text output to build a prioritized list:
+1. **Overall gate**: total coverage is ≥ 90%.
+2. **Per-file floor gate**: no individual source file is below 70% coverage. When evaluating this gate, exclude test files and test utilities: any `*.pw.tsx`, any `*.spec.ts`, and anything under `test-utils/`.
+
+If both gates pass, report the overall coverage number plus confirmation that every non-test source file is at or above the 70% floor, congratulate the user, and exit plan mode. No additional tests are needed.
+
+If either gate fails (overall < 90%, OR any non-test source file < 70%), parse the C8 text output to build a prioritized list:
 - **Tier 1**: Files/functions at 0% coverage (completely untested)
 - **Tier 2**: Files/functions below 60% coverage (significant gaps)
 - **Tier 3**: Files/functions below 80% coverage (moderate gaps)
